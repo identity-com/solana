@@ -2009,12 +2009,6 @@ impl AccountsDb {
                 } else {
                     let mut key_set = HashSet::new();
                     key_set.insert(*key);
-                    assert!(
-                        !account_info.is_cached(),
-                        "The Accounts Cache must be flushed first for this account info. pubkey: {}, slot: {}",
-                        *key,
-                        *slot
-                    );
                     let count = self
                         .storage
                         .slot_store_count(*slot, account_info.store_id)
