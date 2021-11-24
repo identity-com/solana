@@ -23,8 +23,8 @@ use solana_sdk::{
     feature_set::{
         allow_native_ids, blake3_syscall_enabled, check_seed_length,
         close_upgradeable_program_accounts, demote_program_write_locks, disable_fees_sysvar,
-        libsecp256k1_0_5_upgrade_enabled, mem_overlap_fix, return_data_syscall_enabled,
-        secp256k1_recover_syscall_enabled,
+        enforce_aligned_host_addrs, libsecp256k1_0_5_upgrade_enabled, mem_overlap_fix,
+        return_data_syscall_enabled, secp256k1_recover_syscall_enabled,
     },
     hash::{Hasher, HASH_BYTES},
     ic_msg,
@@ -208,6 +208,8 @@ pub fn bind_syscall_context_objects<'a>(
     heap: AlignedMemory,
 ) -> Result<(), EbpfError<BpfError>> {
     let compute_budget = invoke_context.get_compute_budget();
+    let enforce_aligned_host_addrs =
+        invoke_context.is_feature_active(&enforce_aligned_host_addrs::id());
 
     // Syscall functions common across languages
 
@@ -216,6 +218,7 @@ pub fn bind_syscall_context_objects<'a>(
         Box::new(SyscallPanic {
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
+            enforce_aligned_host_addrs,
         }),
         None,
     )?;
@@ -224,6 +227,7 @@ pub fn bind_syscall_context_objects<'a>(
             compute_meter: invoke_context.get_compute_meter(),
             logger: invoke_context.get_logger(),
             loader_id,
+            enforce_aligned_host_addrs,
         }),
         None,
     )?;
@@ -251,6 +255,7 @@ pub fn bind_syscall_context_objects<'a>(
             compute_meter: invoke_context.get_compute_meter(),
             logger: invoke_context.get_logger(),
             loader_id,
+            enforce_aligned_host_addrs,
         }),
         None,
     )?;
@@ -262,6 +267,7 @@ pub fn bind_syscall_context_objects<'a>(
             cost: compute_budget.create_program_address_units,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
+            enforce_aligned_host_addrs,
             allow_native_ids,
             check_seed_length,
         }),
@@ -272,6 +278,7 @@ pub fn bind_syscall_context_objects<'a>(
             cost: compute_budget.create_program_address_units,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
+            enforce_aligned_host_addrs,
             allow_native_ids,
             check_seed_length,
         }),
@@ -284,6 +291,7 @@ pub fn bind_syscall_context_objects<'a>(
             sha256_byte_cost: compute_budget.sha256_byte_cost,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
+            enforce_aligned_host_addrs,
         }),
         None,
     )?;
@@ -453,10 +461,19 @@ fn translate_type_inner<'a, T>(
     access_type: AccessType,
     vm_addr: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a mut T, EbpfError<BpfError>> {
+    if !enforce_aligned_host_addrs
+        && loader_id != &bpf_loader_deprecated::id()
+        && (vm_addr as *mut T).align_offset(align_of::<T>()) != 0
+    {
+        return Err(SyscallError::UnalignedPointer.into());
+    }
+
     let host_addr = translate(memory_mapping, access_type, vm_addr, size_of::<T>() as u64)?;
 
-    if loader_id != &bpf_loader_deprecated::id()
+    if enforce_aligned_host_addrs
+        && loader_id != &bpf_loader_deprecated::id()
         && (host_addr as *mut T).align_offset(align_of::<T>()) != 0
     {
         return Err(SyscallError::UnalignedPointer.into());
@@ -467,16 +484,30 @@ fn translate_type_mut<'a, T>(
     memory_mapping: &MemoryMapping,
     vm_addr: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a mut T, EbpfError<BpfError>> {
-    translate_type_inner::<T>(memory_mapping, AccessType::Store, vm_addr, loader_id)
+    translate_type_inner::<T>(
+        memory_mapping,
+        AccessType::Store,
+        vm_addr,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )
 }
 fn translate_type<'a, T>(
     memory_mapping: &MemoryMapping,
     vm_addr: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a T, EbpfError<BpfError>> {
-    translate_type_inner::<T>(memory_mapping, AccessType::Load, vm_addr, loader_id)
-        .map(|value| &*value)
+    translate_type_inner::<T>(
+        memory_mapping,
+        AccessType::Load,
+        vm_addr,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )
+    .map(|value| &*value)
 }
 
 fn translate_slice_inner<'a, T>(
@@ -485,7 +516,14 @@ fn translate_slice_inner<'a, T>(
     vm_addr: u64,
     len: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a mut [T], EbpfError<BpfError>> {
+    if !enforce_aligned_host_addrs
+        && loader_id != &bpf_loader_deprecated::id()
+        && (vm_addr as u64 as *mut T).align_offset(align_of::<T>()) != 0
+    {
+        return Err(SyscallError::UnalignedPointer.into());
+    }
     if len == 0 {
         return Ok(&mut []);
     }
@@ -497,7 +535,8 @@ fn translate_slice_inner<'a, T>(
         len.saturating_mul(size_of::<T>() as u64),
     )?;
 
-    if loader_id != &bpf_loader_deprecated::id()
+    if enforce_aligned_host_addrs
+        && loader_id != &bpf_loader_deprecated::id()
         && (host_addr as *mut T).align_offset(align_of::<T>()) != 0
     {
         return Err(SyscallError::UnalignedPointer.into());
@@ -509,17 +548,33 @@ fn translate_slice_mut<'a, T>(
     vm_addr: u64,
     len: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a mut [T], EbpfError<BpfError>> {
-    translate_slice_inner::<T>(memory_mapping, AccessType::Store, vm_addr, len, loader_id)
+    translate_slice_inner::<T>(
+        memory_mapping,
+        AccessType::Store,
+        vm_addr,
+        len,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )
 }
 fn translate_slice<'a, T>(
     memory_mapping: &MemoryMapping,
     vm_addr: u64,
     len: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
 ) -> Result<&'a [T], EbpfError<BpfError>> {
-    translate_slice_inner::<T>(memory_mapping, AccessType::Load, vm_addr, len, loader_id)
-        .map(|value| &*value)
+    translate_slice_inner::<T>(
+        memory_mapping,
+        AccessType::Load,
+        vm_addr,
+        len,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )
+    .map(|value| &*value)
 }
 
 /// Take a virtual pointer to a string (points to BPF VM memory space), translate it
@@ -529,9 +584,16 @@ fn translate_string_and_do(
     addr: u64,
     len: u64,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
     work: &mut dyn FnMut(&str) -> Result<u64, EbpfError<BpfError>>,
 ) -> Result<u64, EbpfError<BpfError>> {
-    let buf = translate_slice::<u8>(memory_mapping, addr, len, loader_id)?;
+    let buf = translate_slice::<u8>(
+        memory_mapping,
+        addr,
+        len,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )?;
     let i = match buf.iter().position(|byte| *byte == 0) {
         Some(i) => i,
         None => len as usize,
@@ -568,6 +630,7 @@ impl SyscallObject<BpfError> for SyscallAbort {
 pub struct SyscallPanic<'a> {
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
 }
 impl<'a> SyscallObject<BpfError> for SyscallPanic<'a> {
     fn call(
@@ -586,6 +649,7 @@ impl<'a> SyscallObject<BpfError> for SyscallPanic<'a> {
             file,
             len,
             self.loader_id,
+            self.enforce_aligned_host_addrs,
             &mut |string: &str| Err(SyscallError::Panic(string.to_string(), line, column).into()),
         );
     }
@@ -596,6 +660,7 @@ pub struct SyscallLog<'a> {
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     logger: Rc<RefCell<dyn Logger>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
 }
 impl<'a> SyscallObject<BpfError> for SyscallLog<'a> {
     fn call(
@@ -615,6 +680,7 @@ impl<'a> SyscallObject<BpfError> for SyscallLog<'a> {
                 addr,
                 len,
                 self.loader_id,
+                self.enforce_aligned_host_addrs,
                 &mut |string: &str| {
                     stable_log::program_log(&self.logger, string);
                     Ok(0)
@@ -695,6 +761,7 @@ pub struct SyscallLogPubkey<'a> {
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     logger: Rc<RefCell<dyn Logger>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
 }
 impl<'a> SyscallObject<BpfError> for SyscallLogPubkey<'a> {
     fn call(
@@ -709,7 +776,12 @@ impl<'a> SyscallObject<BpfError> for SyscallLogPubkey<'a> {
     ) {
         question_mark!(self.compute_meter.consume(self.cost), result);
         let pubkey = question_mark!(
-            translate_type::<Pubkey>(memory_mapping, pubkey_addr, self.loader_id,),
+            translate_type::<Pubkey>(
+                memory_mapping,
+                pubkey_addr,
+                self.loader_id,
+                self.enforce_aligned_host_addrs,
+            ),
             result
         );
         stable_log::program_log(&self.logger, &pubkey.to_string());
@@ -768,10 +840,16 @@ fn translate_and_check_program_address_inputs<'a>(
     program_id_addr: u64,
     memory_mapping: &MemoryMapping,
     loader_id: &Pubkey,
+    enforce_aligned_host_addrs: bool,
     check_seed_length: bool,
 ) -> Result<(Vec<&'a [u8]>, &'a Pubkey), EbpfError<BpfError>> {
-    let untranslated_seeds =
-        translate_slice::<&[&u8]>(memory_mapping, seeds_addr, seeds_len, loader_id)?;
+    let untranslated_seeds = translate_slice::<&[&u8]>(
+        memory_mapping,
+        seeds_addr,
+        seeds_len,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )?;
     if untranslated_seeds.len() > MAX_SEEDS {
         return Err(SyscallError::BadSeeds(PubkeyError::MaxSeedLengthExceeded).into());
     }
@@ -786,10 +864,16 @@ fn translate_and_check_program_address_inputs<'a>(
                 untranslated_seed.as_ptr() as *const _ as u64,
                 untranslated_seed.len() as u64,
                 loader_id,
+                enforce_aligned_host_addrs,
             )
         })
         .collect::<Result<Vec<_>, EbpfError<BpfError>>>()?;
-    let program_id = translate_type::<Pubkey>(memory_mapping, program_id_addr, loader_id)?;
+    let program_id = translate_type::<Pubkey>(
+        memory_mapping,
+        program_id_addr,
+        loader_id,
+        enforce_aligned_host_addrs,
+    )?;
     Ok((seeds, program_id))
 }
 
@@ -827,6 +911,7 @@ struct SyscallCreateProgramAddress<'a> {
     cost: u64,
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
     allow_native_ids: bool,
     check_seed_length: bool,
 }
@@ -852,6 +937,7 @@ impl<'a> SyscallObject<BpfError> for SyscallCreateProgramAddress<'a> {
                 program_id_addr,
                 memory_mapping,
                 self.loader_id,
+                self.enforce_aligned_host_addrs,
                 self.check_seed_length,
             ),
             result
@@ -874,7 +960,13 @@ impl<'a> SyscallObject<BpfError> for SyscallCreateProgramAddress<'a> {
             }
         };
         let address = question_mark!(
-            translate_slice_mut::<u8>(memory_mapping, address_addr, 32, self.loader_id,),
+            translate_slice_mut::<u8>(
+                memory_mapping,
+                address_addr,
+                32,
+                self.loader_id,
+                self.enforce_aligned_host_addrs,
+            ),
             result
         );
         address.copy_from_slice(new_address.as_ref());
@@ -887,6 +979,7 @@ struct SyscallTryFindProgramAddress<'a> {
     cost: u64,
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
     allow_native_ids: bool,
     check_seed_length: bool,
 }
@@ -912,6 +1005,7 @@ impl<'a> SyscallObject<BpfError> for SyscallTryFindProgramAddress<'a> {
                 program_id_addr,
                 memory_mapping,
                 self.loader_id,
+                self.enforce_aligned_host_addrs,
                 self.check_seed_length,
             ),
             result
@@ -936,6 +1030,7 @@ impl<'a> SyscallObject<BpfError> for SyscallTryFindProgramAddress<'a> {
                                 memory_mapping,
                                 bump_seed_addr,
                                 self.loader_id,
+                                self.enforce_aligned_host_addrs,
                             ),
                             result
                         );
@@ -945,6 +1040,7 @@ impl<'a> SyscallObject<BpfError> for SyscallTryFindProgramAddress<'a> {
                                 address_addr,
                                 32,
                                 self.loader_id,
+                                self.enforce_aligned_host_addrs,
                             ),
                             result
                         );
@@ -970,6 +1066,7 @@ pub struct SyscallSha256<'a> {
     sha256_byte_cost: u64,
     compute_meter: Rc<RefCell<dyn ComputeMeter>>,
     loader_id: &'a Pubkey,
+    enforce_aligned_host_addrs: bool,
 }
 impl<'a> SyscallObject<BpfError> for SyscallSha256<'a> {
     fn call(
@@ -989,13 +1086,20 @@ impl<'a> SyscallObject<BpfError> for SyscallSha256<'a> {
                 result_addr,
                 HASH_BYTES as u64,
                 self.loader_id,
+                self.enforce_aligned_host_addrs,
             ),
             result
         );
         let mut hasher = Hasher::default();
         if vals_len > 0 {
             let vals = question_mark!(
-                translate_slice::<&[u8]>(memory_mapping, vals_addr, vals_len, self.loader_id,),
+                translate_slice::<&[u8]>(
+                    memory_mapping,
+                    vals_addr,
+                    vals_len,
+                    self.loader_id,
+                    self.enforce_aligned_host_addrs,
+                ),
                 result
             );
             for val in vals.iter() {
@@ -1005,6 +1109,7 @@ impl<'a> SyscallObject<BpfError> for SyscallSha256<'a> {
                         val.as_ptr() as u64,
                         val.len() as u64,
                         self.loader_id,
+                        self.enforce_aligned_host_addrs,
                     ),
                     result
                 );
@@ -1035,7 +1140,12 @@ fn get_sysvar<T: std::fmt::Debug + Sysvar + SysvarId>(
     invoke_context
         .get_compute_meter()
         .consume(invoke_context.get_compute_budget().sysvar_base_cost + size_of::<T>() as u64)?;
-    let var = translate_type_mut::<T>(memory_mapping, var_addr, loader_id)?;
+    let var = translate_type_mut::<T>(
+        memory_mapping,
+        var_addr,
+        loader_id,
+        invoke_context.is_feature_active(&enforce_aligned_host_addrs::id()),
+    )?;
 
     *var = process_instruction::get_sysvar::<T>(*invoke_context, id)
         .map_err(SyscallError::InstructionError)?;
@@ -1170,13 +1280,14 @@ impl<'a> SyscallObject<BpfError> for SyscallKeccak256<'a> {
                 result_addr,
                 keccak::HASH_BYTES as u64,
                 self.loader_id,
+                true,
             ),
             result
         );
         let mut hasher = keccak::Hasher::default();
         if vals_len > 0 {
             let vals = question_mark!(
-                translate_slice::<&[u8]>(memory_mapping, vals_addr, vals_len, self.loader_id),
+                translate_slice::<&[u8]>(memory_mapping, vals_addr, vals_len, self.loader_id, true),
                 result
             );
             for val in vals.iter() {
@@ -1186,6 +1297,7 @@ impl<'a> SyscallObject<BpfError> for SyscallKeccak256<'a> {
                         val.as_ptr() as u64,
                         val.len() as u64,
                         self.loader_id,
+                        true,
                     ),
                     result
                 );
@@ -1236,11 +1348,11 @@ impl<'a> SyscallObject<BpfError> for SyscallMemcpy<'a> {
 
         question_mark!(self.compute_meter.consume(n / self.cost), result);
         let dst = question_mark!(
-            translate_slice_mut::<u8>(memory_mapping, dst_addr, n, self.loader_id),
+            translate_slice_mut::<u8>(memory_mapping, dst_addr, n, self.loader_id, true),
             result
         );
         let src = question_mark!(
-            translate_slice::<u8>(memory_mapping, src_addr, n, self.loader_id),
+            translate_slice::<u8>(memory_mapping, src_addr, n, self.loader_id, true),
             result
         );
         unsafe {
@@ -1268,11 +1380,11 @@ impl<'a> SyscallObject<BpfError> for SyscallMemmove<'a> {
     ) {
         question_mark!(self.compute_meter.consume(n / self.cost), result);
         let dst = question_mark!(
-            translate_slice_mut::<u8>(memory_mapping, dst_addr, n, self.loader_id),
+            translate_slice_mut::<u8>(memory_mapping, dst_addr, n, self.loader_id, true),
             result
         );
         let src = question_mark!(
-            translate_slice::<u8>(memory_mapping, src_addr, n, self.loader_id),
+            translate_slice::<u8>(memory_mapping, src_addr, n, self.loader_id, true),
             result
         );
         unsafe {
@@ -1300,15 +1412,15 @@ impl<'a> SyscallObject<BpfError> for SyscallMemcmp<'a> {
     ) {
         question_mark!(self.compute_meter.consume(n / self.cost), result);
         let s1 = question_mark!(
-            translate_slice::<u8>(memory_mapping, s1_addr, n, self.loader_id),
+            translate_slice::<u8>(memory_mapping, s1_addr, n, self.loader_id, true),
             result
         );
         let s2 = question_mark!(
-            translate_slice::<u8>(memory_mapping, s2_addr, n, self.loader_id),
+            translate_slice::<u8>(memory_mapping, s2_addr, n, self.loader_id, true),
             result
         );
         let cmp_result = question_mark!(
-            translate_type_mut::<i32>(memory_mapping, cmp_result_addr, self.loader_id),
+            translate_type_mut::<i32>(memory_mapping, cmp_result_addr, self.loader_id, true),
             result
         );
         let mut i = 0;
@@ -1345,7 +1457,7 @@ impl<'a> SyscallObject<BpfError> for SyscallMemset<'a> {
     ) {
         question_mark!(self.compute_meter.consume(n / self.cost), result);
         let s = question_mark!(
-            translate_slice_mut::<u8>(memory_mapping, s_addr, n, self.loader_id),
+            translate_slice_mut::<u8>(memory_mapping, s_addr, n, self.loader_id, true),
             result
         );
         for val in s.iter_mut().take(n as usize) {
@@ -1382,6 +1494,7 @@ impl<'a> SyscallObject<BpfError> for SyscallSecp256k1Recover<'a> {
                 hash_addr,
                 keccak::HASH_BYTES as u64,
                 self.loader_id,
+                true,
             ),
             result
         );
@@ -1391,6 +1504,7 @@ impl<'a> SyscallObject<BpfError> for SyscallSecp256k1Recover<'a> {
                 signature_addr,
                 SECP256K1_SIGNATURE_LENGTH as u64,
                 self.loader_id,
+                true,
             ),
             result
         );
@@ -1400,6 +1514,7 @@ impl<'a> SyscallObject<BpfError> for SyscallSecp256k1Recover<'a> {
                 result_addr,
                 SECP256K1_PUBLIC_KEY_LENGTH as u64,
                 self.loader_id,
+                true,
             ),
             result
         );
@@ -1470,13 +1585,14 @@ impl<'a> SyscallObject<BpfError> for SyscallBlake3<'a> {
                 result_addr,
                 blake3::HASH_BYTES as u64,
                 self.loader_id,
+                true,
             ),
             result
         );
         let mut hasher = blake3::Hasher::default();
         if vals_len > 0 {
             let vals = question_mark!(
-                translate_slice::<&[u8]>(memory_mapping, vals_addr, vals_len, self.loader_id),
+                translate_slice::<&[u8]>(memory_mapping, vals_addr, vals_len, self.loader_id, true),
                 result
             );
             for val in vals.iter() {
@@ -1486,6 +1602,7 @@ impl<'a> SyscallObject<BpfError> for SyscallBlake3<'a> {
                         val.as_ptr() as u64,
                         val.len() as u64,
                         self.loader_id,
+                        true,
                     ),
                     result
                 );
@@ -1529,6 +1646,7 @@ trait SyscallInvokeSigned<'a> {
         &self,
         addr: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Instruction, EbpfError<BpfError>>;
     fn translate_accounts(
         &self,
@@ -1544,6 +1662,7 @@ trait SyscallInvokeSigned<'a> {
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Vec<Pubkey>, EbpfError<BpfError>>;
 }
 
@@ -1567,8 +1686,14 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
         &self,
         addr: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Instruction, EbpfError<BpfError>> {
-        let ix = translate_type::<Instruction>(memory_mapping, addr, self.loader_id)?;
+        let ix = translate_type::<Instruction>(
+            memory_mapping,
+            addr,
+            self.loader_id,
+            enforce_aligned_host_addrs,
+        )?;
 
         check_instruction_size(
             ix.accounts.len(),
@@ -1581,6 +1706,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
             ix.accounts.as_ptr() as u64,
             ix.accounts.len() as u64,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?
         .to_vec();
         let data = translate_slice::<u8>(
@@ -1588,6 +1714,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
             ix.data.as_ptr() as u64,
             ix.data.len() as u64,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?
         .to_vec();
         Ok(Instruction {
@@ -1606,12 +1733,15 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
         memory_mapping: &MemoryMapping,
     ) -> Result<TranslatedAccounts<'a>, EbpfError<BpfError>> {
         let invoke_context = self.invoke_context.borrow();
+        let enforce_aligned_host_addrs =
+            invoke_context.is_feature_active(&enforce_aligned_host_addrs::id());
 
         let account_infos = translate_slice::<AccountInfo>(
             memory_mapping,
             account_infos_addr,
             account_infos_len,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?;
         check_account_infos(account_infos.len(), &invoke_context)?;
         let account_info_keys = account_infos
@@ -1621,6 +1751,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                     memory_mapping,
                     account_info.key as *const _ as u64,
                     self.loader_id,
+                    enforce_aligned_host_addrs,
                 )
             })
             .collect::<Result<Vec<_>, EbpfError<BpfError>>>()?;
@@ -1635,13 +1766,20 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                     memory_mapping,
                     account_info.lamports.as_ptr() as u64,
                     self.loader_id,
+                    enforce_aligned_host_addrs,
                 )?;
-                translate_type_mut::<u64>(memory_mapping, *ptr, self.loader_id)?
+                translate_type_mut::<u64>(
+                    memory_mapping,
+                    *ptr,
+                    self.loader_id,
+                    enforce_aligned_host_addrs,
+                )?
             };
             let owner = translate_type_mut::<Pubkey>(
                 memory_mapping,
                 account_info.owner as *const _ as u64,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
 
             let (data, vm_data_addr, ref_to_len_in_vm, serialized_len_ptr) = {
@@ -1650,6 +1788,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                     memory_mapping,
                     account_info.data.as_ptr() as *const _ as u64,
                     self.loader_id,
+                    enforce_aligned_host_addrs,
                 )?;
 
                 invoke_context.get_compute_meter().consume(
@@ -1668,6 +1807,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                     memory_mapping,
                     ref_of_len_in_input_buffer as *const _ as u64,
                     self.loader_id,
+                    enforce_aligned_host_addrs,
                 )?;
                 let vm_data_addr = data.as_ptr() as u64;
                 (
@@ -1676,6 +1816,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                         vm_data_addr,
                         data.len() as u64,
                         self.loader_id,
+                        enforce_aligned_host_addrs,
                     )?,
                     vm_data_addr,
                     ref_to_len_in_vm,
@@ -1718,6 +1859,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Vec<Pubkey>, EbpfError<BpfError>> {
         let mut signers = Vec::new();
         if signers_seeds_len > 0 {
@@ -1726,6 +1868,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                 signers_seeds_addr,
                 signers_seeds_len,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
             if signers_seeds.len() > MAX_SIGNERS {
                 return Err(SyscallError::TooManySigners.into());
@@ -1736,6 +1879,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                     signer_seeds.as_ptr() as *const _ as u64,
                     signer_seeds.len() as u64,
                     self.loader_id,
+                    enforce_aligned_host_addrs,
                 )?;
                 if untranslated_seeds.len() > MAX_SEEDS {
                     return Err(SyscallError::InstructionError(
@@ -1751,6 +1895,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedRust<'a> {
                             untranslated_seed.as_ptr() as *const _ as u64,
                             untranslated_seed.len() as u64,
                             self.loader_id,
+                            enforce_aligned_host_addrs,
                         )
                     })
                     .collect::<Result<Vec<_>, EbpfError<BpfError>>>()?;
@@ -1854,34 +1999,50 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
         &self,
         addr: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Instruction, EbpfError<BpfError>> {
-        let ix_c = translate_type::<SolInstruction>(memory_mapping, addr, self.loader_id)?;
+        let ix_c = translate_type::<SolInstruction>(
+            memory_mapping,
+            addr,
+            self.loader_id,
+            enforce_aligned_host_addrs,
+        )?;
 
         check_instruction_size(
             ix_c.accounts_len,
             ix_c.data_len,
             &self.invoke_context.borrow(),
         )?;
-        let program_id =
-            translate_type::<Pubkey>(memory_mapping, ix_c.program_id_addr, self.loader_id)?;
+        let program_id = translate_type::<Pubkey>(
+            memory_mapping,
+            ix_c.program_id_addr,
+            self.loader_id,
+            enforce_aligned_host_addrs,
+        )?;
         let meta_cs = translate_slice::<SolAccountMeta>(
             memory_mapping,
             ix_c.accounts_addr,
             ix_c.accounts_len as u64,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?;
         let data = translate_slice::<u8>(
             memory_mapping,
             ix_c.data_addr,
             ix_c.data_len as u64,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?
         .to_vec();
         let accounts = meta_cs
             .iter()
             .map(|meta_c| {
-                let pubkey =
-                    translate_type::<Pubkey>(memory_mapping, meta_c.pubkey_addr, self.loader_id)?;
+                let pubkey = translate_type::<Pubkey>(
+                    memory_mapping,
+                    meta_c.pubkey_addr,
+                    self.loader_id,
+                    enforce_aligned_host_addrs,
+                )?;
                 Ok(AccountMeta {
                     pubkey: *pubkey,
                     is_signer: meta_c.is_signer,
@@ -1906,18 +2067,26 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
         memory_mapping: &MemoryMapping,
     ) -> Result<TranslatedAccounts<'a>, EbpfError<BpfError>> {
         let invoke_context = self.invoke_context.borrow();
+        let enforce_aligned_host_addrs =
+            invoke_context.is_feature_active(&enforce_aligned_host_addrs::id());
 
         let account_infos = translate_slice::<SolAccountInfo>(
             memory_mapping,
             account_infos_addr,
             account_infos_len,
             self.loader_id,
+            enforce_aligned_host_addrs,
         )?;
         check_account_infos(account_infos.len(), &invoke_context)?;
         let account_info_keys = account_infos
             .iter()
             .map(|account_info| {
-                translate_type::<Pubkey>(memory_mapping, account_info.key_addr, self.loader_id)
+                translate_type::<Pubkey>(
+                    memory_mapping,
+                    account_info.key_addr,
+                    self.loader_id,
+                    enforce_aligned_host_addrs,
+                )
             })
             .collect::<Result<Vec<_>, EbpfError<BpfError>>>()?;
 
@@ -1929,11 +2098,13 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                 memory_mapping,
                 account_info.lamports_addr,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
             let owner = translate_type_mut::<Pubkey>(
                 memory_mapping,
                 account_info.owner_addr,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
             let vm_data_addr = account_info.data_addr;
 
@@ -1946,6 +2117,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                 vm_data_addr,
                 account_info.data_len,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
 
             let first_info_addr = &account_infos[0] as *const _ as u64;
@@ -1965,6 +2137,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                 memory_mapping,
                 ref_of_len_in_input_buffer as *const _ as u64,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
 
             Ok((
@@ -2002,6 +2175,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
+        enforce_aligned_host_addrs: bool,
     ) -> Result<Vec<Pubkey>, EbpfError<BpfError>> {
         if signers_seeds_len > 0 {
             let signers_seeds = translate_slice::<SolSignerSeedC>(
@@ -2009,6 +2183,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                 signers_seeds_addr,
                 signers_seeds_len,
                 self.loader_id,
+                enforce_aligned_host_addrs,
             )?;
             if signers_seeds.len() > MAX_SIGNERS {
                 return Err(SyscallError::TooManySigners.into());
@@ -2021,6 +2196,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                         signer_seeds.addr,
                         signer_seeds.len,
                         self.loader_id,
+                        enforce_aligned_host_addrs,
                     )?;
                     if seeds.len() > MAX_SEEDS {
                         return Err(SyscallError::InstructionError(
@@ -2036,6 +2212,7 @@ impl<'a> SyscallInvokeSigned<'a> for SyscallInvokeSignedC<'a> {
                                 seed.addr,
                                 seed.len,
                                 self.loader_id,
+                                enforce_aligned_host_addrs,
                             )
                         })
                         .collect::<Result<Vec<_>, EbpfError<BpfError>>>()?;
@@ -2235,18 +2412,26 @@ fn call<'a>(
             .get_compute_meter()
             .consume(invoke_context.get_compute_budget().invoke_units)?;
 
+        let enforce_aligned_host_addrs =
+            invoke_context.is_feature_active(&enforce_aligned_host_addrs::id());
+
         let caller_program_id = invoke_context
             .get_caller()
             .map_err(SyscallError::InstructionError)?;
 
         // Translate and verify caller's data
 
-        let instruction = syscall.translate_instruction(instruction_addr, memory_mapping)?;
+        let instruction = syscall.translate_instruction(
+            instruction_addr,
+            memory_mapping,
+            enforce_aligned_host_addrs,
+        )?;
         let signers = syscall.translate_signers(
             caller_program_id,
             signers_seeds_addr,
             signers_seeds_len,
             memory_mapping,
+            enforce_aligned_host_addrs,
         )?;
         let keyed_account_refs = invoke_context
             .get_keyed_accounts()
@@ -2380,6 +2565,7 @@ fn call<'a>(
                             account_ref.vm_data_addr,
                             account.data().len() as u64,
                             &bpf_loader_deprecated::id(), // Don't care since it is byte aligned
+                            true,
                         )?;
                         *account_ref.ref_to_len_in_vm = account.data().len() as u64;
                         *account_ref.serialized_len_ptr = account.data().len() as u64;
@@ -2436,7 +2622,7 @@ impl<'a> SyscallObject<BpfError> for SyscallSetReturnData<'a> {
             invoke_context.set_return_data(None);
         } else {
             let return_data = question_mark!(
-                translate_slice::<u8>(memory_mapping, addr, len, self.loader_id),
+                translate_slice::<u8>(memory_mapping, addr, len, self.loader_id, true),
                 result
             );
 
@@ -2502,6 +2688,7 @@ impl<'a> SyscallObject<BpfError> for SyscallGetReturnData<'a> {
                         return_data_addr,
                         length,
                         self.loader_id,
+                        true,
                     ),
                     result
                 );
@@ -2514,6 +2701,7 @@ impl<'a> SyscallObject<BpfError> for SyscallGetReturnData<'a> {
                         program_id_addr,
                         1,
                         self.loader_id,
+                        true,
                     ),
                     result
                 );
@@ -2625,7 +2813,8 @@ mod tests {
         )
         .unwrap();
         let translated_pubkey =
-            translate_type::<Pubkey>(&memory_mapping, 0x100000000, &bpf_loader::id()).unwrap();
+            translate_type::<Pubkey>(&memory_mapping, 0x100000000, &bpf_loader::id(), true)
+                .unwrap();
         assert_eq!(pubkey, *translated_pubkey);
 
         // Instruction
@@ -2650,13 +2839,17 @@ mod tests {
         )
         .unwrap();
         let translated_instruction =
-            translate_type::<Instruction>(&memory_mapping, 0x100000000, &bpf_loader::id()).unwrap();
+            translate_type::<Instruction>(&memory_mapping, 0x100000000, &bpf_loader::id(), true)
+                .unwrap();
         assert_eq!(instruction, *translated_instruction);
         memory_mapping.resize_region::<BpfError>(1, 1).unwrap();
-        assert!(
-            translate_type::<Instruction>(&memory_mapping, 0x100000000, &bpf_loader::id(),)
-                .is_err()
-        );
+        assert!(translate_type::<Instruction>(
+            &memory_mapping,
+            0x100000000,
+            &bpf_loader::id(),
+            true
+        )
+        .is_err());
     }
 
     #[test]
@@ -2681,9 +2874,14 @@ mod tests {
             &config,
         )
         .unwrap();
-        let translated_data =
-            translate_slice::<u8>(&memory_mapping, data.as_ptr() as u64, 0, &bpf_loader::id())
-                .unwrap();
+        let translated_data = translate_slice::<u8>(
+            &memory_mapping,
+            data.as_ptr() as u64,
+            0,
+            &bpf_loader::id(),
+            true,
+        )
+        .unwrap();
         assert_eq!(data, translated_data);
         assert_eq!(0, translated_data.len());
 
@@ -2709,6 +2907,7 @@ mod tests {
             0x100000000,
             data.len() as u64,
             &bpf_loader::id(),
+            true,
         )
         .unwrap();
         assert_eq!(data, translated_data);
@@ -2719,6 +2918,7 @@ mod tests {
             data.as_ptr() as u64,
             u64::MAX,
             &bpf_loader::id(),
+            true,
         )
         .is_err());
 
@@ -2727,6 +2927,7 @@ mod tests {
             0x100000000 - 1,
             data.len() as u64,
             &bpf_loader::id(),
+            true,
         )
         .is_err());
 
@@ -2752,15 +2953,20 @@ mod tests {
             0x100000000,
             data.len() as u64,
             &bpf_loader::id(),
+            true,
         )
         .unwrap();
         assert_eq!(data, translated_data);
         data[0] = 10;
         assert_eq!(data, translated_data);
-        assert!(
-            translate_slice::<u64>(&memory_mapping, 0x100000000, u64::MAX, &bpf_loader::id(),)
-                .is_err()
-        );
+        assert!(translate_slice::<u64>(
+            &memory_mapping,
+            0x100000000,
+            u64::MAX,
+            &bpf_loader::id(),
+            true,
+        )
+        .is_err());
 
         // Pubkeys
         let mut data = vec![solana_sdk::pubkey::new_rand(); 5];
@@ -2784,6 +2990,7 @@ mod tests {
             0x100000000,
             data.len() as u64,
             &bpf_loader::id(),
+            true,
         )
         .unwrap();
         assert_eq!(data, translated_data);
@@ -2817,6 +3024,7 @@ mod tests {
                 0x100000000,
                 string.len() as u64,
                 &bpf_loader::id(),
+                true,
                 &mut |string: &str| {
                     assert_eq!(string, "Gaggablaghblagh!");
                     Ok(42)
@@ -2874,6 +3082,7 @@ mod tests {
         let mut syscall_panic = SyscallPanic {
             compute_meter,
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
         };
         let mut result: Result<u64, EbpfError<BpfError>> = Ok(0);
         syscall_panic.call(
@@ -2899,6 +3108,7 @@ mod tests {
         let mut syscall_panic = SyscallPanic {
             compute_meter,
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
         };
         let mut result: Result<u64, EbpfError<BpfError>> = Ok(0);
         syscall_panic.call(
@@ -2927,6 +3137,7 @@ mod tests {
             compute_meter,
             logger,
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
         };
         let config = Config::default();
         let memory_mapping = MemoryMapping::new::<UserError>(
@@ -3000,6 +3211,7 @@ mod tests {
             compute_meter,
             logger,
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
         };
         let mut result: Result<u64, EbpfError<BpfError>> = Ok(0);
         syscall_sol_log.call(
@@ -3070,6 +3282,7 @@ mod tests {
             compute_meter,
             logger,
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
         };
         let config = Config::default();
         let memory_mapping = MemoryMapping::new::<UserError>(
@@ -3305,6 +3518,7 @@ mod tests {
             sha256_byte_cost: 2,
             compute_meter,
             loader_id: &bpf_loader_deprecated::id(),
+            enforce_aligned_host_addrs: true,
         };
 
         let mut result: Result<u64, EbpfError<BpfError>> = Ok(0);
@@ -3645,6 +3859,7 @@ mod tests {
             cost: 1,
             compute_meter: compute_meter.clone(),
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
             allow_native_ids: true,
             check_seed_length: true,
         };
@@ -3663,6 +3878,7 @@ mod tests {
             cost: 1,
             compute_meter: compute_meter.clone(),
             loader_id: &bpf_loader::id(),
+            enforce_aligned_host_addrs: true,
             allow_native_ids: true,
             check_seed_length: true,
         };

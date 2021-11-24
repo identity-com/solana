@@ -116,6 +116,7 @@ impl PreAccount {
         post: &AccountSharedData,
         timings: &mut ExecuteDetailsTimings,
         outermost_call: bool,
+        updated_verify_policy: bool,
     ) -> Result<(), InstructionError> {
         let pre = self.account.borrow();
 
@@ -184,9 +185,14 @@ impl PreAccount {
             if !rent.is_exempt(post.lamports(), post.data().len()) {
                 return Err(InstructionError::ExecutableAccountNotRentExempt);
             }
+            let owner = if updated_verify_policy {
+                post.owner()
+            } else {
+                pre.owner()
+            };
             if !is_writable // line coverage used to get branch coverage
                 || pre.executable()
-                || program_id != post.owner()
+                || program_id != owner
             {
                 return Err(InstructionError::ExecutableModified);
             }
@@ -697,6 +703,7 @@ impl InstructionProcessor {
         write_privileges: &[bool],
         timings: &mut ExecuteDetailsTimings,
         logger: Rc<RefCell<dyn Logger>>,
+        updated_verify_policy: bool,
     ) -> Result<(), InstructionError> {
         // Verify the per-account instruction results
         let (mut pre_sum, mut post_sum) = (0_u128, 0_u128);
@@ -715,7 +722,15 @@ impl InstructionProcessor {
                         }
                         let account = account.borrow();
                         pre_account
-                            .verify(program_id, is_writable, rent, &account, timings, false)
+                            .verify(
+                                program_id,
+                                is_writable,
+                                rent,
+                                &account,
+                                timings,
+                                false,
+                                updated_verify_policy,
+                            )
                             .map_err(|err| {
                                 ic_logger_msg!(logger, "failed to verify account {}: {}", key, err);
                                 err
@@ -833,6 +848,7 @@ mod tests {
                 &self.post,
                 &mut ExecuteDetailsTimings::default(),
                 false,
+                true,
             )
         }
     }
