@@ -410,7 +410,7 @@ pub enum LoadedAccountAccessor<'a> {
     // AccountStorageEntry
     Stored(Option<(Arc<AccountStorageEntry>, usize)>),
     // None value in Cached variant means the cache was flushed
-    Cached(Option<Cow<'a, CachedAccount>>),
+    Cached(Option<(Pubkey, Cow<'a, CachedAccount>)>),
 }
 
 mod accountsdb_plugin_utils;
@@ -444,9 +444,10 @@ impl<'a> LoadedAccountAccessor<'a> {
     fn get_loaded_account(&mut self) -> Option<LoadedAccount> {
         match self {
             LoadedAccountAccessor::Cached(cached_account) => {
-                let cached_account: Cow<'a, CachedAccount> = cached_account.take().expect(
-                    "Cache flushed/purged should be handled before trying to fetch account",
-                );
+                let cached_account: (Pubkey, Cow<'a, CachedAccount>) =
+                    cached_account.take().expect(
+                        "Cache flushed/purged should be handled before trying to fetch account",
+                    );
                 Some(LoadedAccount::Cached(cached_account))
             }
             LoadedAccountAccessor::Stored(maybe_storage_entry) => {
@@ -467,14 +468,14 @@ impl<'a> LoadedAccountAccessor<'a> {
 
 pub enum LoadedAccount<'a> {
     Stored(StoredAccountMeta<'a>),
-    Cached(Cow<'a, CachedAccount>),
+    Cached((Pubkey, Cow<'a, CachedAccount>)),
 }
 
 impl<'a> LoadedAccount<'a> {
     pub fn owner(&self) -> &Pubkey {
         match self {
             LoadedAccount::Stored(stored_account_meta) => &stored_account_meta.account_meta.owner,
-            LoadedAccount::Cached(cached_account) => cached_account.account.owner(),
+            LoadedAccount::Cached((_, cached_account)) => cached_account.account.owner(),
         }
     }
 
@@ -483,21 +484,21 @@ impl<'a> LoadedAccount<'a> {
             LoadedAccount::Stored(stored_account_meta) => {
                 stored_account_meta.account_meta.executable
             }
-            LoadedAccount::Cached(cached_account) => cached_account.account.executable(),
+            LoadedAccount::Cached((_, cached_account)) => cached_account.account.executable(),
         }
     }
 
     pub fn loaded_hash(&self) -> Hash {
         match self {
             LoadedAccount::Stored(stored_account_meta) => *stored_account_meta.hash,
-            LoadedAccount::Cached(cached_account) => cached_account.hash(),
+            LoadedAccount::Cached((_, cached_account)) => cached_account.hash(),
         }
     }
 
     pub fn pubkey(&self) -> &Pubkey {
         match self {
             LoadedAccount::Stored(stored_account_meta) => &stored_account_meta.meta.pubkey,
-            LoadedAccount::Cached(cached_account) => cached_account.pubkey(),
+            LoadedAccount::Cached((pubkey, _)) => pubkey,
         }
     }
 
@@ -513,7 +514,7 @@ impl<'a> LoadedAccount<'a> {
             LoadedAccount::Stored(stored_account_meta) => {
                 AccountsDb::hash_stored_account(slot, stored_account_meta)
             }
-            LoadedAccount::Cached(cached_account) => {
+            LoadedAccount::Cached((_, cached_account)) => {
                 AccountsDb::hash_account(slot, &cached_account.account, pubkey)
             }
         }
@@ -529,14 +530,14 @@ impl<'a> LoadedAccount<'a> {
     pub fn lamports(&self) -> u64 {
         match self {
             LoadedAccount::Stored(stored_account_meta) => stored_account_meta.account_meta.lamports,
-            LoadedAccount::Cached(cached_account) => cached_account.account.lamports(),
+            LoadedAccount::Cached((_, cached_account)) => cached_account.account.lamports(),
         }
     }
 
     pub fn take_account(self) -> AccountSharedData {
         match self {
             LoadedAccount::Stored(stored_account_meta) => stored_account_meta.clone_account(),
-            LoadedAccount::Cached(cached_account) => match cached_account {
+            LoadedAccount::Cached((_, cached_account)) => match cached_account {
                 Cow::Owned(cached_account) => cached_account.account.clone(),
                 Cow::Borrowed(cached_account) => cached_account.account.clone(),
             },
@@ -3207,8 +3208,9 @@ impl AccountsDb {
                     slot_cache
                         .par_iter()
                         .filter_map(|cached_account| {
-                            cache_map_func(LoadedAccount::Cached(Cow::Borrowed(
-                                cached_account.value(),
+                            cache_map_func(LoadedAccount::Cached((
+                                *cached_account.key(),
+                                Cow::Borrowed(cached_account.value()),
                             )))
                         })
                         .collect()
@@ -3218,8 +3220,9 @@ impl AccountsDb {
                     slot_cache
                         .iter()
                         .filter_map(|cached_account| {
-                            cache_map_func(LoadedAccount::Cached(Cow::Borrowed(
-                                cached_account.value(),
+                            cache_map_func(LoadedAccount::Cached((
+                                *cached_account.key(),
+                                Cow::Borrowed(cached_account.value()),
                             )))
                         })
                         .collect(),
@@ -3680,7 +3683,10 @@ impl AccountsDb {
         offset: usize,
     ) -> LoadedAccountAccessor<'a> {
         if store_id == CACHE_VIRTUAL_STORAGE_ID {
-            let maybe_cached_account = self.accounts_cache.load(slot, pubkey).map(Cow::Owned);
+            let maybe_cached_account = self
+                .accounts_cache
+                .load(slot, pubkey)
+                .map(|cached_account| (*pubkey, Cow::Owned(cached_account)));
             LoadedAccountAccessor::Cached(maybe_cached_account)
         } else {
             let maybe_storage_entry = self
@@ -5359,9 +5365,10 @@ impl AccountsDb {
                                 let keys = slot_cache.get_all_pubkeys();
                                 for key in keys {
                                     if let Some(cached_account) = slot_cache.get_cloned(&key) {
-                                        let mut accessor = LoadedAccountAccessor::Cached(Some(
+                                        let mut accessor = LoadedAccountAccessor::Cached(Some((
+                                            key,
                                             Cow::Owned(cached_account),
-                                        ));
+                                        )));
                                         let account = accessor.get_loaded_account().unwrap();
                                         scan_func(account, &mut retval, slot);
                                     };
