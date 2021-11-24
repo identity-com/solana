@@ -1,6 +1,7 @@
 use crate::accounts_index::{AccountsIndexConfig, IndexValue};
 use crate::bucket_map_holder::BucketMapHolder;
 use crate::in_mem_accounts_index::InMemAccountsIndex;
+use crate::waitable_condvar::WaitableCondvar;
 use std::fmt::Debug;
 use std::time::Duration;
 use std::{
@@ -18,6 +19,7 @@ use std::{
 pub struct AccountsIndexStorage<T: IndexValue> {
     // for managing the bg threads
     exit: Arc<AtomicBool>,
+    wait: Arc<WaitableCondvar>,
     handles: Option<Vec<JoinHandle<()>>>,
 
     // eventually the backing storage
@@ -34,7 +36,7 @@ impl<T: IndexValue> Debug for AccountsIndexStorage<T> {
 impl<T: IndexValue> Drop for AccountsIndexStorage<T> {
     fn drop(&mut self) {
         self.exit.store(true, Ordering::Relaxed);
-        self.storage.wait_dirty_or_aged.notify_all();
+        self.wait.notify_all();
         if let Some(handles) = self.handles.take() {
             handles
                 .into_iter()
@@ -59,19 +61,21 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
             .unwrap_or(DEFAULT_THREADS);
 
         let exit = Arc::new(AtomicBool::default());
+        let wait = Arc::new(WaitableCondvar::default());
         let handles = Some(
             (0..threads)
                 .into_iter()
                 .map(|_| {
                     let storage_ = Arc::clone(&storage);
                     let exit_ = Arc::clone(&exit);
+                    let wait_ = Arc::clone(&wait);
                     let in_mem_ = in_mem.clone();
 
                     // note that rayon use here causes us to exhaust # rayon threads and many tests running in parallel deadlock
                     Builder::new()
                         .name("solana-idx-flusher".to_string())
                         .spawn(move || {
-                            Self::background(storage_, exit_, in_mem_);
+                            Self::background(storage_, exit_, wait_, in_mem_);
                         })
                         .unwrap()
                 })
@@ -80,6 +84,7 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
 
         Self {
             exit,
+            wait,
             handles,
             storage,
             in_mem,
@@ -94,13 +99,12 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
     pub fn background(
         storage: Arc<BucketMapHolder<T>>,
         exit: Arc<AtomicBool>,
+        wait: Arc<WaitableCondvar>,
         in_mem: Vec<Arc<InMemAccountsIndex<T>>>,
     ) {
         loop {
             // this will transition to waits and thread throttling
-            storage
-                .wait_dirty_or_aged
-                .wait_timeout(Duration::from_millis(10000));
+            wait.wait_timeout(Duration::from_millis(10000));
             if exit.load(Ordering::Relaxed) {
                 break;
             }
