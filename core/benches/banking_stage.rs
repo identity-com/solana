@@ -19,6 +19,7 @@ use solana_perf::test_tx::test_tx;
 use solana_poh::poh_recorder::{create_test_recorder, WorkingBankEntry};
 use solana_runtime::bank::Bank;
 use solana_runtime::cost_model::CostModel;
+use solana_runtime::cost_tracker::CostTracker;
 use solana_runtime::cost_tracker_stats::CostTrackerStats;
 use solana_sdk::genesis_config::GenesisConfig;
 use solana_sdk::hash::Hash;
@@ -94,7 +95,9 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 None::<Box<dyn Fn()>>,
                 &BankingStageStats::default(),
                 &recorder,
-                &Arc::new(RwLock::new(CostModel::default())),
+                &Arc::new(RwLock::new(CostTracker::new(Arc::new(RwLock::new(
+                    CostModel::new(std::u64::MAX, std::u64::MAX),
+                ))))),
                 &mut CostTrackerStats::default(),
             );
         });
@@ -169,11 +172,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
     bank.ns_per_slot = std::u128::MAX;
     let bank = Arc::new(Bank::new_for_benches(&genesis_config));
 
-    // set cost tracker limits to MAX so it will not filter out TXs
-    bank.write_cost_tracker()
-        .unwrap()
-        .set_limits(std::u64::MAX, std::u64::MAX);
-
     debug!("threads: {} txs: {}", num_threads, txes);
 
     let transactions = match tx_type {
@@ -227,7 +225,9 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             vote_receiver,
             None,
             s,
-            Arc::new(RwLock::new(CostModel::default())),
+            Arc::new(RwLock::new(CostTracker::new(Arc::new(RwLock::new(
+                CostModel::new(std::u64::MAX, std::u64::MAX),
+            ))))),
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 
