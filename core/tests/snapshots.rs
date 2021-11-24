@@ -147,8 +147,7 @@ mod tests {
                 bank_snapshots_dir: bank_snapshots_dir.path().to_path_buf(),
                 archive_format: ArchiveFormat::TarBzip2,
                 snapshot_version,
-                maximum_full_snapshot_archives_to_retain:
-                    DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+                maximum_snapshots_to_retain: DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
             };
             bank_forks.set_snapshot_config(Some(snapshot_config.clone()));
             SnapshotTestConfig {
@@ -772,7 +771,7 @@ mod tests {
             bank.get_snapshot_storages(None),
             snapshot_config.archive_format,
             snapshot_config.snapshot_version,
-            snapshot_config.maximum_full_snapshot_archives_to_retain,
+            snapshot_config.maximum_snapshots_to_retain,
         )?;
 
         Ok(())
@@ -808,7 +807,7 @@ mod tests {
             storages,
             snapshot_config.archive_format,
             snapshot_config.snapshot_version,
-            snapshot_config.maximum_full_snapshot_archives_to_retain,
+            snapshot_config.maximum_snapshots_to_retain,
         )?;
 
         Ok(())
@@ -925,7 +924,7 @@ mod tests {
             &cluster_info,
             snapshot_test_config
                 .snapshot_config
-                .maximum_full_snapshot_archives_to_retain,
+                .maximum_snapshots_to_retain,
         );
 
         let accounts_hash_verifier = AccountsHashVerifier::new(
