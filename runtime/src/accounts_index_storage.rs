@@ -3,7 +3,6 @@ use crate::bucket_map_holder::BucketMapHolder;
 use crate::in_mem_accounts_index::InMemAccountsIndex;
 use crate::waitable_condvar::WaitableCondvar;
 use std::fmt::Debug;
-use std::time::Duration;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -52,16 +51,16 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
             .map(|bin| Arc::new(InMemAccountsIndex::new(&storage, bin)))
             .collect();
 
-        let storage_ = Arc::clone(&storage);
+        let storage_ = storage.clone();
         let exit = Arc::new(AtomicBool::default());
-        let exit_ = Arc::clone(&exit);
+        let exit_ = exit.clone();
         let wait = Arc::new(WaitableCondvar::default());
-        let wait_ = Arc::clone(&wait);
+        let wait_ = wait.clone();
         let handle = Some(
             Builder::new()
                 .name("solana-index-flusher".to_string())
                 .spawn(move || {
-                    Self::background(storage_, exit_, wait_);
+                    storage_.background(exit_, wait_);
                 })
                 .unwrap(),
         );
@@ -77,20 +76,5 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
 
     pub fn storage(&self) -> &Arc<BucketMapHolder<T>> {
         &self.storage
-    }
-
-    // intended to execute in a bg thread
-    pub fn background(
-        storage: Arc<BucketMapHolder<T>>,
-        exit: Arc<AtomicBool>,
-        wait: Arc<WaitableCondvar>,
-    ) {
-        loop {
-            wait.wait_timeout(Duration::from_millis(10000)); // account index stats every 10 s
-            if exit.load(Ordering::Relaxed) {
-                break;
-            }
-            storage.stats.report_stats();
-        }
     }
 }
