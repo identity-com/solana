@@ -36,7 +36,6 @@ pub mod nonce_account;
 pub mod nonce_keyed_account;
 pub mod packet;
 pub mod poh_config;
-pub mod precompiles;
 pub mod process_instruction;
 pub mod program_utils;
 pub mod pubkey;

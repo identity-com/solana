@@ -1,9 +1,27 @@
 #![cfg(feature = "full")]
 
-use crate::{feature_set::FeatureSet, instruction::Instruction, precompiles::PrecompileError};
+use crate::{decode_error::DecodeError, instruction::Instruction};
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ed25519_dalek::{ed25519::signature::Signature, Signer, Verifier};
-use std::sync::Arc;
+use thiserror::Error;
+
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum Ed25519Error {
+    #[error("ed25519 public key is not valid")]
+    InvalidPublicKey,
+    #[error("ed25519 signature is not valid")]
+    InvalidSignature,
+    #[error("offset not valid")]
+    InvalidDataOffsets,
+    #[error("instruction is incorrect size")]
+    InvalidInstructionDataSize,
+}
+
+impl<T> DecodeError<T> for Ed25519Error {
+    fn type_of() -> &'static str {
+        "Ed25519Error"
+    }
+}
 
 pub const PUBKEY_SERIALIZED_SIZE: usize = 32;
 pub const SIGNATURE_SERIALIZED_SIZE: usize = 64;
@@ -77,23 +95,19 @@ pub fn new_ed25519_instruction(keypair: &ed25519_dalek::Keypair, message: &[u8])
     }
 }
 
-pub fn verify(
-    data: &[u8],
-    instruction_datas: &[&[u8]],
-    _feature_set: &Arc<FeatureSet>,
-) -> Result<(), PrecompileError> {
+pub fn verify_signatures(data: &[u8], instruction_datas: &[&[u8]]) -> Result<(), Ed25519Error> {
     if data.len() < SIGNATURE_OFFSETS_START {
-        return Err(PrecompileError::InvalidInstructionDataSize);
+        return Err(Ed25519Error::InvalidInstructionDataSize);
     }
     let num_signatures = data[0] as usize;
     if num_signatures == 0 && data.len() > SIGNATURE_OFFSETS_START {
-        return Err(PrecompileError::InvalidInstructionDataSize);
+        return Err(Ed25519Error::InvalidInstructionDataSize);
     }
     let expected_data_size = num_signatures
         .saturating_mul(SIGNATURE_OFFSETS_SERIALIZED_SIZE)
         .saturating_add(SIGNATURE_OFFSETS_START);
     if data.len() < expected_data_size {
-        return Err(PrecompileError::InvalidInstructionDataSize);
+        return Err(Ed25519Error::InvalidInstructionDataSize);
     }
     for i in 0..num_signatures {
         let start = i
@@ -103,23 +117,23 @@ pub fn verify(
 
         // bytemuck wants structures aligned
         let offsets: &Ed25519SignatureOffsets = bytemuck::try_from_bytes(&data[start..end])
-            .map_err(|_| PrecompileError::InvalidDataOffsets)?;
+            .map_err(|_| Ed25519Error::InvalidDataOffsets)?;
 
         // Parse out signature
         let signature_index = offsets.signature_instruction_index as usize;
         if signature_index >= instruction_datas.len() {
-            return Err(PrecompileError::InvalidDataOffsets);
+            return Err(Ed25519Error::InvalidDataOffsets);
         }
         let signature_instruction = instruction_datas[signature_index];
         let sig_start = offsets.signature_offset as usize;
         let sig_end = sig_start.saturating_add(SIGNATURE_SERIALIZED_SIZE);
         if sig_end >= signature_instruction.len() {
-            return Err(PrecompileError::InvalidDataOffsets);
+            return Err(Ed25519Error::InvalidDataOffsets);
         }
 
         let signature =
             ed25519_dalek::Signature::from_bytes(&signature_instruction[sig_start..sig_end])
-                .map_err(|_| PrecompileError::InvalidSignature)?;
+                .map_err(|_| Ed25519Error::InvalidSignature)?;
 
         // Parse out pubkey
         let pubkey = get_data_slice(
@@ -130,7 +144,7 @@ pub fn verify(
         )?;
 
         let publickey = ed25519_dalek::PublicKey::from_bytes(pubkey)
-            .map_err(|_| PrecompileError::InvalidPublicKey)?;
+            .map_err(|_| Ed25519Error::InvalidPublicKey)?;
 
         // Parse out message
         let message = get_data_slice(
@@ -142,7 +156,7 @@ pub fn verify(
 
         publickey
             .verify(message, &signature)
-            .map_err(|_| PrecompileError::InvalidSignature)?;
+            .map_err(|_| Ed25519Error::InvalidSignature)?;
     }
     Ok(())
 }
@@ -152,16 +166,16 @@ fn get_data_slice<'a>(
     instruction_index: u16,
     offset_start: u16,
     size: usize,
-) -> Result<&'a [u8], PrecompileError> {
+) -> Result<&'a [u8], Ed25519Error> {
     let signature_index = instruction_index as usize;
     if signature_index >= instruction_datas.len() {
-        return Err(PrecompileError::InvalidDataOffsets);
+        return Err(Ed25519Error::InvalidDataOffsets);
     }
     let signature_instruction = &instruction_datas[signature_index];
     let start = offset_start as usize;
     let end = start.saturating_add(size);
     if end > signature_instruction.len() {
-        return Err(PrecompileError::InvalidDataOffsets);
+        return Err(Ed25519Error::InvalidDataOffsets);
     }
 
     Ok(&instruction_datas[signature_index][start..end])
@@ -174,7 +188,7 @@ pub mod test {
     fn test_case(
         num_signatures: u16,
         offsets: &Ed25519SignatureOffsets,
-    ) -> Result<(), PrecompileError> {
+    ) -> Result<(), Ed25519Error> {
         assert_eq!(
             bytemuck::bytes_of(offsets).len(),
             SIGNATURE_OFFSETS_SERIALIZED_SIZE
@@ -184,11 +198,7 @@ pub mod test {
         instruction_data[0..SIGNATURE_OFFSETS_START].copy_from_slice(bytes_of(&num_signatures));
         instruction_data[SIGNATURE_OFFSETS_START..DATA_START].copy_from_slice(bytes_of(offsets));
 
-        verify(
-            &instruction_data,
-            &[&[0u8; 100]],
-            &Arc::new(FeatureSet::all_enabled()),
-        )
+        verify_signatures(&instruction_data, &[&[0u8; 100]])
     }
 
     #[test]
@@ -202,12 +212,8 @@ pub mod test {
         instruction_data.truncate(instruction_data.len() - 1);
 
         assert_eq!(
-            verify(
-                &instruction_data,
-                &[&[0u8; 100]],
-                &Arc::new(FeatureSet::all_enabled()),
-            ),
-            Err(PrecompileError::InvalidInstructionDataSize)
+            verify_signatures(&instruction_data, &[&[0u8; 100]]),
+            Err(Ed25519Error::InvalidInstructionDataSize)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -216,7 +222,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -225,7 +231,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -234,7 +240,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
     }
 
@@ -245,10 +251,7 @@ pub mod test {
             message_data_size: 1,
             ..Ed25519SignatureOffsets::default()
         };
-        assert_eq!(
-            test_case(1, &offsets),
-            Err(PrecompileError::InvalidSignature)
-        );
+        assert_eq!(test_case(1, &offsets), Err(Ed25519Error::InvalidSignature));
 
         let offsets = Ed25519SignatureOffsets {
             message_data_offset: 100,
@@ -257,7 +260,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -267,7 +270,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -277,7 +280,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
     }
 
@@ -289,7 +292,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -298,7 +301,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
     }
 
@@ -310,7 +313,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
 
         let offsets = Ed25519SignatureOffsets {
@@ -319,7 +322,7 @@ pub mod test {
         };
         assert_eq!(
             test_case(1, &offsets),
-            Err(PrecompileError::InvalidDataOffsets)
+            Err(Ed25519Error::InvalidDataOffsets)
         );
     }
 }
