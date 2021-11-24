@@ -105,8 +105,6 @@ Operate a configured testnet
                                       - Override the number of slots in an epoch
    --warp-slot WARP_SLOT
                                       - Boot from a snapshot that has warped ahead to WARP_SLOT rather than a slot 0 genesis.
-   --full-rpc
-                                      - Support full RPC services on all nodes
  sanity/start-specific options:
    -F                   - Discard validator nodes that didn't bootup successfully
    -o noInstallCheck    - Skip solana-install sanity
@@ -312,7 +310,6 @@ startBootstrapLeader() {
          \"$maybeNoSnapshot $maybeSkipLedgerVerify $maybeLimitLedgerSize $maybeWaitForSupermajority $maybeAllowPrivateAddr $maybeAccountsDbSkipShrink $maybeSkipRequireTower\" \
          \"$gpuMode\" \
          \"$maybeWarpSlot\" \
-         \"$maybeFullRpc\" \
          \"$waitForNodeInit\" \
          \"$extraPrimordialStakes\" \
          \"$TMPFS_ACCOUNTS\" \
@@ -384,7 +381,6 @@ startNode() {
          \"$maybeNoSnapshot $maybeSkipLedgerVerify $maybeLimitLedgerSize $maybeWaitForSupermajority $maybeAllowPrivateAddr $maybeAccountsDbSkipShrink $maybeSkipRequireTower\" \
          \"$gpuMode\" \
          \"$maybeWarpSlot\" \
-         \"$maybeFullRpc\" \
          \"$waitForNodeInit\" \
          \"$extraPrimordialStakes\" \
          \"$TMPFS_ACCOUNTS\" \
@@ -792,7 +788,6 @@ netemCommand="add"
 clientDelayStart=0
 netLogDir=
 maybeWarpSlot=
-maybeFullRpc=false
 waitForNodeInit=true
 extraPrimordialStakes=0
 
@@ -901,9 +896,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --warp-slot ]]; then
       maybeWarpSlot="$1 $2"
       shift 2
-    elif [[ $1 == --full-rpc ]]; then
-      maybeFullRpc=true
-      shift 1
     elif [[ $1 == --async-node-init ]]; then
       waitForNodeInit=false
       shift 1
