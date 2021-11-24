@@ -940,8 +940,7 @@ impl BankingStage {
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state
         let mut lock_time = Measure::start("lock_time");
-        let batch =
-            bank.prepare_sanitized_batch_with_results(txs, transactions_qos_results.into_iter());
+        let batch = bank.prepare_sanitized_batch_with_results(txs, transactions_qos_results.iter());
         lock_time.stop();
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit and
