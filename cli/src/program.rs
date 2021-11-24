@@ -2094,25 +2094,13 @@ fn send_deploy_messages(
     if let Some(write_messages) = write_messages {
         if let Some(write_signer) = write_signer {
             trace!("Writing program data");
-            let transaction_errors = send_and_confirm_messages_with_spinner(
+            send_and_confirm_messages_with_spinner(
                 rpc_client.clone(),
                 &config.websocket_url,
                 write_messages,
                 &[payer_signer, write_signer],
             )
-            .map_err(|err| format!("Data writes to account failed: {}", err))?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-            if !transaction_errors.is_empty() {
-                for transaction_error in &transaction_errors {
-                    error!("{:?}", transaction_error);
-                }
-                return Err(
-                    format!("{} write transactions failed", transaction_errors.len()).into(),
-                );
-            }
+            .map_err(|err| format!("Data writes to account failed: {}", err))?;
         }
     }
 
@@ -2179,7 +2167,7 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
     websocket_url: &str,
     messages: &[Message],
     signers: &T,
-) -> Result<Vec<Option<TransactionError>>, Box<dyn error::Error>> {
+) -> Result<(), Box<dyn error::Error>> {
     let commitment = rpc_client.commitment();
 
     let progress_bar = new_spinner_progress_bar();
@@ -2190,11 +2178,10 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
         rpc_client.get_latest_blockhash_with_commitment(commitment)?;
 
     let mut transactions = vec![];
-    let mut transaction_errors = vec![None; messages.len()];
-    for (i, message) in messages.iter().enumerate() {
+    for message in messages {
         let mut transaction = Transaction::new_unsigned(message.clone());
         transaction.try_sign(signers, blockhash)?;
-        transactions.push((i, transaction));
+        transactions.push(transaction);
     }
 
     progress_bar.set_message("Finding leader nodes...");
@@ -2207,7 +2194,7 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
         // Send all transactions
         let mut pending_transactions = HashMap::new();
         let num_transactions = transactions.len();
-        for (i, transaction) in transactions {
+        for transaction in transactions {
             if !tpu_client.send_transaction(&transaction) {
                 let _result = rpc_client
                     .send_transaction_with_config(
@@ -2219,7 +2206,7 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
                     )
                     .ok();
             }
-            pending_transactions.insert(transaction.signatures[0], (i, transaction));
+            pending_transactions.insert(transaction.signatures[0], transaction);
             progress_bar.set_message(format!(
                 "[{}/{}] Transactions sent",
                 pending_transactions.len(),
@@ -2245,16 +2232,12 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
                             if let Some(confirmation_status) = &status.confirmation_status {
                                 if *confirmation_status != TransactionConfirmationStatus::Processed
                                 {
-                                    if let Some((i, _)) = pending_transactions.remove(signature) {
-                                        transaction_errors[i] = status.err;
-                                    }
+                                    let _ = pending_transactions.remove(signature);
                                 }
                             } else if status.confirmations.is_none()
                                 || status.confirmations.unwrap() > 1
                             {
-                                if let Some((i, _)) = pending_transactions.remove(signature) {
-                                    transaction_errors[i] = status.err;
-                                }
+                                let _ = pending_transactions.remove(signature);
                             }
                         }
                     }
@@ -2270,14 +2253,14 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
             }
 
             if pending_transactions.is_empty() {
-                return Ok(transaction_errors);
+                return Ok(());
             }
 
             if block_height > last_valid_block_height {
                 break;
             }
 
-            for (_i, transaction) in pending_transactions.values() {
+            for transaction in pending_transactions.values() {
                 if !tpu_client.send_transaction(transaction) {
                     let _result = rpc_client
                         .send_transaction_with_config(
@@ -2307,9 +2290,9 @@ fn send_and_confirm_messages_with_spinner<T: Signers>(
             rpc_client.get_latest_blockhash_with_commitment(commitment)?;
         last_valid_block_height = new_last_valid_block_height;
         transactions = vec![];
-        for (_, (i, mut transaction)) in pending_transactions.into_iter() {
+        for (_, mut transaction) in pending_transactions.into_iter() {
             transaction.try_sign(signers, blockhash)?;
-            transactions.push((i, transaction));
+            transactions.push(transaction);
         }
     }
 }
