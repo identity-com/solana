@@ -1,16 +1,14 @@
 #![allow(clippy::integer_arithmetic)]
-use {
-    crate::{decode_error::DecodeError, hash::hashv},
-    borsh::{BorshDeserialize, BorshSchema, BorshSerialize},
-    bytemuck::{Pod, Zeroable},
-    num_derive::{FromPrimitive, ToPrimitive},
-    std::{
-        convert::{Infallible, TryFrom},
-        fmt, mem,
-        str::FromStr,
-    },
-    thiserror::Error,
+use crate::{decode_error::DecodeError, hash::hashv};
+
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
+use num_derive::{FromPrimitive, ToPrimitive};
+use std::{
+    convert::{Infallible, TryFrom},
+    fmt, mem,
+    str::FromStr,
 };
+use thiserror::Error;
 
 /// Number of bytes in a pubkey
 pub const PUBKEY_BYTES: usize = 32;
@@ -50,22 +48,20 @@ impl From<u64> for PubkeyError {
 
 #[repr(transparent)]
 #[derive(
-    AbiExample,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
     BorshDeserialize,
     BorshSchema,
-    BorshSerialize,
     Clone,
     Copy,
     Default,
-    Deserialize,
     Eq,
-    Hash,
-    Ord,
     PartialEq,
+    Ord,
     PartialOrd,
-    Pod,
-    Serialize,
-    Zeroable,
+    Hash,
+    AbiExample,
 )]
 pub struct Pubkey([u8; 32]);
 
