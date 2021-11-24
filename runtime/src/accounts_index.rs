@@ -4112,10 +4112,7 @@ pub mod tests {
 
     #[test]
     #[should_panic(expected = "bins.is_power_of_two()")]
-    #[allow(clippy::field_reassign_with_default)]
     fn test_illegal_bins() {
-        let mut config = AccountsIndexConfig::default();
-        config.bins = Some(3);
-        AccountsIndex::<bool>::new(Some(config));
+        AccountsIndex::<bool>::new(Some(AccountsIndexConfig { bins: Some(3) }));
     }
 }
