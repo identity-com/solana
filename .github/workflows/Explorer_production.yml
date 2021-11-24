@@ -1,4 +1,5 @@
 name: Explorer_production_build&test
+
 on:
   push:
    branches: [master]
@@ -26,7 +27,7 @@ jobs:
        - run: npm run test
        
     Explorer_production_deploy:
-      needs: production
+      needs: Explorer_production_build&test
       runs-on: ubuntu-latest
       defaults:
         run:
