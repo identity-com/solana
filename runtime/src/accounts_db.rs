@@ -1962,7 +1962,6 @@ impl AccountsDb {
 
         let total_keys_count = pubkeys.len();
         let mut accounts_scan = Measure::start("accounts_scan");
-        let uncleaned_roots_len = self.accounts_index.uncleaned_roots_len();
         // parallel scan the index.
         let (mut purges_zero_lamports, purges_old_accounts) = {
             let do_clean_scan = || {
@@ -2162,7 +2161,6 @@ impl AccountsDb {
             ("delta_key_count", key_timings.delta_key_count, i64),
             ("dirty_pubkeys_count", key_timings.dirty_pubkeys_count, i64),
             ("total_keys_count", total_keys_count, i64),
-            ("uncleaned_roots_len", uncleaned_roots_len, i64),
         );
     }
 
@@ -5858,11 +5856,9 @@ impl AccountsDb {
         let mut unrooted_cleaned_count = 0;
         let dead_slots: Vec<_> = dead_slots_iter
             .map(|slot| {
-                if self
-                    .accounts_index
-                    .clean_dead_slot(*slot, &mut accounts_index_root_stats)
-                {
+                if let Some(latest) = self.accounts_index.clean_dead_slot(*slot) {
                     rooted_cleaned_count += 1;
+                    accounts_index_root_stats = latest;
                 } else {
                     unrooted_cleaned_count += 1;
                 }
