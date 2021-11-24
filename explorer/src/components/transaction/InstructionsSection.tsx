@@ -15,6 +15,7 @@ import { SerumDetailsCard } from "components/instruction/SerumDetailsCard";
 import { StakeDetailsCard } from "components/instruction/stake/StakeDetailsCard";
 import { SystemDetailsCard } from "components/instruction/system/SystemDetailsCard";
 import { TokenDetailsCard } from "components/instruction/token/TokenDetailsCard";
+import { GatewayTokenDetailsCard } from "components/instruction/gateway/GatewayTokenDetailsCard";
 import { TokenLendingDetailsCard } from "components/instruction/TokenLendingDetailsCard";
 import { TokenSwapDetailsCard } from "components/instruction/TokenSwapDetailsCard";
 import { WormholeDetailsCard } from "components/instruction/WormholeDetailsCard";
@@ -41,6 +42,7 @@ import { isWormholeInstruction } from "components/instruction/wormhole/types";
 import { AssociatedTokenDetailsCard } from "components/instruction/AssociatedTokenDetailsCard";
 import { isMangoInstruction } from "components/instruction/mango/types";
 import { MangoDetailsCard } from "components/instruction/MangoDetails";
+import {isGatewayInstruction} from "../instruction/gateway/types";
 
 export type InstructionDetailsProps = {
   tx: ParsedTransaction;
@@ -94,6 +96,7 @@ export function InstructionsSection({ signature }: SignatureProps) {
 
       if (index in innerInstructions) {
         innerInstructions[index].forEach((ix, childIndex) => {
+          console.log(ix);
           if (typeof ix.programId === "string") {
             ix.programId = new PublicKey(ix.programId);
           }
@@ -154,6 +157,9 @@ function renderInstructionCard({
   childIndex?: number;
 }) {
   const key = `${index}-${childIndex}`;
+
+  console.log("ix");
+  console.log(ix);
 
   if ("parsed" in ix) {
     const props = {
@@ -220,6 +226,8 @@ function renderInstructionCard({
     return <TokenLendingDetailsCard key={key} {...props} />;
   } else if (isWormholeInstruction(transactionIx)) {
     return <WormholeDetailsCard key={key} {...props} />;
+  } else if (isGatewayInstruction(transactionIx)) {
+    return <GatewayTokenDetailsCard key={key} {...props} />;
   } else {
     return <UnknownDetailsCard key={key} {...props} />;
   }

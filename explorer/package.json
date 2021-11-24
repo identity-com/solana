@@ -7,6 +7,7 @@
     "@bonfida/bot": "^0.5.3",
     "@bonfida/spl-name-service": "^0.1.22",
     "@cloudflare/stream-react": "^1.2.0",
+    "@identity.com/solana-gateway-ts": "^0.3.1",
     "@metamask/jazzicon": "^2.0.0",
     "@metaplex/js": "2.0.1",
     "@project-serum/serum": "^0.13.60",
@@ -59,7 +60,9 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "format": "prettier -c \"**/*.+(js|jsx|ts|tsx|json|css|md)\"",
-    "format:fix": "prettier --write \"**/*.+(js|jsx|ts|tsx|json|css|md)\""
+    "format:fix": "prettier --write \"**/*.+(js|jsx|ts|tsx|json|css|md)\"",
+    "predeploy": "npm run build",
+    "deploy": "STAGE=${STAGE:-dev} etc/deploy/deploy-site.sh"
   },
   "eslintConfig": {
     "extends": "react-app"
@@ -75,5 +78,8 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "deploy-aws-s3-cloudfront": "^3.4.2"
   }
 }
