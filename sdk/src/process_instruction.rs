@@ -5,6 +5,7 @@ use solana_sdk::{
     account::AccountSharedData,
     compute_budget::ComputeBudget,
     feature_set::remove_native_loader,
+    fee_calculator::FeeCalculator,
     hash::Hash,
     instruction::{CompiledInstruction, Instruction, InstructionError},
     keyed_account::{create_keyed_accounts_unified, KeyedAccount},
@@ -131,10 +132,10 @@ pub trait InvokeContext {
     fn set_blockhash(&mut self, hash: Hash);
     /// Get this invocation's blockhash
     fn get_blockhash(&self) -> &Hash;
-    /// Set this invocation's lamports_per_signature value
-    fn set_lamports_per_signature(&mut self, lamports_per_signature: u64);
-    /// Get this invocation's lamports_per_signature value
-    fn get_lamports_per_signature(&self) -> u64;
+    /// Set this invocation's `FeeCalculator`
+    fn set_fee_calculator(&mut self, fee_calculator: FeeCalculator);
+    /// Get this invocation's `FeeCalculator`
+    fn get_fee_calculator(&self) -> &FeeCalculator;
     /// Set the return data
     fn set_return_data(&mut self, data: Vec<u8>) -> Result<(), InstructionError>;
     /// Get the return data
@@ -360,7 +361,7 @@ pub struct MockInvokeContext<'a> {
     pub sysvars: RefCell<Vec<(Pubkey, Option<Rc<Vec<u8>>>)>>,
     pub disabled_features: HashSet<Pubkey>,
     pub blockhash: Hash,
-    pub lamports_per_signature: u64,
+    pub fee_calculator: FeeCalculator,
     pub return_data: (Pubkey, Vec<u8>),
 }
 
@@ -379,7 +380,7 @@ impl<'a> MockInvokeContext<'a> {
             sysvars: RefCell::new(Vec::new()),
             disabled_features: HashSet::default(),
             blockhash: Hash::default(),
-            lamports_per_signature: 0,
+            fee_calculator: FeeCalculator::default(),
             return_data: (Pubkey::default(), Vec::new()),
         };
         let number_of_program_accounts = keyed_accounts
@@ -509,11 +510,11 @@ impl<'a> InvokeContext for MockInvokeContext<'a> {
     fn get_blockhash(&self) -> &Hash {
         &self.blockhash
     }
-    fn set_lamports_per_signature(&mut self, lamports_per_signature: u64) {
-        self.lamports_per_signature = lamports_per_signature;
+    fn set_fee_calculator(&mut self, fee_calculator: FeeCalculator) {
+        self.fee_calculator = fee_calculator;
     }
-    fn get_lamports_per_signature(&self) -> u64 {
-        self.lamports_per_signature
+    fn get_fee_calculator(&self) -> &FeeCalculator {
+        &self.fee_calculator
     }
     fn set_return_data(&mut self, data: Vec<u8>) -> Result<(), InstructionError> {
         self.return_data = (*self.get_caller()?, data);

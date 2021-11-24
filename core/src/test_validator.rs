@@ -636,7 +636,6 @@ impl TestValidator {
 
     /// Return an RpcClient for the validator.  As a convenience, also return a recent blockhash and
     /// associated fee calculator
-    #[deprecated(since = "1.9.0", note = "Please use `get_rpc_client` instead")]
     pub fn rpc_client(&self) -> (RpcClient, Hash, FeeCalculator) {
         let rpc_client =
             RpcClient::new_with_commitment(self.rpc_url.clone(), CommitmentConfig::processed());
@@ -646,11 +645,6 @@ impl TestValidator {
             .expect("get_recent_blockhash");
 
         (rpc_client, recent_blockhash, fee_calculator)
-    }
-
-    /// Return an RpcClient for the validator.
-    pub fn get_rpc_client(&self) -> RpcClient {
-        RpcClient::new_with_commitment(self.rpc_url.clone(), CommitmentConfig::processed())
     }
 
     pub fn join(mut self) {

@@ -149,34 +149,27 @@ impl SyncClient for BankClient {
     }
 
     fn get_recent_blockhash(&self) -> Result<(Hash, FeeCalculator)> {
-        Ok((
-            self.bank.last_blockhash(),
-            FeeCalculator::new(self.bank.get_lamports_per_signature()),
-        ))
+        #[allow(deprecated)]
+        Ok(self.bank.last_blockhash_with_fee_calculator())
     }
 
     fn get_recent_blockhash_with_commitment(
         &self,
         _commitment_config: CommitmentConfig,
     ) -> Result<(Hash, FeeCalculator, u64)> {
-        let blockhash = self.bank.last_blockhash();
+        #[allow(deprecated)]
+        let (blockhash, fee_calculator) = self.bank.last_blockhash_with_fee_calculator();
         #[allow(deprecated)]
         let last_valid_slot = self
             .bank
             .get_blockhash_last_valid_slot(&blockhash)
             .expect("bank blockhash queue should contain blockhash");
-        Ok((
-            blockhash,
-            FeeCalculator::new(self.bank.get_lamports_per_signature()),
-            last_valid_slot,
-        ))
+        Ok((blockhash, fee_calculator, last_valid_slot))
     }
 
     fn get_fee_calculator_for_blockhash(&self, blockhash: &Hash) -> Result<Option<FeeCalculator>> {
-        Ok(self
-            .bank
-            .get_lamports_per_signature_for_blockhash(blockhash)
-            .map(FeeCalculator::new))
+        #[allow(deprecated)]
+        Ok(self.bank.get_fee_calculator(blockhash))
     }
 
     fn get_fee_rate_governor(&self) -> Result<FeeRateGovernor> {
@@ -270,12 +263,10 @@ impl SyncClient for BankClient {
     }
 
     fn get_new_blockhash(&self, blockhash: &Hash) -> Result<(Hash, FeeCalculator)> {
-        let recent_blockhash = self.get_latest_blockhash()?;
+        #[allow(deprecated)]
+        let (recent_blockhash, fee_calculator) = self.get_recent_blockhash()?;
         if recent_blockhash != *blockhash {
-            Ok((
-                recent_blockhash,
-                FeeCalculator::new(self.bank.get_lamports_per_signature()),
-            ))
+            Ok((recent_blockhash, fee_calculator))
         } else {
             Err(TransportError::IoError(io::Error::new(
                 io::ErrorKind::Other,
@@ -314,8 +305,9 @@ impl SyncClient for BankClient {
 
     fn get_fee_for_message(&self, message: &Message) -> Result<u64> {
         SanitizedMessage::try_from(message.clone())
-            .map(|message| self.bank.get_fee_for_message(&message))
-            .map_err(|_| {
+            .ok()
+            .and_then(|message| self.bank.get_fee_for_message(&message))
+            .ok_or_else(|| {
                 TransportError::IoError(io::Error::new(
                     io::ErrorKind::Other,
                     "Unable calculate fee",

@@ -486,6 +486,7 @@ mod tests {
     use solana_sdk::{
         account::{self, Account, AccountSharedData},
         client::SyncClient,
+        fee_calculator::FeeCalculator,
         genesis_config::create_genesis_config,
         hash::{hash, Hash},
         instruction::{AccountMeta, Instruction, InstructionError},
@@ -535,8 +536,11 @@ mod tests {
         RefCell::new(
             #[allow(deprecated)]
             recent_blockhashes_account::create_account_with_data_for_test(
-                vec![IterItem(0u64, &Hash::default(), 0); sysvar::recent_blockhashes::MAX_ENTRIES]
-                    .into_iter(),
+                vec![
+                    IterItem(0u64, &Hash::default(), &FeeCalculator::default());
+                    sysvar::recent_blockhashes::MAX_ENTRIES
+                ]
+                .into_iter(),
             ),
         )
     }
@@ -1584,8 +1588,11 @@ mod tests {
         let new_recent_blockhashes_account = RefCell::new(
             #[allow(deprecated)]
             solana_sdk::recent_blockhashes_account::create_account_with_data_for_test(
-                vec![IterItem(0u64, blockhash, 0); sysvar::recent_blockhashes::MAX_ENTRIES]
-                    .into_iter(),
+                vec![
+                    IterItem(0u64, blockhash, &FeeCalculator::default());
+                    sysvar::recent_blockhashes::MAX_ENTRIES
+                ]
+                .into_iter(),
             ),
         );
         let owner = Pubkey::default();

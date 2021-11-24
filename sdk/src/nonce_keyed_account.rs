@@ -76,11 +76,11 @@ impl<'a> NonceKeyedAccount for KeyedAccount<'a> {
                     ));
                 }
 
-                let new_data = nonce::state::Data::new(
-                    data.authority,
-                    recent_blockhash,
-                    invoke_context.get_lamports_per_signature(),
-                );
+                let new_data = nonce::state::Data {
+                    blockhash: recent_blockhash,
+                    fee_calculator: invoke_context.get_fee_calculator().clone(),
+                    ..data
+                };
                 self.set_state(&Versions::new_current(State::Initialized(new_data)))
             }
             _ => {
@@ -195,11 +195,11 @@ impl<'a> NonceKeyedAccount for KeyedAccount<'a> {
                     );
                     return Err(InstructionError::InsufficientFunds);
                 }
-                let data = nonce::state::Data::new(
-                    *nonce_authority,
-                    *invoke_context.get_blockhash(),
-                    invoke_context.get_lamports_per_signature(),
-                );
+                let data = nonce::state::Data {
+                    authority: *nonce_authority,
+                    blockhash: *invoke_context.get_blockhash(),
+                    fee_calculator: invoke_context.get_fee_calculator().clone(),
+                };
                 self.set_state(&Versions::new_current(State::Initialized(data)))
             }
             _ => {
@@ -234,11 +234,10 @@ impl<'a> NonceKeyedAccount for KeyedAccount<'a> {
                     );
                     return Err(InstructionError::MissingRequiredSignature);
                 }
-                let new_data = nonce::state::Data::new(
-                    *nonce_authority,
-                    data.blockhash,
-                    data.get_lamports_per_signature(),
-                );
+                let new_data = nonce::state::Data {
+                    authority: *nonce_authority,
+                    ..data
+                };
                 self.set_state(&Versions::new_current(State::Initialized(new_data)))
             }
             _ => {
@@ -273,6 +272,7 @@ mod test {
     use crate::{
         account::ReadableAccount,
         account_utils::State as AccountUtilsState,
+        fee_calculator::FeeCalculator,
         keyed_account::KeyedAccount,
         nonce::{self, State},
         nonce_account::verify_nonce_account,
@@ -281,18 +281,18 @@ mod test {
     };
     use solana_program::hash::{hash, Hash};
 
-    fn create_test_blockhash(seed: usize) -> (Hash, u64) {
+    fn create_test_blockhash(seed: usize) -> (Hash, FeeCalculator) {
         (
             hash(&bincode::serialize(&seed).unwrap()),
-            (seed as u64).saturating_mul(100),
+            FeeCalculator::new((seed as u64).saturating_mul(100)),
         )
     }
 
     fn create_invoke_context_with_blockhash<'a>(seed: usize) -> MockInvokeContext<'a> {
         let mut invoke_context = MockInvokeContext::new(&Pubkey::default(), vec![]);
-        let (blockhash, lamports_per_signature) = create_test_blockhash(seed);
+        let (blockhash, fee_calculator) = create_test_blockhash(seed);
         invoke_context.blockhash = blockhash;
-        invoke_context.lamports_per_signature = lamports_per_signature;
+        invoke_context.fee_calculator = fee_calculator;
         invoke_context
     }
 
@@ -328,11 +328,11 @@ mod test {
             let state = AccountUtilsState::<Versions>::state(keyed_account)
                 .unwrap()
                 .convert_to_current();
-            let data = nonce::state::Data::new(
-                data.authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+            let data = nonce::state::Data {
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+                ..data
+            };
             // First nonce instruction drives state from Uninitialized to Initialized
             assert_eq!(state, State::Initialized(data.clone()));
             let invoke_context = create_invoke_context_with_blockhash(63);
@@ -342,11 +342,11 @@ mod test {
             let state = AccountUtilsState::<Versions>::state(keyed_account)
                 .unwrap()
                 .convert_to_current();
-            let data = nonce::state::Data::new(
-                data.authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+            let data = nonce::state::Data {
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+                ..data
+            };
             // Second nonce instruction consumes and replaces stored nonce
             assert_eq!(state, State::Initialized(data.clone()));
             let invoke_context = create_invoke_context_with_blockhash(31);
@@ -356,11 +356,11 @@ mod test {
             let state = AccountUtilsState::<Versions>::state(keyed_account)
                 .unwrap()
                 .convert_to_current();
-            let data = nonce::state::Data::new(
-                data.authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+            let data = nonce::state::Data {
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+                ..data
+            };
             // Third nonce instruction for fun and profit
             assert_eq!(state, State::Initialized(data));
             with_test_keyed_account(42, false, |to_keyed| {
@@ -412,11 +412,11 @@ mod test {
             let state = AccountUtilsState::<Versions>::state(&nonce_account)
                 .unwrap()
                 .convert_to_current();
-            let data = nonce::state::Data::new(
+            let data = nonce::state::Data {
                 authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+            };
             assert_eq!(state, State::Initialized(data));
             let signers = HashSet::new();
             let invoke_context = create_invoke_context_with_blockhash(0);
@@ -690,11 +690,11 @@ mod test {
             let state = AccountUtilsState::<Versions>::state(nonce_keyed)
                 .unwrap()
                 .convert_to_current();
-            let data = nonce::state::Data::new(
+            let data = nonce::state::Data {
                 authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+            };
             assert_eq!(state, State::Initialized(data.clone()));
             with_test_keyed_account(42, false, |to_keyed| {
                 let withdraw_lamports = nonce_keyed.account.borrow().lamports() - min_lamports;
@@ -713,11 +713,11 @@ mod test {
                 let state = AccountUtilsState::<Versions>::state(nonce_keyed)
                     .unwrap()
                     .convert_to_current();
-                let data = nonce::state::Data::new(
-                    data.authority,
-                    *invoke_context.get_blockhash(),
-                    invoke_context.get_lamports_per_signature(),
-                );
+                let data = nonce::state::Data {
+                    blockhash: *invoke_context.get_blockhash(),
+                    fee_calculator: invoke_context.get_fee_calculator().clone(),
+                    ..data.clone()
+                };
                 assert_eq!(state, State::Initialized(data));
                 assert_eq!(
                     nonce_keyed.account.borrow().lamports(),
@@ -887,11 +887,11 @@ mod test {
             let invoke_context = create_invoke_context_with_blockhash(0);
             let authority = *keyed_account.unsigned_key();
             let result = keyed_account.initialize_nonce_account(&authority, &rent, &invoke_context);
-            let data = nonce::state::Data::new(
+            let data = nonce::state::Data {
                 authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+            };
             assert_eq!(result, Ok(()));
             let state = AccountUtilsState::<Versions>::state(keyed_account)
                 .unwrap()
@@ -952,11 +952,11 @@ mod test {
                 .initialize_nonce_account(&authorized, &rent, &invoke_context)
                 .unwrap();
             let authority = Pubkey::default();
-            let data = nonce::state::Data::new(
+            let data = nonce::state::Data {
                 authority,
-                *invoke_context.get_blockhash(),
-                invoke_context.get_lamports_per_signature(),
-            );
+                blockhash: *invoke_context.get_blockhash(),
+                fee_calculator: invoke_context.get_fee_calculator().clone(),
+            };
             let result = nonce_account.authorize_nonce_account(
                 &Pubkey::default(),
                 &signers,

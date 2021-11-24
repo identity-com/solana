@@ -30,10 +30,10 @@ pub struct Entry {
     pub fee_calculator: FeeCalculator,
 }
 impl Entry {
-    pub fn new(blockhash: &Hash, lamports_per_signature: u64) -> Self {
+    pub fn new(blockhash: &Hash, fee_calculator: &FeeCalculator) -> Self {
         Self {
             blockhash: *blockhash,
-            fee_calculator: FeeCalculator::new(lamports_per_signature),
+            fee_calculator: fee_calculator.clone(),
         }
     }
 }
@@ -43,7 +43,7 @@ impl Entry {
     note = "Please do not use, will no longer be available in the future"
 )]
 #[derive(Clone, Debug)]
-pub struct IterItem<'a>(pub u64, pub &'a Hash, pub u64);
+pub struct IterItem<'a>(pub u64, pub &'a Hash, pub &'a FeeCalculator);
 
 impl<'a> Eq for IterItem<'a> {}
 
@@ -149,13 +149,13 @@ pub fn create_test_recent_blockhashes(start: usize) -> RecentBlockhashes {
             (
                 i as u64,
                 hash(&bincode::serialize(&i).unwrap()),
-                i as u64 * 100,
+                FeeCalculator::new(i as u64 * 100),
             )
         })
         .collect();
     blocks
         .iter()
-        .map(|(i, hash, lamports_per_signature)| IterItem(*i, hash, *lamports_per_signature))
+        .map(|(i, hash, fee_calc)| IterItem(*i, hash, fee_calc))
         .collect()
 }
 
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_size_of() {
-        let entry = Entry::new(&Hash::default(), 0);
+        let entry = Entry::new(&Hash::default(), &FeeCalculator::default());
         assert_eq!(
             bincode::serialized_size(&RecentBlockhashes(vec![entry; MAX_ENTRIES])).unwrap()
                 as usize,
