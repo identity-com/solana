@@ -523,7 +523,6 @@ mod tests {
         super::*,
         rand::{seq::SliceRandom, Rng},
         solana_gossip::{
-            crds::GossipRoute,
             crds_value::{CrdsData, CrdsValue},
             deprecated::{
                 shuffle_peers_and_index, sorted_retransmit_peers_and_stakes,
@@ -590,10 +589,7 @@ mod tests {
             for node in nodes.iter().skip(1) {
                 let node = CrdsData::ContactInfo(node.clone());
                 let node = CrdsValue::new_unsigned(node);
-                assert_eq!(
-                    gossip_crds.insert(node, now, GossipRoute::LocalMessage),
-                    Ok(())
-                );
+                assert_eq!(gossip_crds.insert(node, now), Ok(()));
             }
         }
         (nodes, stakes, cluster_info)

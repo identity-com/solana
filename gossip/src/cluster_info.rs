@@ -18,7 +18,7 @@ use {
             submit_gossip_stats, Counter, GossipStats, ScopedTimer, TimedGuard,
         },
         contact_info::ContactInfo,
-        crds::{Crds, Cursor, GossipRoute},
+        crds::{Crds, Cursor},
         crds_gossip::CrdsGossip,
         crds_gossip_error::CrdsGossipError,
         crds_gossip_pull::{CrdsFilter, ProcessPullStats, CRDS_GOSSIP_PULL_CRDS_TIMEOUT_MS},
@@ -493,8 +493,7 @@ impl ClusterInfo {
     // TODO kill insert_info, only used by tests
     pub fn insert_info(&self, contact_info: ContactInfo) {
         let value = CrdsValue::new_signed(CrdsData::ContactInfo(contact_info), &self.keypair());
-        let mut gossip_crds = self.gossip.crds.write().unwrap();
-        let _ = gossip_crds.insert(value, timestamp(), GossipRoute::LocalMessage);
+        let _ = self.gossip.crds.write().unwrap().insert(value, timestamp());
     }
 
     pub fn set_entrypoint(&self, entrypoint: ContactInfo) {
@@ -609,7 +608,7 @@ impl ClusterInfo {
         let now = timestamp();
         let mut gossip_crds = self.gossip.crds.write().unwrap();
         for node in nodes {
-            if let Err(err) = gossip_crds.insert(node, now, GossipRoute::LocalMessage) {
+            if let Err(err) = gossip_crds.insert(node, now) {
                 warn!("crds insert failed {:?}", err);
             }
         }
@@ -909,7 +908,7 @@ impl ClusterInfo {
         let mut gossip_crds = self.gossip.crds.write().unwrap();
         let now = timestamp();
         for entry in entries {
-            if let Err(err) = gossip_crds.insert(entry, now, GossipRoute::LocalMessage) {
+            if let Err(err) = gossip_crds.insert(entry, now) {
                 error!("push_epoch_slots failed: {:?}", err);
             }
         }
@@ -984,7 +983,7 @@ impl ClusterInfo {
         let vote = CrdsData::Vote(vote_index, vote);
         let vote = CrdsValue::new_signed(vote, &self.keypair());
         let mut gossip_crds = self.gossip.crds.write().unwrap();
-        if let Err(err) = gossip_crds.insert(vote, now, GossipRoute::LocalMessage) {
+        if let Err(err) = gossip_crds.insert(vote, now) {
             error!("push_vote failed: {:?}", err);
         }
     }
@@ -1328,8 +1327,7 @@ impl ClusterInfo {
             CrdsData::ContactInfo(self.my_contact_info()),
             &self.keypair(),
         );
-        let mut gossip_crds = self.gossip.crds.write().unwrap();
-        let _ = gossip_crds.insert(value, timestamp(), GossipRoute::LocalMessage);
+        let _ = self.gossip.crds.write().unwrap().insert(value, timestamp());
     }
 
     // If the network entrypoint hasn't been discovered yet, add it to the crds table
@@ -1488,7 +1486,7 @@ impl ClusterInfo {
         let mut gossip_crds = self.gossip.crds.write().unwrap();
         let now = timestamp();
         for entry in pending_push_messages {
-            let _ = gossip_crds.insert(entry, now, GossipRoute::LocalMessage);
+            let _ = gossip_crds.insert(entry, now);
         }
     }
     fn new_push_requests(&self, stakes: &HashMap<Pubkey, u64>) -> Vec<(SocketAddr, Protocol)> {
@@ -3782,9 +3780,7 @@ mod tests {
         {
             let mut gossip_crds = cluster_info.gossip.crds.write().unwrap();
             for entry in entries {
-                assert!(gossip_crds
-                    .insert(entry, /*now=*/ 0, GossipRoute::LocalMessage)
-                    .is_ok());
+                assert!(gossip_crds.insert(entry, /*now=*/ 0).is_ok());
             }
         }
         // Should exclude other node's epoch-slot because of different
@@ -4081,7 +4077,7 @@ mod tests {
                 LowestSlot::new(other_node_pubkey, peer_lowest, timestamp()),
             ));
             let mut gossip_crds = cluster_info.gossip.crds.write().unwrap();
-            let _ = gossip_crds.insert(value, timestamp(), GossipRoute::LocalMessage);
+            let _ = gossip_crds.insert(value, timestamp());
         }
         // only half the visible peers should be eligible to serve this repair
         assert_eq!(cluster_info.repair_peers(5).len(), 5);

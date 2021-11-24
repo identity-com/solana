@@ -78,10 +78,7 @@ impl<'a, 'b> CrdsEntry<'a, 'b> for &'a SnapshotHashes {
 mod tests {
     use {
         super::*,
-        crate::{
-            crds::{Crds, GossipRoute},
-            crds_value::new_rand_timestamp,
-        },
+        crate::{crds::Crds, crds_value::new_rand_timestamp},
         rand::seq::SliceRandom,
         solana_sdk::signature::Keypair,
         std::collections::HashMap,
@@ -97,11 +94,7 @@ mod tests {
             let keypair = keypairs.choose(&mut rng).unwrap();
             let value = CrdsValue::new_rand(&mut rng, Some(keypair));
             let key = value.label();
-            if let Ok(()) = crds.insert(
-                value.clone(),
-                new_rand_timestamp(&mut rng),
-                GossipRoute::LocalMessage,
-            ) {
+            if let Ok(()) = crds.insert(value.clone(), new_rand_timestamp(&mut rng)) {
                 entries.insert(key, value);
             }
         }
