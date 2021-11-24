@@ -378,13 +378,10 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::accounts_index::{AccountsIndexConfig, BINS_FOR_TESTING};
+    use crate::accounts_index::BINS_FOR_TESTING;
 
     fn new_for_test<T: IndexValue>() -> InMemAccountsIndex<T> {
-        let holder = Arc::new(BucketMapHolder::new(
-            BINS_FOR_TESTING,
-            &Some(AccountsIndexConfig::default()),
-        ));
+        let holder = Arc::new(BucketMapHolder::new(BINS_FOR_TESTING));
         InMemAccountsIndex::new(&holder, BINS_FOR_TESTING)
     }
 
