@@ -516,8 +516,8 @@ impl StatusCacheRc {
     }
 }
 
-pub type TransactionCheckResult = (Result<()>, Option<NoncePartial>);
-pub type TransactionExecutionResult = (Result<()>, Option<NonceFull>);
+pub type TransactionCheckResult = (Result<()>, Option<NonceRollbackPartial>);
+pub type TransactionExecutionResult = (Result<()>, Option<NonceRollbackFull>);
 pub struct TransactionResults {
     pub fee_collection_results: Vec<Result<()>>,
     pub execution_results: Vec<TransactionExecutionResult>,
@@ -593,64 +593,73 @@ pub struct TransactionLogCollector {
     pub mentioned_address_map: HashMap<Pubkey, Vec<usize>>,
 }
 
-pub trait NonceInfo {
-    fn address(&self) -> &Pubkey;
-    fn account(&self) -> &AccountSharedData;
+pub trait NonceRollbackInfo {
+    fn nonce_address(&self) -> &Pubkey;
+    fn nonce_account(&self) -> &AccountSharedData;
     fn lamports_per_signature(&self) -> Option<u64>;
-    fn fee_payer_account(&self) -> Option<&AccountSharedData>;
+    fn fee_account(&self) -> Option<&AccountSharedData>;
 }
 
-/// Holds limited nonce info available during transaction checks
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct NoncePartial {
-    address: Pubkey,
-    account: AccountSharedData,
+pub struct NonceRollbackPartial {
+    nonce_address: Pubkey,
+    nonce_account: AccountSharedData,
 }
-impl NoncePartial {
-    pub fn new(address: Pubkey, account: AccountSharedData) -> Self {
-        Self { address, account }
+
+impl NonceRollbackPartial {
+    pub fn new(nonce_address: Pubkey, nonce_account: AccountSharedData) -> Self {
+        Self {
+            nonce_address,
+            nonce_account,
+        }
     }
 }
-impl NonceInfo for NoncePartial {
-    fn address(&self) -> &Pubkey {
-        &self.address
+
+impl NonceRollbackInfo for NonceRollbackPartial {
+    fn nonce_address(&self) -> &Pubkey {
+        &self.nonce_address
     }
-    fn account(&self) -> &AccountSharedData {
-        &self.account
+    fn nonce_account(&self) -> &AccountSharedData {
+        &self.nonce_account
     }
     fn lamports_per_signature(&self) -> Option<u64> {
-        nonce_account::lamports_per_signature_of(&self.account)
+        nonce_account::lamports_per_signature_of(&self.nonce_account)
     }
-    fn fee_payer_account(&self) -> Option<&AccountSharedData> {
+    fn fee_account(&self) -> Option<&AccountSharedData> {
         None
     }
 }
 
-/// Holds fee subtracted nonce info
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct NonceFull {
-    address: Pubkey,
-    account: AccountSharedData,
-    fee_payer_account: Option<AccountSharedData>,
+pub struct NonceRollbackFull {
+    nonce_address: Pubkey,
+    nonce_account: AccountSharedData,
+    fee_account: Option<AccountSharedData>,
 }
-impl NonceFull {
+
+impl NonceRollbackFull {
+    #[cfg(test)]
     pub fn new(
-        address: Pubkey,
-        account: AccountSharedData,
-        fee_payer_account: Option<AccountSharedData>,
+        nonce_address: Pubkey,
+        nonce_account: AccountSharedData,
+        fee_account: Option<AccountSharedData>,
     ) -> Self {
         Self {
-            address,
-            account,
-            fee_payer_account,
+            nonce_address,
+            nonce_account,
+            fee_account,
         }
     }
     pub fn from_partial(
-        partial: NoncePartial,
+        partial: NonceRollbackPartial,
         message: &SanitizedMessage,
         accounts: &[(Pubkey, AccountSharedData)],
         rent_debits: &RentDebits,
     ) -> Result<Self> {
+        let NonceRollbackPartial {
+            nonce_address,
+            nonce_account,
+        } = partial;
         let fee_payer = (0..message.account_keys_len()).find_map(|i| {
             if let Some((k, a)) = &accounts.get(i) {
                 if message.is_non_loader_key(i) {
@@ -659,43 +668,45 @@ impl NonceFull {
             }
             None
         });
+        if let Some((fee_pubkey, fee_account)) = fee_payer {
+            let mut fee_account = fee_account.clone();
+            let fee_payer_rent_debit = rent_debits.get_account_rent_debit(fee_pubkey);
+            fee_account.set_lamports(fee_account.lamports().saturating_add(fee_payer_rent_debit));
 
-        if let Some((fee_payer_address, fee_payer_account)) = fee_payer {
-            let mut fee_payer_account = fee_payer_account.clone();
-            let rent_debit = rent_debits.get_account_rent_debit(fee_payer_address);
-            fee_payer_account.set_lamports(fee_payer_account.lamports().saturating_add(rent_debit));
-
-            let nonce_address = *partial.address();
-            if *fee_payer_address == nonce_address {
+            if *fee_pubkey == nonce_address {
                 Ok(Self {
-                    address: nonce_address,
-                    account: fee_payer_account,
-                    fee_payer_account: None,
+                    nonce_address,
+                    nonce_account: fee_account,
+                    fee_account: None,
                 })
             } else {
                 Ok(Self {
-                    address: nonce_address,
-                    account: partial.account().clone(),
-                    fee_payer_account: Some(fee_payer_account),
+                    nonce_address,
+                    nonce_account,
+                    fee_account: Some(fee_account),
                 })
             }
         } else {
             Err(TransactionError::AccountNotFound)
         }
     }
-}
-impl NonceInfo for NonceFull {
-    fn address(&self) -> &Pubkey {
-        &self.address
+    pub fn lamports_per_signature(&self) -> Option<u64> {
+        nonce_account::lamports_per_signature_of(&self.nonce_account)
     }
-    fn account(&self) -> &AccountSharedData {
-        &self.account
+}
+
+impl NonceRollbackInfo for NonceRollbackFull {
+    fn nonce_address(&self) -> &Pubkey {
+        &self.nonce_address
+    }
+    fn nonce_account(&self) -> &AccountSharedData {
+        &self.nonce_account
     }
     fn lamports_per_signature(&self) -> Option<u64> {
-        nonce_account::lamports_per_signature_of(&self.account)
+        nonce_account::lamports_per_signature_of(&self.nonce_account)
     }
-    fn fee_payer_account(&self) -> Option<&AccountSharedData> {
-        self.fee_payer_account.as_ref()
+    fn fee_account(&self) -> Option<&AccountSharedData> {
+        self.fee_account.as_ref()
     }
 }
 
@@ -3239,7 +3250,7 @@ impl Bank {
     ) {
         let mut status_cache = self.src.status_cache.write().unwrap();
         assert_eq!(sanitized_txs.len(), res.len());
-        for (tx, (res, _nonce)) in sanitized_txs.iter().zip(res) {
+        for (tx, (res, _nonce_rollback)) in sanitized_txs.iter().zip(res) {
             if Self::can_commit(res) {
                 // Add the message hash to the status cache to ensure that this message
                 // won't be processed again with a different signature.
@@ -3467,8 +3478,8 @@ impl Bank {
                     let hash_age = hash_queue.check_hash_age(recent_blockhash, max_age);
                     if hash_age == Some(true) {
                         (Ok(()), None)
-                    } else if let Some((address, account)) = self.check_transaction_for_nonce(tx) {
-                        (Ok(()), Some(NoncePartial::new(address, account)))
+                    } else if let Some((pubkey, acc)) = self.check_tx_durable_nonce(tx) {
+                        (Ok(()), Some(NonceRollbackPartial::new(pubkey, acc)))
                     } else if hash_age == Some(false) {
                         error_counters.blockhash_too_old += 1;
                         (Err(TransactionError::BlockhashNotFound), None)
@@ -3482,7 +3493,7 @@ impl Bank {
             .collect()
     }
 
-    fn is_transaction_already_processed(
+    fn is_tx_already_processed(
         &self,
         sanitized_tx: &SanitizedTransaction,
         status_cache: &StatusCache<Result<()>>,
@@ -3504,15 +3515,13 @@ impl Bank {
         sanitized_txs
             .iter()
             .zip(lock_results)
-            .map(|(sanitized_tx, (lock_result, nonce))| {
-                if lock_result.is_ok()
-                    && self.is_transaction_already_processed(sanitized_tx, &rcache)
-                {
+            .map(|(sanitized_tx, (lock_res, nonce_rollback))| {
+                if lock_res.is_ok() && self.is_tx_already_processed(sanitized_tx, &rcache) {
                     error_counters.already_processed += 1;
                     return (Err(TransactionError::AlreadyProcessed), None);
                 }
 
-                (lock_result, nonce)
+                (lock_res, nonce_rollback)
             })
             .collect()
     }
@@ -3524,16 +3533,16 @@ impl Bank {
             .check_hash_age(hash, max_age)
     }
 
-    pub fn check_transaction_for_nonce(
+    pub fn check_tx_durable_nonce(
         &self,
         tx: &SanitizedTransaction,
     ) -> Option<(Pubkey, AccountSharedData)> {
         tx.get_durable_nonce(self.feature_set.is_active(&nonce_must_be_writable::id()))
-            .and_then(|nonce_address| {
-                self.get_account_with_fixed_root(nonce_address)
-                    .map(|nonce_account| (*nonce_address, nonce_account))
+            .and_then(|nonce_pubkey| {
+                self.get_account_with_fixed_root(nonce_pubkey)
+                    .map(|acc| (*nonce_pubkey, acc))
             })
-            .filter(|(_, nonce_account)| {
+            .filter(|(_pubkey, nonce_account)| {
                 nonce_account::verify_nonce_account(nonce_account, tx.message().recent_blockhash())
             })
     }
@@ -3814,12 +3823,12 @@ impl Bank {
             .iter_mut()
             .zip(sanitized_txs.iter())
             .map(|(accs, tx)| match accs {
-                (Err(e), _nonce) => {
+                (Err(e), _nonce_rollback) => {
                     transaction_log_messages.push(None);
                     inner_instructions.push(None);
                     (Err(e.clone()), None)
                 }
-                (Ok(loaded_transaction), nonce) => {
+                (Ok(loaded_transaction), nonce_rollback) => {
                     let feature_set = self.feature_set.clone();
                     signature_count += u64::from(tx.message().header().num_required_signatures);
 
@@ -3916,17 +3925,16 @@ impl Bank {
                         inner_instructions.push(None);
                     }
 
-                    let nonce =
+                    let nonce_rollback =
                         if let Err(TransactionError::InstructionError(_, _)) = &process_result {
                             error_counters.instruction_error += 1;
-                            nonce.clone()
+                            nonce_rollback.clone()
                         } else if process_result.is_err() {
                             None
                         } else {
-                            nonce.clone()
+                            nonce_rollback.clone()
                         };
-
-                    (process_result, nonce)
+                    (process_result, nonce_rollback)
                 }
             })
             .collect();
@@ -3949,7 +3957,7 @@ impl Bank {
         let transaction_log_collector_config =
             self.transaction_log_collector_config.read().unwrap();
 
-        for (i, ((r, _nonce), tx)) in executed.iter().zip(sanitized_txs).enumerate() {
+        for (i, ((r, _nonce_rollback), tx)) in executed.iter().zip(sanitized_txs).enumerate() {
             if let Some(debug_keys) = &self.transaction_debug_keys {
                 for key in tx.message().account_keys_iter() {
                     if debug_keys.contains(key) {
@@ -4050,18 +4058,18 @@ impl Bank {
     fn filter_program_errors_and_collect_fee(
         &self,
         txs: &[SanitizedTransaction],
-        execution_results: &[TransactionExecutionResult],
+        executed: &[TransactionExecutionResult],
     ) -> Vec<Result<()>> {
         let hash_queue = self.blockhash_queue.read().unwrap();
         let mut fees = 0;
 
         let results = txs
             .iter()
-            .zip(execution_results)
-            .map(|(tx, (execution_result, nonce))| {
-                let (lamports_per_signature, is_nonce) = nonce
+            .zip(executed)
+            .map(|(tx, (res, nonce_rollback))| {
+                let (lamports_per_signature, is_durable_nonce) = nonce_rollback
                     .as_ref()
-                    .map(|nonce| nonce.lamports_per_signature())
+                    .map(|nonce_rollback| nonce_rollback.lamports_per_signature())
                     .map(|maybe_lamports_per_signature| (maybe_lamports_per_signature, true))
                     .unwrap_or_else(|| {
                         (
@@ -4074,16 +4082,15 @@ impl Bank {
                     lamports_per_signature.ok_or(TransactionError::BlockhashNotFound)?;
                 let fee = Self::calculate_fee(tx.message(), lamports_per_signature);
 
-                match *execution_result {
+                match *res {
                     Err(TransactionError::InstructionError(_, _)) => {
-                        // In case of instruction error, even though no accounts
-                        // were stored we still need to charge the payer the
-                        // fee.
+                        // credit the transaction fee even in case of InstructionError
+                        // necessary to withdraw from account[0] here because previous
+                        // work of doing so (in accounts.load()) is ignored by store_account()
                         //
-                        //...except nonce accounts, which already have their
-                        // post-load, fee deducted, pre-execute account state
-                        // stored
-                        if !is_nonce {
+                        // ...except nonce accounts, which will have their post-load,
+                        // pre-execute account state stored
+                        if !is_durable_nonce {
                             self.withdraw(tx.message().fee_payer(), fee)?;
                         }
                         fees += fee;
@@ -4093,7 +4100,7 @@ impl Bank {
                         fees += fee;
                         Ok(())
                     }
-                    _ => execution_result.clone(),
+                    _ => res.clone(),
                 }
             })
             .collect();
@@ -4106,7 +4113,7 @@ impl Bank {
         &self,
         sanitized_txs: &[SanitizedTransaction],
         loaded_txs: &mut [TransactionLoadResult],
-        executed_results: &[TransactionExecutionResult],
+        executed: &[TransactionExecutionResult],
         tx_count: u64,
         signature_count: u64,
         timings: &mut ExecuteTimings,
@@ -4132,9 +4139,9 @@ impl Bank {
                 .fetch_max(processed_tx_count, Relaxed);
         }
 
-        if executed_results
+        if executed
             .iter()
-            .any(|(res, _)| Self::can_commit(res))
+            .any(|(res, _nonce_rollback)| Self::can_commit(res))
         {
             self.is_delta.store(true, Relaxed);
         }
@@ -4143,7 +4150,7 @@ impl Bank {
         self.rc.accounts.store_cached(
             self.slot(),
             sanitized_txs,
-            executed_results,
+            executed,
             loaded_txs,
             &self.rent_collector,
             &self.last_blockhash(),
@@ -4152,10 +4159,10 @@ impl Bank {
             self.merge_nonce_error_into_system_error(),
             self.demote_program_write_locks(),
         );
-        let rent_debits = self.collect_rent(executed_results, loaded_txs);
+        let rent_debits = self.collect_rent(executed, loaded_txs);
 
         let mut update_stakes_cache_time = Measure::start("update_stakes_cache_time");
-        self.update_stakes_cache(sanitized_txs, executed_results, loaded_txs);
+        self.update_stakes_cache(sanitized_txs, executed, loaded_txs);
         update_stakes_cache_time.stop();
 
         // once committed there is no way to unroll
@@ -4169,13 +4176,13 @@ impl Bank {
         timings.update_stakes_cache_us = timings
             .update_stakes_cache_us
             .saturating_add(update_stakes_cache_time.as_us());
-        self.update_transaction_statuses(sanitized_txs, executed_results);
+        self.update_transaction_statuses(sanitized_txs, executed);
         let fee_collection_results =
-            self.filter_program_errors_and_collect_fee(sanitized_txs, executed_results);
+            self.filter_program_errors_and_collect_fee(sanitized_txs, executed);
 
         TransactionResults {
             fee_collection_results,
-            execution_results: executed_results.to_vec(),
+            execution_results: executed.to_vec(),
             rent_debits,
         }
     }
@@ -4344,8 +4351,8 @@ impl Bank {
     ) -> Vec<RentDebits> {
         let mut collected_rent: u64 = 0;
         let mut rent_debits: Vec<RentDebits> = Vec::with_capacity(loaded_txs.len());
-        for (i, (raccs, _nonce)) in loaded_txs.iter_mut().enumerate() {
-            let (res, _nonce) = &res[i];
+        for (i, (raccs, _nonce_rollback)) in loaded_txs.iter_mut().enumerate() {
+            let (res, _nonce_rollback) = &res[i];
             if res.is_err() || raccs.is_err() {
                 rent_debits.push(RentDebits::default());
                 continue;
@@ -5750,8 +5757,8 @@ impl Bank {
         res: &[TransactionExecutionResult],
         loaded_txs: &[TransactionLoadResult],
     ) {
-        for (i, ((raccs, _load_nonce), tx)) in loaded_txs.iter().zip(txs).enumerate() {
-            let (res, _res_nonce) = &res[i];
+        for (i, ((raccs, _load_nonce_rollback), tx)) in loaded_txs.iter().zip(txs).enumerate() {
+            let (res, _res_nonce_rollback) = &res[i];
             if res.is_err() || raccs.is_err() {
                 continue;
             }
@@ -6504,7 +6511,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_nonce_info() {
+    fn test_nonce_rollback_info() {
         let lamports_per_signature = 42;
 
         let nonce_authority = keypair_from_seed(&[0; 32]).unwrap();
@@ -6546,15 +6553,16 @@ pub(crate) mod tests {
             system_instruction::transfer(&from_address, &to_address, 42),
         ];
 
-        // NoncePartial create + NonceInfo impl
-        let partial = NoncePartial::new(nonce_address, rent_collected_nonce_account.clone());
-        assert_eq!(*partial.address(), nonce_address);
-        assert_eq!(*partial.account(), rent_collected_nonce_account);
+        // NonceRollbackPartial create + NonceRollbackInfo impl
+        let partial =
+            NonceRollbackPartial::new(nonce_address, rent_collected_nonce_account.clone());
+        assert_eq!(*partial.nonce_address(), nonce_address);
+        assert_eq!(*partial.nonce_account(), rent_collected_nonce_account);
         assert_eq!(
             partial.lamports_per_signature(),
             Some(lamports_per_signature)
         );
-        assert_eq!(partial.fee_payer_account(), None);
+        assert_eq!(partial.fee_account(), None);
 
         // Add rent debits to ensure the rollback captures accounts without rent fees
         let mut rent_debits = RentDebits::default();
@@ -6569,7 +6577,7 @@ pub(crate) mod tests {
             rent_collected_nonce_account.lamports(),
         );
 
-        // NonceFull create + NonceInfo impl
+        // NonceRollbackFull create + NonceRollbackInfo impl
         {
             let message = new_sanitized_message(&instructions, Some(&from_address));
             let accounts = [
@@ -6588,13 +6596,14 @@ pub(crate) mod tests {
                 ),
             ];
 
-            let full = NonceFull::from_partial(partial.clone(), &message, &accounts, &rent_debits)
-                .unwrap();
-            assert_eq!(*full.address(), nonce_address);
-            assert_eq!(*full.account(), rent_collected_nonce_account);
+            let full =
+                NonceRollbackFull::from_partial(partial.clone(), &message, &accounts, &rent_debits)
+                    .unwrap();
+            assert_eq!(*full.nonce_address(), nonce_address);
+            assert_eq!(*full.nonce_account(), rent_collected_nonce_account);
             assert_eq!(full.lamports_per_signature(), Some(lamports_per_signature));
             assert_eq!(
-                full.fee_payer_account(),
+                full.fee_account(),
                 Some(&from_account),
                 "rent debit should be refunded in captured fee account"
             );
@@ -6619,19 +6628,20 @@ pub(crate) mod tests {
                 ),
             ];
 
-            let full = NonceFull::from_partial(partial.clone(), &message, &accounts, &rent_debits)
-                .unwrap();
-            assert_eq!(*full.address(), nonce_address);
-            assert_eq!(*full.account(), nonce_account);
+            let full =
+                NonceRollbackFull::from_partial(partial.clone(), &message, &accounts, &rent_debits)
+                    .unwrap();
+            assert_eq!(*full.nonce_address(), nonce_address);
+            assert_eq!(*full.nonce_account(), nonce_account);
             assert_eq!(full.lamports_per_signature(), Some(lamports_per_signature));
-            assert_eq!(full.fee_payer_account(), None);
+            assert_eq!(full.fee_account(), None);
         }
 
-        // NonceFull create, fee-payer not in account_keys fails
+        // NonceRollbackFull create, fee-payer not in account_keys fails
         {
             let message = new_sanitized_message(&instructions, Some(&nonce_address));
             assert_eq!(
-                NonceFull::from_partial(partial, &message, &[], &RentDebits::default())
+                NonceRollbackFull::from_partial(partial, &message, &[], &RentDebits::default())
                     .unwrap_err(),
                 TransactionError::AccountNotFound,
             );
@@ -10926,7 +10936,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn get_nonce_blockhash(bank: &Bank, nonce_pubkey: &Pubkey) -> Option<Hash> {
+    fn get_nonce_account(bank: &Bank, nonce_pubkey: &Pubkey) -> Option<Hash> {
         bank.get_account(nonce_pubkey).and_then(|acc| {
             let state =
                 StateMut::<nonce::state::Versions>::state(&acc).map(|v| v.convert_to_current());
@@ -11002,13 +11012,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_check_transaction_for_nonce_ok() {
+    fn test_check_tx_durable_nonce_ok() {
         let (bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let custodian_pubkey = custodian_keypair.pubkey();
         let nonce_pubkey = nonce_keypair.pubkey();
 
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         let tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
@@ -11020,19 +11030,19 @@ pub(crate) mod tests {
         );
         let nonce_account = bank.get_account(&nonce_pubkey).unwrap();
         assert_eq!(
-            bank.check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx)),
+            bank.check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx)),
             Some((nonce_pubkey, nonce_account))
         );
     }
 
     #[test]
-    fn test_check_transaction_for_nonce_not_nonce_fail() {
+    fn test_check_tx_durable_nonce_not_durable_nonce_fail() {
         let (bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let custodian_pubkey = custodian_keypair.pubkey();
         let nonce_pubkey = nonce_keypair.pubkey();
 
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         let tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::transfer(&custodian_pubkey, &nonce_pubkey, 100_000),
@@ -11043,18 +11053,18 @@ pub(crate) mod tests {
             nonce_hash,
         );
         assert!(bank
-            .check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx,))
+            .check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx,))
             .is_none());
     }
 
     #[test]
-    fn test_check_transaction_for_nonce_missing_ix_pubkey_fail() {
+    fn test_check_tx_durable_nonce_missing_ix_pubkey_fail() {
         let (bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let custodian_pubkey = custodian_keypair.pubkey();
         let nonce_pubkey = nonce_keypair.pubkey();
 
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         let mut tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
@@ -11066,12 +11076,12 @@ pub(crate) mod tests {
         );
         tx.message.instructions[0].accounts.clear();
         assert!(bank
-            .check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
+            .check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
             .is_none());
     }
 
     #[test]
-    fn test_check_transaction_for_nonce_nonce_acc_does_not_exist_fail() {
+    fn test_check_tx_durable_nonce_nonce_acc_does_not_exist_fail() {
         let (bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let custodian_pubkey = custodian_keypair.pubkey();
@@ -11079,7 +11089,7 @@ pub(crate) mod tests {
         let missing_keypair = Keypair::new();
         let missing_pubkey = missing_keypair.pubkey();
 
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         let tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&missing_pubkey, &nonce_pubkey),
@@ -11090,12 +11100,12 @@ pub(crate) mod tests {
             nonce_hash,
         );
         assert!(bank
-            .check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
+            .check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
             .is_none());
     }
 
     #[test]
-    fn test_check_transaction_for_nonce_bad_tx_hash_fail() {
+    fn test_check_tx_durable_nonce_bad_tx_hash_fail() {
         let (bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let custodian_pubkey = custodian_keypair.pubkey();
@@ -11111,7 +11121,7 @@ pub(crate) mod tests {
             Hash::default(),
         );
         assert!(bank
-            .check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
+            .check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx))
             .is_none());
     }
 
@@ -11143,7 +11153,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_nonce_transaction() {
+    fn test_durable_nonce_transaction() {
         let (mut bank, _mint_keypair, custodian_keypair, nonce_keypair) =
             setup_nonce_with_bank(10_000_000, |_| {}, 5_000_000, 250_000, None).unwrap();
         let alice_keypair = Keypair::new();
@@ -11155,7 +11165,7 @@ pub(crate) mod tests {
         assert_eq!(bank.get_balance(&nonce_pubkey), 250_000);
 
         /* Grab the hash stored in the nonce account */
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
 
         /* Kick nonce hash off the blockhash_queue */
         for _ in 0..MAX_RECENT_BLOCKHASHES + 1 {
@@ -11163,7 +11173,7 @@ pub(crate) mod tests {
             bank = Arc::new(new_from_parent(&bank));
         }
 
-        /* Expect a non-Nonce transfer to fail */
+        /* Expect a non-Durable Nonce transfer to fail */
         assert_eq!(
             bank.process_transaction(&system_transaction::transfer(
                 &custodian_keypair,
@@ -11176,8 +11186,8 @@ pub(crate) mod tests {
         /* Check fee not charged */
         assert_eq!(bank.get_balance(&custodian_pubkey), 4_750_000);
 
-        /* Nonce transfer */
-        let nonce_tx = Transaction::new_signed_with_payer(
+        /* Durable Nonce transfer */
+        let durable_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
                 system_instruction::transfer(&custodian_pubkey, &alice_pubkey, 100_000),
@@ -11186,10 +11196,10 @@ pub(crate) mod tests {
             &[&custodian_keypair, &nonce_keypair],
             nonce_hash,
         );
-        assert_eq!(bank.process_transaction(&nonce_tx), Ok(()));
+        assert_eq!(bank.process_transaction(&durable_tx), Ok(()));
 
         /* Check balances */
-        let mut recent_message = nonce_tx.message;
+        let mut recent_message = durable_tx.message;
         recent_message.recent_blockhash = bank.last_blockhash();
         let mut expected_balance = 4_650_000
             - bank
@@ -11200,11 +11210,11 @@ pub(crate) mod tests {
         assert_eq!(bank.get_balance(&alice_pubkey), 100_000);
 
         /* Confirm stored nonce has advanced */
-        let new_nonce = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let new_nonce = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         assert_ne!(nonce_hash, new_nonce);
 
-        /* Nonce re-use fails */
-        let nonce_tx = Transaction::new_signed_with_payer(
+        /* Durable Nonce re-use fails */
+        let durable_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
                 system_instruction::transfer(&custodian_pubkey, &alice_pubkey, 100_000),
@@ -11214,15 +11224,12 @@ pub(crate) mod tests {
             nonce_hash,
         );
         assert_eq!(
-            bank.process_transaction(&nonce_tx),
+            bank.process_transaction(&durable_tx),
             Err(TransactionError::BlockhashNotFound)
         );
         /* Check fee not charged and nonce not advanced */
         assert_eq!(bank.get_balance(&custodian_pubkey), expected_balance);
-        assert_eq!(
-            new_nonce,
-            get_nonce_blockhash(&bank, &nonce_pubkey).unwrap()
-        );
+        assert_eq!(new_nonce, get_nonce_account(&bank, &nonce_pubkey).unwrap());
 
         let nonce_hash = new_nonce;
 
@@ -11232,7 +11239,7 @@ pub(crate) mod tests {
             bank = Arc::new(new_from_parent(&bank));
         }
 
-        let nonce_tx = Transaction::new_signed_with_payer(
+        let durable_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
                 system_instruction::transfer(&custodian_pubkey, &alice_pubkey, 100_000_000),
@@ -11242,28 +11249,25 @@ pub(crate) mod tests {
             nonce_hash,
         );
         assert_eq!(
-            bank.process_transaction(&nonce_tx),
+            bank.process_transaction(&durable_tx),
             Err(TransactionError::InstructionError(
                 1,
                 system_instruction::SystemError::ResultWithNegativeLamports.into(),
             ))
         );
         /* Check fee charged and nonce has advanced */
-        let mut recent_message = nonce_tx.message.clone();
+        let mut recent_message = durable_tx.message.clone();
         recent_message.recent_blockhash = bank.last_blockhash();
         expected_balance -= bank
             .get_fee_for_message(&SanitizedMessage::try_from(recent_message).unwrap())
             .unwrap();
         assert_eq!(bank.get_balance(&custodian_pubkey), expected_balance);
-        assert_ne!(
-            nonce_hash,
-            get_nonce_blockhash(&bank, &nonce_pubkey).unwrap()
-        );
+        assert_ne!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());
         /* Confirm replaying a TX that failed with InstructionError::* now
          * fails with TransactionError::BlockhashNotFound
          */
         assert_eq!(
-            bank.process_transaction(&nonce_tx),
+            bank.process_transaction(&durable_tx),
             Err(TransactionError::BlockhashNotFound),
         );
     }
@@ -11286,7 +11290,7 @@ pub(crate) mod tests {
         debug!("nonce: {}", nonce_pubkey);
         debug!("nonce account: {:?}", bank.get_account(&nonce_pubkey));
         debug!("cust: {:?}", custodian_account);
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
 
         Arc::get_mut(&mut bank)
             .unwrap()
@@ -11296,7 +11300,7 @@ pub(crate) mod tests {
             bank = Arc::new(new_from_parent(&bank));
         }
 
-        let nonce_tx = Transaction::new_signed_with_payer(
+        let durable_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &bad_nonce_authority),
                 system_instruction::transfer(&custodian_pubkey, &alice_pubkey, 42),
@@ -11305,17 +11309,17 @@ pub(crate) mod tests {
             &[&custodian_keypair, &bad_nonce_authority_keypair],
             nonce_hash,
         );
-        debug!("{:?}", nonce_tx);
+        debug!("{:?}", durable_tx);
         let initial_custodian_balance = custodian_account.lamports();
         assert_eq!(
-            bank.process_transaction(&nonce_tx),
+            bank.process_transaction(&durable_tx),
             Err(TransactionError::InstructionError(
                 0,
                 InstructionError::MissingRequiredSignature,
             ))
         );
         /* Check fee charged and nonce has *not* advanced */
-        let mut recent_message = nonce_tx.message;
+        let mut recent_message = durable_tx.message;
         recent_message.recent_blockhash = bank.last_blockhash();
         assert_eq!(
             bank.get_balance(&custodian_pubkey),
@@ -11324,10 +11328,7 @@ pub(crate) mod tests {
                     .get_fee_for_message(&recent_message.try_into().unwrap())
                     .unwrap()
         );
-        assert_eq!(
-            nonce_hash,
-            get_nonce_blockhash(&bank, &nonce_pubkey).unwrap()
-        );
+        assert_eq!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());
     }
 
     #[test]
@@ -11347,14 +11348,14 @@ pub(crate) mod tests {
         debug!("nonce: {}", nonce_pubkey);
         debug!("nonce account: {:?}", bank.get_account(&nonce_pubkey));
         debug!("cust: {:?}", bank.get_account(&custodian_pubkey));
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
 
         for _ in 0..MAX_RECENT_BLOCKHASHES + 1 {
             goto_end_of_slot(Arc::get_mut(&mut bank).unwrap());
             bank = Arc::new(new_from_parent(&bank));
         }
 
-        let nonce_tx = Transaction::new_signed_with_payer(
+        let durable_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
                 system_instruction::transfer(&custodian_pubkey, &alice_pubkey, 100_000_000),
@@ -11363,16 +11364,16 @@ pub(crate) mod tests {
             &[&custodian_keypair, &nonce_keypair],
             nonce_hash,
         );
-        debug!("{:?}", nonce_tx);
+        debug!("{:?}", durable_tx);
         assert_eq!(
-            bank.process_transaction(&nonce_tx),
+            bank.process_transaction(&durable_tx),
             Err(TransactionError::InstructionError(
                 1,
                 system_instruction::SystemError::ResultWithNegativeLamports.into(),
             ))
         );
         /* Check fee charged and nonce has advanced */
-        let mut recent_message = nonce_tx.message;
+        let mut recent_message = durable_tx.message;
         recent_message.recent_blockhash = bank.last_blockhash();
         assert_eq!(
             bank.get_balance(&nonce_pubkey),
@@ -11381,10 +11382,7 @@ pub(crate) mod tests {
                     .get_fee_for_message(&recent_message.try_into().unwrap())
                     .unwrap()
         );
-        assert_ne!(
-            nonce_hash,
-            get_nonce_blockhash(&bank, &nonce_pubkey).unwrap()
-        );
+        assert_ne!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());
     }
 
     #[test]
@@ -11420,7 +11418,7 @@ pub(crate) mod tests {
             bank = Arc::new(new_from_parent(&bank));
         }
 
-        // Nonce transfer
+        // Durable Nonce transfer
         let nonce_tx = Transaction::new_signed_with_payer(
             &[
                 system_instruction::advance_nonce_account(&nonce_pubkey, &nonce_pubkey),
@@ -11465,7 +11463,7 @@ pub(crate) mod tests {
         let custodian_pubkey = custodian_keypair.pubkey();
         let nonce_pubkey = nonce_keypair.pubkey();
 
-        let nonce_hash = get_nonce_blockhash(&bank, &nonce_pubkey).unwrap();
+        let nonce_hash = get_nonce_account(&bank, &nonce_pubkey).unwrap();
         let account_metas = vec![
             AccountMeta::new_readonly(nonce_pubkey, false),
             #[allow(deprecated)]
@@ -11502,7 +11500,7 @@ pub(crate) mod tests {
             Err(TransactionError::BlockhashNotFound)
         );
         assert_eq!(
-            bank.check_transaction_for_nonce(&SanitizedTransaction::from_transaction_for_tests(tx)),
+            bank.check_tx_durable_nonce(&SanitizedTransaction::from_transaction_for_tests(tx)),
             None
         );
     }
