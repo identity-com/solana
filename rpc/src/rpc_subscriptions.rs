@@ -499,7 +499,7 @@ impl RpcSubscriptions {
             .unwrap();
 
         let control = SubscriptionControl::new(
-            config.max_active_subscriptions,
+            PubSubConfig::default().max_active_subscriptions,
             notification_sender.clone(),
             broadcast_sender,
         );
