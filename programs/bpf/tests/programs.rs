@@ -227,8 +227,6 @@ fn run_program(
     for i in 0..2 {
         let mut parameter_bytes = parameter_bytes.clone();
         {
-            invoke_context.set_return_data(None);
-
             let mut vm = create_vm(
                 &loader_id,
                 executable.as_ref(),
@@ -434,7 +432,6 @@ fn test_program_bpf_sanity() {
             ("noop++", true),
             ("panic", false),
             ("relative_call", true),
-            ("return_data", true),
             ("sanity", true),
             ("sanity++", true),
             ("secp256k1_recover", true),
@@ -759,7 +756,6 @@ fn test_program_bpf_invoke_sanity() {
     const TEST_WRITABLE_DEESCALATION_WRITABLE: u8 = 14;
     const TEST_NESTED_INVOKE_TOO_DEEP: u8 = 15;
     const TEST_EXECUTABLE_LAMPORTS: u8 = 16;
-    const TEST_RETURN_DATA_TOO_LARGE: u8 = 18;
 
     #[allow(dead_code)]
     #[derive(Debug)]
@@ -882,7 +878,6 @@ fn test_program_bpf_invoke_sanity() {
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
-                invoked_program_id.clone(),
             ],
             Languages::Rust => vec![
                 system_program::id(),
@@ -907,7 +902,6 @@ fn test_program_bpf_invoke_sanity() {
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
                 system_program::id(),
-                invoked_program_id.clone(),
             ],
         };
         assert_eq!(invoked_programs.len(), expected_invoked_programs.len());
@@ -1034,12 +1028,6 @@ fn test_program_bpf_invoke_sanity() {
             TEST_EXECUTABLE_LAMPORTS,
             TransactionError::InstructionError(0, InstructionError::ExecutableLamportChange),
             &[invoke_program_id.clone()],
-        );
-
-        do_invoke_failure_test_local(
-            TEST_RETURN_DATA_TOO_LARGE,
-            TransactionError::InstructionError(0, InstructionError::ProgramFailedToComplete),
-            &[],
         );
 
         // Check resulting state
@@ -1324,7 +1312,6 @@ fn assert_instruction_count() {
             ("noop", 5),
             ("noop++", 5),
             ("relative_call", 10),
-            ("return_data", 480),
             ("sanity", 169),
             ("sanity++", 168),
             ("secp256k1_recover", 359),
