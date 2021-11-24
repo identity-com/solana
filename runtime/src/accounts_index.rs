@@ -45,7 +45,6 @@ pub const ACCOUNTS_INDEX_CONFIG_FOR_TESTING: AccountsIndexConfig = AccountsIndex
     drives: None,
     index_limit_mb: Some(1),
     ages_to_stay_in_cache: None,
-    scan_results_limit_bytes: None,
 };
 pub const ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS: AccountsIndexConfig = AccountsIndexConfig {
     bins: Some(BINS_FOR_BENCHMARKS),
@@ -53,7 +52,6 @@ pub const ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS: AccountsIndexConfig = AccountsIn
     drives: None,
     index_limit_mb: None,
     ages_to_stay_in_cache: None,
-    scan_results_limit_bytes: None,
 };
 pub type ScanResult<T> = Result<T, ScanError>;
 pub type SlotList<T> = Vec<(Slot, T)>;
@@ -64,11 +62,11 @@ pub type AccountMap<V> = Arc<InMemAccountsIndex<V>>;
 #[derive(Debug, Default)]
 pub struct ScanConfig {
     /// checked by the scan. When true, abort scan.
-    pub abort: Option<Arc<AtomicBool>>,
+    abort: Option<Arc<AtomicBool>>,
 
     /// true to allow return of all matching items and allow them to be unsorted.
     /// This is more efficient.
-    pub collect_all_unsorted: bool,
+    collect_all_unsorted: bool,
 }
 
 impl ScanConfig {
@@ -76,12 +74,6 @@ impl ScanConfig {
         Self {
             collect_all_unsorted,
             ..ScanConfig::default()
-        }
-    }
-
-    pub fn abort(&self) {
-        if let Some(abort) = self.abort.as_ref() {
-            abort.store(true, Ordering::Relaxed)
         }
     }
 
@@ -112,8 +104,6 @@ pub trait IndexValue:
 pub enum ScanError {
     #[error("Node detected it replayed bad version of slot {slot:?} with id {bank_id:?}, thus the scan on said slot was aborted")]
     SlotRemoved { slot: Slot, bank_id: BankId },
-    #[error("scan aborted: {0}")]
-    Aborted(String),
 }
 
 enum ScanTypes<R: RangeBounds<Pubkey>> {
@@ -148,7 +138,6 @@ pub struct AccountsIndexConfig {
     pub drives: Option<Vec<PathBuf>>,
     pub index_limit_mb: Option<usize>,
     pub ages_to_stay_in_cache: Option<Age>,
-    pub scan_results_limit_bytes: Option<usize>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -813,9 +802,6 @@ pub struct AccountsIndex<T: IndexValue> {
     pub removed_bank_ids: Mutex<HashSet<BankId>>,
 
     storage: AccountsIndexStorage<T>,
-
-    /// when a scan's accumulated data exceeds this limit, abort the scan
-    pub scan_results_limit_bytes: Option<usize>,
 }
 
 impl<T: IndexValue> AccountsIndex<T> {
@@ -824,9 +810,6 @@ impl<T: IndexValue> AccountsIndex<T> {
     }
 
     pub fn new(config: Option<AccountsIndexConfig>) -> Self {
-        let scan_results_limit_bytes = config
-            .as_ref()
-            .and_then(|config| config.scan_results_limit_bytes);
         let (account_maps, bin_calculator, storage) = Self::allocate_accounts_index(config);
         Self {
             account_maps,
@@ -844,7 +827,6 @@ impl<T: IndexValue> AccountsIndex<T> {
             ongoing_scan_roots: RwLock::<BTreeMap<Slot, u64>>::default(),
             removed_bank_ids: Mutex::<HashSet<BankId>>::default(),
             storage,
-            scan_results_limit_bytes,
         }
     }
 
@@ -883,7 +865,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         scan_bank_id: BankId,
         func: F,
         scan_type: ScanTypes<R>,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) -> Result<(), ScanError>
     where
         F: FnMut(&Pubkey, (&T, Slot)),
@@ -1103,7 +1085,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         ancestors: &Ancestors,
         func: F,
         range: Option<R>,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) where
         F: FnMut(&Pubkey, (&T, Slot)),
         R: RangeBounds<Pubkey> + std::fmt::Debug,
@@ -1121,7 +1103,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         mut func: F,
         range: Option<R>,
         max_root: Option<Slot>,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) where
         F: FnMut(&Pubkey, (&T, Slot)),
         R: RangeBounds<Pubkey> + std::fmt::Debug,
@@ -1184,7 +1166,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         index: &SecondaryIndex<SecondaryIndexEntryType>,
         index_key: &Pubkey,
         max_root: Option<Slot>,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) where
         F: FnMut(&Pubkey, (&T, Slot)),
     {
@@ -1254,7 +1236,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         ancestors: &Ancestors,
         scan_bank_id: BankId,
         func: F,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) -> Result<(), ScanError>
     where
         F: FnMut(&Pubkey, (&T, Slot)),
@@ -1275,7 +1257,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         metric_name: &'static str,
         ancestors: &Ancestors,
         func: F,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) where
         F: FnMut(&Pubkey, (&T, Slot)),
     {
@@ -1294,7 +1276,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         metric_name: &'static str,
         ancestors: &Ancestors,
         range: R,
-        config: &ScanConfig,
+        config: ScanConfig,
         func: F,
     ) where
         F: FnMut(&Pubkey, (&T, Slot)),
@@ -1311,7 +1293,7 @@ impl<T: IndexValue> AccountsIndex<T> {
         scan_bank_id: BankId,
         index_key: IndexKey,
         func: F,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) -> Result<(), ScanError>
     where
         F: FnMut(&Pubkey, (&T, Slot)),
@@ -2711,7 +2693,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
     }
@@ -2789,7 +2771,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
     }
@@ -2828,7 +2810,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
@@ -2838,7 +2820,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 1);
 
@@ -2857,7 +2839,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
@@ -2867,7 +2849,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 1);
     }
@@ -3054,7 +3036,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
@@ -3063,7 +3045,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 1);
     }
@@ -3093,7 +3075,7 @@ pub mod tests {
             "",
             &ancestors,
             |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 0);
     }
@@ -3130,7 +3112,7 @@ pub mod tests {
                 };
                 num += 1
             },
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 1);
         assert!(found_key);
@@ -3203,7 +3185,7 @@ pub mod tests {
             "",
             &ancestors,
             pubkey_range,
-            &ScanConfig::default(),
+            ScanConfig::default(),
             |pubkey, _index| {
                 scanned_keys.insert(*pubkey);
             },
@@ -3282,7 +3264,7 @@ pub mod tests {
             |pubkey, _index| {
                 scanned_keys.insert(*pubkey);
             },
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(scanned_keys.len(), num_pubkeys);
     }
@@ -3588,7 +3570,7 @@ pub mod tests {
                 };
                 num += 1
             },
-            &ScanConfig::default(),
+            ScanConfig::default(),
         );
         assert_eq!(num, 1);
         assert!(found_key);

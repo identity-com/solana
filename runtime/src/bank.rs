@@ -1504,14 +1504,6 @@ impl Bank {
         new
     }
 
-    pub fn byte_limit_for_scans(&self) -> Option<usize> {
-        self.rc
-            .accounts
-            .accounts_db
-            .accounts_index
-            .scan_results_limit_bytes
-    }
-
     /// Returns all ancestors excluding self.slot.
     pub(crate) fn proper_ancestors(&self) -> impl Iterator<Item = Slot> + '_ {
         self.ancestors
@@ -5249,7 +5241,7 @@ impl Bank {
     pub fn get_program_accounts(
         &self,
         program_id: &Pubkey,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc
             .accounts
@@ -5260,7 +5252,7 @@ impl Bank {
         &self,
         program_id: &Pubkey,
         filter: F,
-        config: &ScanConfig,
+        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc.accounts.load_by_program_with_filter(
             &self.ancestors,
@@ -5275,8 +5267,7 @@ impl Bank {
         &self,
         index_key: &IndexKey,
         filter: F,
-        config: &ScanConfig,
-        byte_limit_for_scan: Option<usize>,
+        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc.accounts.load_by_index_key_with_filter(
             &self.ancestors,
@@ -5284,7 +5275,6 @@ impl Bank {
             index_key,
             filter,
             config,
-            byte_limit_for_scan,
         )
     }
 
@@ -10495,13 +10485,13 @@ pub(crate) mod tests {
         bank1.squash();
         assert_eq!(
             bank0
-                .get_program_accounts(&program_id, &ScanConfig::default(),)
+                .get_program_accounts(&program_id, ScanConfig::default(),)
                 .unwrap(),
             vec![(pubkey0, account0.clone())]
         );
         assert_eq!(
             bank1
-                .get_program_accounts(&program_id, &ScanConfig::default(),)
+                .get_program_accounts(&program_id, ScanConfig::default(),)
                 .unwrap(),
             vec![(pubkey0, account0)]
         );
@@ -10523,14 +10513,14 @@ pub(crate) mod tests {
         bank3.squash();
         assert_eq!(
             bank1
-                .get_program_accounts(&program_id, &ScanConfig::default(),)
+                .get_program_accounts(&program_id, ScanConfig::default(),)
                 .unwrap()
                 .len(),
             2
         );
         assert_eq!(
             bank3
-                .get_program_accounts(&program_id, &ScanConfig::default(),)
+                .get_program_accounts(&program_id, ScanConfig::default(),)
                 .unwrap()
                 .len(),
             2
@@ -10558,8 +10548,7 @@ pub(crate) mod tests {
             .get_filtered_indexed_accounts(
                 &IndexKey::ProgramId(program_id),
                 |_| true,
-                &ScanConfig::default(),
-                None,
+                ScanConfig::default(),
             )
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
@@ -10576,8 +10565,7 @@ pub(crate) mod tests {
             .get_filtered_indexed_accounts(
                 &IndexKey::ProgramId(program_id),
                 |_| true,
-                &ScanConfig::default(),
-                None,
+                ScanConfig::default(),
             )
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
@@ -10586,8 +10574,7 @@ pub(crate) mod tests {
             .get_filtered_indexed_accounts(
                 &IndexKey::ProgramId(another_program_id),
                 |_| true,
-                &ScanConfig::default(),
-                None,
+                ScanConfig::default(),
             )
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
@@ -10598,8 +10585,7 @@ pub(crate) mod tests {
             .get_filtered_indexed_accounts(
                 &IndexKey::ProgramId(program_id),
                 |account| account.owner() == &program_id,
-                &ScanConfig::default(),
-                None,
+                ScanConfig::default(),
             )
             .unwrap();
         assert!(indexed_accounts.is_empty());
@@ -10607,8 +10593,7 @@ pub(crate) mod tests {
             .get_filtered_indexed_accounts(
                 &IndexKey::ProgramId(another_program_id),
                 |account| account.owner() == &another_program_id,
-                &ScanConfig::default(),
-                None,
+                ScanConfig::default(),
             )
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
@@ -13243,7 +13228,7 @@ pub(crate) mod tests {
             Bank::new_from_parent(&bank1, &Pubkey::default(), bank1.first_slot_in_next_epoch());
         assert_eq!(
             bank2
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default(),)
+                .get_program_accounts(&sysvar::id(), ScanConfig::default(),)
                 .unwrap()
                 .len(),
             8
@@ -13255,7 +13240,7 @@ pub(crate) mod tests {
         // no sysvar should be deleted due to rent
         assert_eq!(
             bank2
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default(),)
+                .get_program_accounts(&sysvar::id(), ScanConfig::default(),)
                 .unwrap()
                 .len(),
             8
@@ -13293,7 +13278,7 @@ pub(crate) mod tests {
 
         {
             let sysvars = bank1
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default())
+                .get_program_accounts(&sysvar::id(), ScanConfig::default())
                 .unwrap();
             assert_eq!(sysvars.len(), 8);
             assert!(sysvars
@@ -13330,7 +13315,7 @@ pub(crate) mod tests {
 
         {
             let sysvars = bank2
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default())
+                .get_program_accounts(&sysvar::id(), ScanConfig::default())
                 .unwrap();
             assert_eq!(sysvars.len(), 8);
             assert!(sysvars
@@ -13409,7 +13394,7 @@ pub(crate) mod tests {
         );
         {
             let sysvars = bank1
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default())
+                .get_program_accounts(&sysvar::id(), ScanConfig::default())
                 .unwrap();
             assert_eq!(sysvars.len(), 9);
             assert!(sysvars
@@ -13446,7 +13431,7 @@ pub(crate) mod tests {
         );
         {
             let sysvars = bank2
-                .get_program_accounts(&sysvar::id(), &ScanConfig::default())
+                .get_program_accounts(&sysvar::id(), ScanConfig::default())
                 .unwrap();
             assert_eq!(sysvars.len(), 9);
             assert!(sysvars
@@ -13817,7 +13802,7 @@ pub(crate) mod tests {
                         {
                             info!("scanning program accounts for slot {}", bank_to_scan.slot());
                             let accounts_result = bank_to_scan
-                                .get_program_accounts(&program_id, &ScanConfig::default());
+                                .get_program_accounts(&program_id, ScanConfig::default());
                             let _ = scan_finished_sender.send(bank_to_scan.bank_id());
                             num_banks_scanned.fetch_add(1, Relaxed);
                             match (&acceptable_scan_results, accounts_result.is_err()) {
