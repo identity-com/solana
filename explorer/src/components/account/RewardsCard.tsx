@@ -8,7 +8,6 @@ import { Slot } from "components/common/Slot";
 import { lamportsToSolString } from "utils";
 import { useAccountInfo } from "providers/accounts";
 import BN from "bn.js";
-import { Epoch } from "components/common/Epoch";
 
 const MAX_EPOCH = new BN(2).pow(new BN(64)).sub(new BN(1));
 
@@ -53,9 +52,7 @@ export function RewardsCard({ pubkey }: { pubkey: PublicKey }) {
 
     return (
       <tr key={reward.epoch}>
-        <td>
-          <Epoch epoch={reward.epoch} link />
-        </td>
+        <td>{reward.epoch}</td>
         <td>
           <Slot slot={reward.effectiveSlot} link />
         </td>

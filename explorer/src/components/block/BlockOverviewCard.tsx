@@ -13,7 +13,6 @@ import { clusterPath } from "utils/url";
 import { BlockProgramsCard } from "./BlockProgramsCard";
 import { BlockAccountsCard } from "./BlockAccountsCard";
 import { displayTimestamp, displayTimestampUtc } from "utils/date";
-import { Epoch } from "components/common/Epoch";
 
 export function BlockOverviewCard({
   slot,
@@ -24,7 +23,7 @@ export function BlockOverviewCard({
 }) {
   const confirmedBlock = useBlock(slot);
   const fetchBlock = useFetchBlock();
-  const { epochSchedule, status } = useCluster();
+  const { status } = useCluster();
   const refresh = () => fetchBlock(slot);
 
   // Fetch block on load
@@ -45,7 +44,6 @@ export function BlockOverviewCard({
 
   const block = confirmedBlock.data.block;
   const committedTxs = block.transactions.filter((tx) => tx.meta?.err === null);
-  const epoch = epochSchedule?.getEpoch(slot);
 
   return (
     <>
@@ -68,7 +66,7 @@ export function BlockOverviewCard({
               <span>{block.blockhash}</span>
             </td>
           </tr>
-          {block.blockTime ? (
+          {block.blockTime && (
             <>
               <tr>
                 <td>Timestamp (Local)</td>
@@ -87,11 +85,6 @@ export function BlockOverviewCard({
                 </td>
               </tr>
             </>
-          ) : (
-            <tr>
-              <td className="w-100">Timestamp</td>
-              <td className="text-lg-right">Unavailable</td>
-            </tr>
           )}
           <tr>
             <td className="w-100">Parent Slot</td>
@@ -99,14 +92,6 @@ export function BlockOverviewCard({
               <Slot slot={block.parentSlot} link />
             </td>
           </tr>
-          {epoch !== undefined && (
-            <tr>
-              <td className="w-100">Epoch</td>
-              <td className="text-lg-right text-monospace">
-                <Epoch epoch={epoch} link />
-              </td>
-            </tr>
-          )}
           <tr>
             <td className="w-100">Parent Blockhash</td>
             <td className="text-lg-right text-monospace">

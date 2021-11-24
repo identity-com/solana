@@ -1,6 +1,5 @@
 import React from "react";
 import { SolBalance } from "utils";
-import { Epoch } from "components/common/Epoch";
 import {
   SysvarAccount,
   StakeHistoryInfo,
@@ -56,9 +55,7 @@ export function StakeHistoryCard({
 const renderAccountRow = (entry: StakeHistoryEntry, index: number) => {
   return (
     <tr key={index}>
-      <td className="w-1 text-monospace">
-        <Epoch epoch={entry.epoch} link />
-      </td>
+      <td className="w-1 text-monospace">{entry.epoch}</td>
       <td className="text-monospace">
         <SolBalance lamports={entry.stakeHistory.effective} />
       </td>

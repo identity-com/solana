@@ -41,7 +41,7 @@ export function Copyable({
     return null;
   }
 
-  let message: string | undefined;
+  let message = "";
   let textColor = "";
   if (state === "copied") {
     message = "Copied";
@@ -56,7 +56,7 @@ export function Copyable({
       <>
         <span className="font-size-tiny mr-2">
           <span className={textColor}>
-            {message !== undefined && <span className="mr-2">{message}</span>}
+            <span className="mr-2">{message}</span>
             <CopyIcon />
           </span>
         </span>

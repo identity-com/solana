@@ -13,7 +13,6 @@ import { ClusterStatsPage } from "pages/ClusterStatsPage";
 import { SupplyPage } from "pages/SupplyPage";
 import { TransactionDetailsPage } from "pages/TransactionDetailsPage";
 import { BlockDetailsPage } from "pages/BlockDetailsPage";
-import { EpochDetailsPage } from "pages/EpochDetailsPage";
 
 const ADDRESS_ALIASES = ["account", "accounts", "addresses"];
 const TX_ALIASES = ["txs", "txn", "txns", "transaction", "transactions"];
@@ -52,11 +51,6 @@ function App() {
             render={({ match }) => (
               <TransactionDetailsPage signature={match.params.signature} />
             )}
-          />
-          <Route
-            exact
-            path={"/epoch/:id"}
-            render={({ match }) => <EpochDetailsPage epoch={match.params.id} />}
           />
           <Route
             exact
