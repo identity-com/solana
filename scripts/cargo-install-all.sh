@@ -77,7 +77,6 @@ if [[ $CI_OS_NAME = windows ]]; then
     solana-install-init
     solana-keygen
     solana-stake-accounts
-    solana-test-validator
     solana-tokens
   )
 else
