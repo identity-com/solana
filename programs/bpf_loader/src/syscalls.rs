@@ -23,7 +23,7 @@ use solana_sdk::{
     feature_set::{
         blake3_syscall_enabled, close_upgradeable_program_accounts, disable_fees_sysvar,
         enforce_aligned_host_addrs, libsecp256k1_0_5_upgrade_enabled, mem_overlap_fix,
-        secp256k1_recover_syscall_enabled,
+        memory_ops_syscalls, secp256k1_recover_syscall_enabled,
     },
     hash::{Hasher, HASH_BYTES},
     ic_msg,
@@ -158,10 +158,12 @@ pub fn register_syscalls(
     syscall_registry
         .register_syscall_by_name(b"sol_get_rent_sysvar", SyscallGetRentSysvar::call)?;
 
-    syscall_registry.register_syscall_by_name(b"sol_memcpy_", SyscallMemcpy::call)?;
-    syscall_registry.register_syscall_by_name(b"sol_memmove_", SyscallMemmove::call)?;
-    syscall_registry.register_syscall_by_name(b"sol_memcmp_", SyscallMemcmp::call)?;
-    syscall_registry.register_syscall_by_name(b"sol_memset_", SyscallMemset::call)?;
+    if invoke_context.is_feature_active(&memory_ops_syscalls::id()) {
+        syscall_registry.register_syscall_by_name(b"sol_memcpy_", SyscallMemcpy::call)?;
+        syscall_registry.register_syscall_by_name(b"sol_memmove_", SyscallMemmove::call)?;
+        syscall_registry.register_syscall_by_name(b"sol_memcmp_", SyscallMemcmp::call)?;
+        syscall_registry.register_syscall_by_name(b"sol_memset_", SyscallMemset::call)?;
+    }
 
     // Cross-program invocation syscalls
     syscall_registry
@@ -288,40 +290,43 @@ pub fn bind_syscall_context_objects<'a>(
         None,
     )?;
 
-    vm.bind_syscall_context_object(
+    bind_feature_gated_syscall_context_object!(
+        vm,
+        invoke_context.is_feature_active(&memory_ops_syscalls::id()),
         Box::new(SyscallMemcpy {
             cost: invoke_context.get_compute_budget().cpi_bytes_per_unit,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
             mem_overlap_fix: invoke_context.is_feature_active(&mem_overlap_fix::id()),
         }),
-        None,
-    )?;
-    vm.bind_syscall_context_object(
+    );
+    bind_feature_gated_syscall_context_object!(
+        vm,
+        invoke_context.is_feature_active(&memory_ops_syscalls::id()),
         Box::new(SyscallMemmove {
             cost: invoke_context.get_compute_budget().cpi_bytes_per_unit,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
         }),
-        None,
-    )?;
-    vm.bind_syscall_context_object(
+    );
+    bind_feature_gated_syscall_context_object!(
+        vm,
+        invoke_context.is_feature_active(&memory_ops_syscalls::id()),
         Box::new(SyscallMemcmp {
             cost: invoke_context.get_compute_budget().cpi_bytes_per_unit,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
         }),
-        None,
-    )?;
-    vm.bind_syscall_context_object(
+    );
+    bind_feature_gated_syscall_context_object!(
+        vm,
+        invoke_context.is_feature_active(&memory_ops_syscalls::id()),
         Box::new(SyscallMemset {
             cost: invoke_context.get_compute_budget().cpi_bytes_per_unit,
             compute_meter: invoke_context.get_compute_meter(),
             loader_id,
         }),
-        None,
-    )?;
-
+    );
     bind_feature_gated_syscall_context_object!(
         vm,
         invoke_context.is_feature_active(&blake3_syscall_enabled::id()),

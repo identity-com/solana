@@ -247,7 +247,9 @@ impl Accounts {
                         payer_index = Some(i);
                     }
 
-                    if solana_sdk::sysvar::instructions::check_id(key) {
+                    if solana_sdk::sysvar::instructions::check_id(key)
+                        && feature_set.is_active(&feature_set::instructions_sysvar_enabled::id())
+                    {
                         if message.is_writable(i) {
                             return Err(TransactionError::InvalidAccountIndex);
                         }
