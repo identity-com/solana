@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 use {
     serde::{Deserialize, Serialize},
     solana_sdk::{
@@ -8,7 +6,6 @@ use {
         commitment_config::CommitmentLevel,
         fee_calculator::FeeCalculator,
         hash::Hash,
-        message::Message,
         pubkey::Pubkey,
         signature::Signature,
         transaction::{self, Transaction, TransactionError},
@@ -33,10 +30,6 @@ pub struct TransactionStatus {
 #[tarpc::service]
 pub trait Banks {
     async fn send_transaction_with_context(transaction: Transaction);
-    #[deprecated(
-        since = "1.9.0",
-        note = "Please use `get_fee_for_message_with_commitment_and_context` instead"
-    )]
     async fn get_fees_with_commitment_and_context(
         commitment: CommitmentLevel,
     ) -> (FeeCalculator, Hash, Slot);
@@ -52,10 +45,6 @@ pub trait Banks {
         address: Pubkey,
         commitment: CommitmentLevel,
     ) -> Option<Account>;
-    async fn get_fee_for_message_with_commitment_and_context(
-        commitment: CommitmentLevel,
-        message: Message,
-    ) -> Option<u64>;
 }
 
 #[cfg(test)]
