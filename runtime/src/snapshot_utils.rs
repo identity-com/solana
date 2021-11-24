@@ -1152,7 +1152,7 @@ where
 }
 
 /// Get a list of the incremental snapshot archives in a directory
-pub fn get_incremental_snapshot_archives<P>(
+fn get_incremental_snapshot_archives<P>(
     snapshot_archives_dir: P,
 ) -> Vec<IncrementalSnapshotArchiveInfo>
 where
