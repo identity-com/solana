@@ -928,7 +928,6 @@ mod tests {
             snapshot_test_config.snapshot_config.clone(),
         );
 
-        let tmpdir = TempDir::new().unwrap();
         let accounts_hash_verifier = AccountsHashVerifier::new(
             accounts_package_receiver,
             Some(pending_snapshot_package),
@@ -938,7 +937,6 @@ mod tests {
             false,
             0,
             Some(snapshot_test_config.snapshot_config.clone()),
-            tmpdir.path().to_path_buf(),
         );
 
         let accounts_background_service = AccountsBackgroundService::new(
