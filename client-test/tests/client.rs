@@ -227,16 +227,15 @@ fn test_program_subscription() {
         ..RpcProgramAccountsConfig::default()
     });
 
-    let program_id = Pubkey::new_unique();
     let (mut client, receiver) = PubsubClient::program_subscribe(
         &format!("ws://0.0.0.0:{}/", pubsub_addr.port()),
-        &program_id,
+        &system_program::id(),
         config,
     )
     .unwrap();
 
-    // Create new program account at bob's address
-    let tx = system_transaction::create_account(&alice, &bob, blockhash, 100, 0, &program_id);
+    // Transfer 100 lamports from alice to bob
+    let tx = system_transaction::transfer(&alice, &bob.pubkey(), 100, blockhash);
     bank_forks
         .write()
         .unwrap()
@@ -279,7 +278,11 @@ fn test_program_subscription() {
     client.shutdown().unwrap();
     pubsub_service.close().unwrap();
 
-    assert_eq!(notifications.len(), 1);
+    // system_transaction::transfer() will generate 7 program account notifications for system_program
+    // since accounts need to be created
+    assert_eq!(notifications.len(), 7);
+
+    assert!(pubkeys.contains(&alice.pubkey().to_string()));
     assert!(pubkeys.contains(&bob.pubkey().to_string()));
 }
 
