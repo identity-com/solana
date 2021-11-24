@@ -12,7 +12,6 @@ import { NavLink } from "react-router-dom";
 import { clusterPath } from "utils/url";
 import { BlockProgramsCard } from "./BlockProgramsCard";
 import { BlockAccountsCard } from "./BlockAccountsCard";
-import { displayTimestamp, displayTimestampUtc } from "utils/date";
 
 export function BlockOverviewCard({
   slot,
@@ -66,26 +65,6 @@ export function BlockOverviewCard({
               <span>{block.blockhash}</span>
             </td>
           </tr>
-          {block.blockTime && (
-            <>
-              <tr>
-                <td>Timestamp (Local)</td>
-                <td className="text-lg-right">
-                  <span className="text-monospace">
-                    {displayTimestamp(block.blockTime * 1000, true)}
-                  </span>
-                </td>
-              </tr>
-              <tr>
-                <td>Timestamp (UTC)</td>
-                <td className="text-lg-right">
-                  <span className="text-monospace">
-                    {displayTimestampUtc(block.blockTime * 1000, true)}
-                  </span>
-                </td>
-              </tr>
-            </>
-          )}
           <tr>
             <td className="w-100">Parent Slot</td>
             <td className="text-lg-right text-monospace">
