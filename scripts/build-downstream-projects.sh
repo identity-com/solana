@@ -87,7 +87,6 @@ serum_dex() {
 [workspace]
 exclude = [
     "crank",
-    "permissioned",
 ]
 EOF
     $cargo build
