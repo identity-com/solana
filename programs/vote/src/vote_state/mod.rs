@@ -710,8 +710,9 @@ pub fn initialize_account<S: std::hash::BuildHasher>(
     vote_init: &VoteInit,
     signers: &HashSet<Pubkey, S>,
     clock: &Clock,
+    check_data_size: bool,
 ) -> Result<(), InstructionError> {
-    if vote_account.data_len()? != VoteState::size_of() {
+    if check_data_size && vote_account.data_len()? != VoteState::size_of() {
         return Err(InstructionError::InvalidAccountData);
     }
     let versioned = State::<VoteStateVersions>::state(vote_account)?;
@@ -841,6 +842,7 @@ mod tests {
             },
             &signers,
             &Clock::default(),
+            true,
         );
         assert_eq!(res, Err(InstructionError::MissingRequiredSignature));
 
@@ -858,6 +860,7 @@ mod tests {
             },
             &signers,
             &Clock::default(),
+            true,
         );
         assert_eq!(res, Ok(()));
 
@@ -872,6 +875,7 @@ mod tests {
             },
             &signers,
             &Clock::default(),
+            true,
         );
         assert_eq!(res, Err(InstructionError::AccountAlreadyInitialized));
 
@@ -889,6 +893,7 @@ mod tests {
             },
             &signers,
             &Clock::default(),
+            true,
         );
         assert_eq!(res, Err(InstructionError::InvalidAccountData));
     }
