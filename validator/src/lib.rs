@@ -17,7 +17,6 @@ use {
 };
 
 pub mod admin_rpc_service;
-pub mod bootstrap;
 pub mod dashboard;
 
 #[cfg(unix)]
