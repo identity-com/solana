@@ -1817,8 +1817,16 @@ pub fn main() {
             "max_genesis_archive_unpacked_size",
             u64
         ),
-        incremental_snapshot_fetch: matches.is_present("incremental_snapshots")
-            && !matches.is_present("no_incremental_snapshot_fetch"),
+        incremental_snapshots: if matches.is_present("incremental_snapshots") {
+            bootstrap::ConfigState::Enabled
+        } else {
+            bootstrap::ConfigState::Disabled
+        },
+        incremental_snapshot_fetch: if matches.is_present("no_incremental_snapshot_fetch") {
+            bootstrap::ConfigState::Disabled
+        } else {
+            bootstrap::ConfigState::Enabled
+        },
     };
 
     let private_rpc = matches.is_present("private_rpc");
