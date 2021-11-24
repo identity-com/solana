@@ -6685,6 +6685,7 @@ pub(crate) mod tests {
     }
 
     fn mock_process_instruction(
+        _program_id: &Pubkey,
         first_instruction_account: usize,
         data: &[u8],
         invoke_context: &mut dyn InvokeContext,
@@ -10332,11 +10333,11 @@ pub(crate) mod tests {
             Pubkey::new(&[42u8; 32])
         }
         fn mock_vote_processor(
+            program_id: &Pubkey,
             _first_instruction_account: usize,
             _instruction_data: &[u8],
-            invoke_context: &mut dyn InvokeContext,
+            _invoke_context: &mut dyn InvokeContext,
         ) -> std::result::Result<(), InstructionError> {
-            let program_id = invoke_context.get_caller()?;
             if mock_vote_program_id() != *program_id {
                 return Err(InstructionError::IncorrectProgramId);
             }
@@ -10390,6 +10391,7 @@ pub(crate) mod tests {
         let mut bank = Bank::new_for_tests(&genesis_config);
 
         fn mock_vote_processor(
+            _pubkey: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -10440,6 +10442,7 @@ pub(crate) mod tests {
         let mut bank = Bank::new_for_tests(&genesis_config);
 
         fn mock_ix_processor(
+            _pubkey: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -11281,6 +11284,7 @@ pub(crate) mod tests {
         let mut bank = Bank::new_for_tests(&genesis_config);
 
         fn mock_process_instruction(
+            _program_id: &Pubkey,
             first_instruction_account: usize,
             data: &[u8],
             invoke_context: &mut dyn InvokeContext,
@@ -11341,6 +11345,7 @@ pub(crate) mod tests {
 
         #[allow(clippy::unnecessary_wraps)]
         fn mock_process_instruction(
+            _program_id: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -11527,6 +11532,7 @@ pub(crate) mod tests {
 
     #[allow(clippy::unnecessary_wraps)]
     fn mock_ok_vote_processor(
+        _pubkey: &Pubkey,
         _first_instruction_account: usize,
         _data: &[u8],
         _invoke_context: &mut dyn InvokeContext,
@@ -11777,6 +11783,7 @@ pub(crate) mod tests {
     #[test]
     fn test_same_program_id_uses_unqiue_executable_accounts() {
         fn nested_processor(
+            _program_id: &Pubkey,
             first_instruction_account: usize,
             _data: &[u8],
             invoke_context: &mut dyn InvokeContext,
@@ -12148,6 +12155,7 @@ pub(crate) mod tests {
 
         #[allow(clippy::unnecessary_wraps)]
         fn mock_ix_processor(
+            _pubkey: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -12197,6 +12205,7 @@ pub(crate) mod tests {
 
         #[allow(clippy::unnecessary_wraps)]
         fn mock_ix_processor(
+            _pubkey: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _context: &mut dyn InvokeContext,
@@ -12584,6 +12593,7 @@ pub(crate) mod tests {
     impl Executor for TestExecutor {
         fn execute(
             &self,
+            _program_id: &Pubkey,
             _first_instruction_account: usize,
             _instruction_data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -13087,6 +13097,7 @@ pub(crate) mod tests {
         // intentionally create bogus native programs
         #[allow(clippy::unnecessary_wraps)]
         fn mock_process_instruction(
+            _program_id: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             _invoke_context: &mut dyn InvokeContext,
@@ -14584,6 +14595,7 @@ pub(crate) mod tests {
         let mut bank = Bank::new_for_tests(&genesis_config);
 
         fn mock_ix_processor(
+            _pubkey: &Pubkey,
             first_instruction_account: usize,
             _data: &[u8],
             invoke_context: &mut dyn InvokeContext,
@@ -14793,6 +14805,7 @@ pub(crate) mod tests {
         let mut bank = Bank::new_for_tests(&genesis_config);
 
         fn mock_ix_processor(
+            _pubkey: &Pubkey,
             _first_instruction_account: usize,
             _data: &[u8],
             invoke_context: &mut dyn InvokeContext,
