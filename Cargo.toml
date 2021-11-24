@@ -63,7 +63,6 @@ members = [
     "stake-accounts",
     "sys-tuner",
     "tokens",
-    "transaction-dos",
     "transaction-status",
     "account-decoder",
     "upload-perf",
