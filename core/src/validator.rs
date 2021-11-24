@@ -1617,22 +1617,21 @@ fn get_stake_percent_in_gossip(bank: &Bank, cluster_info: &ClusterInfo, log: boo
         }
     }
 
-    let online_stake_percentage = (online_stake as f64 / total_activated_stake as f64) * 100.;
     if log {
         info!(
-            "{:.3}% of active stake visible in gossip",
-            online_stake_percentage
+            "{}% of active stake visible in gossip",
+            online_stake * 100 / total_activated_stake
         );
 
         if !wrong_shred_nodes.is_empty() {
             info!(
-                "{:.3}% of active stake has the wrong shred version in gossip",
-                (wrong_shred_stake as f64 / total_activated_stake as f64) * 100.,
+                "{}% of active stake has the wrong shred version in gossip",
+                wrong_shred_stake * 100 / total_activated_stake,
             );
             for (stake, identity) in wrong_shred_nodes {
                 info!(
-                    "    {:.3}% - {}",
-                    (stake as f64 / total_activated_stake as f64) * 100.,
+                    "    {}% - {}",
+                    stake * 100 / total_activated_stake,
                     identity
                 );
             }
@@ -1640,20 +1639,20 @@ fn get_stake_percent_in_gossip(bank: &Bank, cluster_info: &ClusterInfo, log: boo
 
         if !offline_nodes.is_empty() {
             info!(
-                "{:.3}% of active stake is not visible in gossip",
-                (offline_stake as f64 / total_activated_stake as f64) * 100.
+                "{}% of active stake is not visible in gossip",
+                offline_stake * 100 / total_activated_stake
             );
             for (stake, identity) in offline_nodes {
                 info!(
-                    "    {:.3}% - {}",
-                    (stake as f64 / total_activated_stake as f64) * 100.,
+                    "    {}% - {}",
+                    stake * 100 / total_activated_stake,
                     identity
                 );
             }
         }
     }
 
-    online_stake_percentage as u64
+    online_stake * 100 / total_activated_stake
 }
 
 // Cleanup anything that looks like an accounts append-vec
