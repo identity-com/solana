@@ -1484,11 +1484,10 @@ mod tests {
 
     #[test]
     fn test_process_nonce_ix_no_acc_data_fail() {
-        let none_address = Pubkey::new_unique();
         assert_eq!(
             process_nonce_instruction(&system_instruction::advance_nonce_account(
-                &none_address,
-                &none_address
+                &Pubkey::default(),
+                &Pubkey::default()
             )),
             Err(InstructionError::InvalidAccountData),
         );
@@ -1510,7 +1509,7 @@ mod tests {
         assert_eq!(
             process_instruction(
                 &serialize(&SystemInstruction::AdvanceNonceAccount).unwrap(),
-                &[(true, true, Pubkey::new_unique(), create_default_account())],
+                &[(true, false, Pubkey::default(), create_default_account())],
             ),
             Err(InstructionError::NotEnoughAccountKeys),
         );
@@ -1522,7 +1521,7 @@ mod tests {
             process_instruction(
                 &serialize(&SystemInstruction::AdvanceNonceAccount).unwrap(),
                 &[
-                    (true, true, Pubkey::new_unique(), create_default_account()),
+                    (true, false, Pubkey::default(), create_default_account()),
                     (
                         false,
                         false,
@@ -1538,12 +1537,11 @@ mod tests {
 
     #[test]
     fn test_process_nonce_ix_ok() {
-        let nonce_address = Pubkey::new_unique();
         let nonce_account = Rc::new(nonce_account::create_account(1_000_000));
         process_instruction(
-            &serialize(&SystemInstruction::InitializeNonceAccount(nonce_address)).unwrap(),
+            &serialize(&SystemInstruction::InitializeNonceAccount(Pubkey::default())).unwrap(),
             &[
-                (true, true, nonce_address, nonce_account.clone()),
+                (true, false, Pubkey::default(), nonce_account.clone()),
                 (
                     false,
                     false,
@@ -1571,7 +1569,7 @@ mod tests {
         #[allow(deprecated)]
         let blockhash_id = sysvar::recent_blockhashes::id();
         let keyed_accounts = [
-            (true, true, nonce_address, nonce_account),
+            (true, false, Pubkey::default(), nonce_account),
             (false, false, blockhash_id, new_recent_blockhashes_account),
         ];
         assert_eq!(
@@ -1597,12 +1595,11 @@ mod tests {
 
     #[test]
     fn test_process_withdraw_ix_no_acc_data_fail() {
-        let nonce_address = Pubkey::new_unique();
         assert_eq!(
             process_nonce_instruction(&system_instruction::withdraw_nonce_account(
-                &nonce_address,
-                &Pubkey::new_unique(),
-                &nonce_address,
+                &Pubkey::default(),
+                &Pubkey::default(),
+                &Pubkey::default(),
                 1,
             )),
             Err(InstructionError::InvalidAccountData),
@@ -1687,8 +1684,8 @@ mod tests {
                 &[
                     (
                         true,
-                        true,
-                        Pubkey::new_unique(),
+                        false,
+                        Pubkey::default(),
                         Rc::new(nonce_account::create_account(1_000_000)),
                     ),
                     (true, false, Pubkey::default(), create_default_account()),
@@ -1791,15 +1788,14 @@ mod tests {
 
     #[test]
     fn test_process_initialize_ix_ok() {
-        let nonce_address = Pubkey::new_unique();
         assert_eq!(
             process_instruction(
-                &serialize(&SystemInstruction::InitializeNonceAccount(nonce_address)).unwrap(),
+                &serialize(&SystemInstruction::InitializeNonceAccount(Pubkey::default())).unwrap(),
                 &[
                     (
                         true,
-                        true,
-                        nonce_address,
+                        false,
+                        Pubkey::default(),
                         Rc::new(nonce_account::create_account(1_000_000)),
                     ),
                     (
@@ -1823,12 +1819,11 @@ mod tests {
 
     #[test]
     fn test_process_authorize_ix_ok() {
-        let nonce_address = Pubkey::new_unique();
         let nonce_account = Rc::new(nonce_account::create_account(1_000_000));
         process_instruction(
-            &serialize(&SystemInstruction::InitializeNonceAccount(nonce_address)).unwrap(),
+            &serialize(&SystemInstruction::InitializeNonceAccount(Pubkey::default())).unwrap(),
             &[
-                (true, true, nonce_address, nonce_account.clone()),
+                (true, false, Pubkey::default(), nonce_account.clone()),
                 (
                     false,
                     false,
@@ -1847,8 +1842,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             process_instruction(
-                &serialize(&SystemInstruction::AuthorizeNonceAccount(nonce_address)).unwrap(),
-                &[(true, true, nonce_address, nonce_account)],
+                &serialize(&SystemInstruction::AuthorizeNonceAccount(Pubkey::default())).unwrap(),
+                &[(true, false, Pubkey::default(), nonce_account)],
             ),
             Ok(()),
         );
@@ -1856,12 +1851,11 @@ mod tests {
 
     #[test]
     fn test_process_authorize_bad_account_data_fail() {
-        let nonce_address = Pubkey::new_unique();
         assert_eq!(
             process_nonce_instruction(&system_instruction::authorize_nonce_account(
-                &nonce_address,
-                &Pubkey::new_unique(),
-                &nonce_address,
+                &Pubkey::default(),
+                &Pubkey::default(),
+                &Pubkey::default(),
             )),
             Err(InstructionError::InvalidAccountData),
         );
@@ -1922,7 +1916,6 @@ mod tests {
 
     #[test]
     fn test_nonce_initialize_with_empty_recent_blockhashes_fail() {
-        let nonce_address = Pubkey::new_unique();
         let nonce_account = Rc::new(nonce_account::create_account(1_000_000));
         #[allow(deprecated)]
         let new_recent_blockhashes_account = Rc::new(RefCell::new(
@@ -1932,9 +1925,9 @@ mod tests {
         ));
         assert_eq!(
             process_instruction(
-                &serialize(&SystemInstruction::InitializeNonceAccount(nonce_address)).unwrap(),
+                &serialize(&SystemInstruction::InitializeNonceAccount(Pubkey::default())).unwrap(),
                 &[
-                    (true, true, nonce_address, nonce_account),
+                    (true, false, Pubkey::default(), nonce_account),
                     (
                         false,
                         false,
@@ -1956,12 +1949,11 @@ mod tests {
 
     #[test]
     fn test_nonce_advance_with_empty_recent_blockhashes_fail() {
-        let nonce_address = Pubkey::new_unique();
         let nonce_account = Rc::new(nonce_account::create_account(1_000_000));
         process_instruction(
-            &serialize(&SystemInstruction::InitializeNonceAccount(nonce_address)).unwrap(),
+            &serialize(&SystemInstruction::InitializeNonceAccount(Pubkey::default())).unwrap(),
             &[
-                (true, true, nonce_address, nonce_account.clone()),
+                (true, false, Pubkey::default(), nonce_account.clone()),
                 (
                     false,
                     false,
@@ -1987,7 +1979,7 @@ mod tests {
         #[allow(deprecated)]
         let blockhash_id = sysvar::recent_blockhashes::id();
         let keyed_accounts = [
-            (true, false, nonce_address, nonce_account),
+            (true, false, Pubkey::default(), nonce_account),
             (false, false, blockhash_id, new_recent_blockhashes_account),
         ];
         assert_eq!(
