@@ -11,7 +11,7 @@ use {
 
 crate::declare_id!("ComputeBudget111111111111111111111111111111");
 
-const MAX_UNITS: u32 = 1_000_000;
+const MAX_UNITS: u64 = 1_000_000;
 
 /// Compute Budget Instructions
 #[derive(
@@ -29,11 +29,11 @@ const MAX_UNITS: u32 = 1_000_000;
 pub enum ComputeBudgetInstruction {
     /// Request a specific maximum number of compute units the transaction is
     /// allowed to consume.
-    RequestUnits(u32),
+    RequestUnits(u64),
 }
 impl ComputeBudgetInstruction {
     /// Create a `ComputeBudgetInstruction::RequestUnits` `Instruction`
-    pub fn request_units(units: u32) -> Instruction {
+    pub fn request_units(units: u64) -> Instruction {
         Instruction::new_with_borsh(id(), &ComputeBudgetInstruction::RequestUnits(units), vec![])
     }
 }
@@ -115,7 +115,7 @@ impl ComputeBudget {
                 if units > MAX_UNITS {
                     return Err(error);
                 }
-                self.max_units = units as u64;
+                self.max_units = units;
             }
         }
         Ok(())
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(
             compute_budget,
             ComputeBudget {
-                max_units: MAX_UNITS as u64,
+                max_units: MAX_UNITS,
                 ..ComputeBudget::default()
             }
         );
