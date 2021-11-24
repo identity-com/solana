@@ -273,7 +273,6 @@ impl Accounts {
                                         key,
                                         &mut account,
                                         rent_for_sysvars,
-                                        self.accounts_db.filler_account_suffix.as_ref(),
                                     );
                                     (account, rent_due)
                                 } else {

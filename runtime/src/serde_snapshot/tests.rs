@@ -77,10 +77,7 @@ where
         snapshot_accounts_db_fields,
         account_paths,
         unpacked_append_vec_map,
-        &GenesisConfig {
-            cluster_type: ClusterType::Development,
-            ..GenesisConfig::default()
-        },
+        &ClusterType::Development,
         AccountSecondaryIndexes::default(),
         false,
         None,
