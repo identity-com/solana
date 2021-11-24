@@ -4,7 +4,6 @@ use solana_sdk::{
 
 pub fn process_instruction(
     _program_id: &Pubkey,
-    _first_instruction_account: usize,
     _data: &[u8],
     _invoke_context: &mut dyn InvokeContext,
 ) -> Result<(), InstructionError> {
