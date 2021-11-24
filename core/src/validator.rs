@@ -71,7 +71,6 @@ use {
         hardened_unpack::{open_genesis_config, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
         snapshot_archive_info::SnapshotArchiveInfoGetter,
         snapshot_config::SnapshotConfig,
-        snapshot_hash::StartingSnapshotHashes,
         snapshot_package::{AccountsPackageSender, PendingSnapshotPackage},
         snapshot_utils,
     },
@@ -418,7 +417,7 @@ impl Validator {
             completed_slots_receiver,
             leader_schedule_cache,
             last_full_snapshot_slot,
-            starting_snapshot_hashes,
+            snapshot_hash,
             TransactionHistoryServices {
                 transaction_status_sender,
                 transaction_status_service,
@@ -696,7 +695,7 @@ impl Validator {
 
                 let snapshot_packager_service = SnapshotPackagerService::new(
                     pending_snapshot_package.clone(),
-                    starting_snapshot_hashes,
+                    snapshot_hash,
                     &exit,
                     &cluster_info,
                     snapshot_config.clone(),
@@ -1150,7 +1149,7 @@ fn new_banks_from_ledger(
     CompletedSlotsReceiver,
     LeaderScheduleCache,
     Option<Slot>,
-    Option<StartingSnapshotHashes>,
+    Option<(Slot, Hash)>,
     TransactionHistoryServices,
     Tower,
 ) {
@@ -1245,31 +1244,27 @@ fn new_banks_from_ledger(
             TransactionHistoryServices::default()
         };
 
-    let (
-        mut bank_forks,
-        mut leader_schedule_cache,
-        last_full_snapshot_slot,
-        starting_snapshot_hashes,
-    ) = bank_forks_utils::load(
-        &genesis_config,
-        &blockstore,
-        config.account_paths.clone(),
-        config.account_shrink_paths.clone(),
-        config.snapshot_config.as_ref(),
-        process_options,
-        transaction_history_services
-            .transaction_status_sender
-            .as_ref(),
-        transaction_history_services
-            .cache_block_meta_sender
-            .as_ref(),
-        accounts_package_sender,
-        accounts_update_notifier,
-    )
-    .unwrap_or_else(|err| {
-        error!("Failed to load ledger: {:?}", err);
-        abort()
-    });
+    let (mut bank_forks, mut leader_schedule_cache, last_full_snapshot_slot, snapshot_hash) =
+        bank_forks_utils::load(
+            &genesis_config,
+            &blockstore,
+            config.account_paths.clone(),
+            config.account_shrink_paths.clone(),
+            config.snapshot_config.as_ref(),
+            process_options,
+            transaction_history_services
+                .transaction_status_sender
+                .as_ref(),
+            transaction_history_services
+                .cache_block_meta_sender
+                .as_ref(),
+            accounts_package_sender,
+            accounts_update_notifier,
+        )
+        .unwrap_or_else(|err| {
+            error!("Failed to load ledger: {:?}", err);
+            abort()
+        });
 
     if let Some(warp_slot) = config.warp_slot {
         let snapshot_config = config.snapshot_config.as_ref().unwrap_or_else(|| {
@@ -1349,7 +1344,7 @@ fn new_banks_from_ledger(
         completed_slots_receiver,
         leader_schedule_cache,
         last_full_snapshot_slot,
-        starting_snapshot_hashes,
+        snapshot_hash,
         transaction_history_services,
         tower,
     )
