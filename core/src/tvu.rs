@@ -13,7 +13,6 @@ use crate::{
     completed_data_sets_service::CompletedDataSetsSender,
     consensus::Tower,
     cost_update_service::CostUpdateService,
-    drop_bank_service::DropBankService,
     ledger_cleanup_service::LedgerCleanupService,
     replay_stage::{ReplayStage, ReplayStageConfig},
     retransmit_stage::RetransmitStage,
@@ -70,7 +69,6 @@ pub struct Tvu {
     accounts_hash_verifier: AccountsHashVerifier,
     cost_update_service: CostUpdateService,
     voting_service: VotingService,
-    drop_bank_service: DropBankService,
 }
 
 pub struct Sockets {
@@ -304,9 +302,6 @@ impl Tvu {
             cost_update_receiver,
         );
 
-        let (drop_bank_sender, drop_bank_receiver) = channel();
-        let drop_bank_service = DropBankService::new(drop_bank_receiver);
-
         let replay_stage = ReplayStage::new(
             replay_stage_config,
             blockstore.clone(),
@@ -326,7 +321,6 @@ impl Tvu {
             cluster_slots_update_sender,
             cost_update_sender,
             voting_sender,
-            drop_bank_sender,
         );
 
         let ledger_cleanup_service = tvu_config.max_ledger_shreds.map(|max_ledger_shreds| {
@@ -360,7 +354,6 @@ impl Tvu {
             accounts_hash_verifier,
             cost_update_service,
             voting_service,
-            drop_bank_service,
         }
     }
 
@@ -376,7 +369,6 @@ impl Tvu {
         self.accounts_hash_verifier.join()?;
         self.cost_update_service.join()?;
         self.voting_service.join()?;
-        self.drop_bank_service.join()?;
         Ok(())
     }
 }
