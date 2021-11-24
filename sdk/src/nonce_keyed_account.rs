@@ -1,11 +1,16 @@
-use solana_sdk::{
+#![cfg(feature = "full")]
+
+use crate::{
     account::{ReadableAccount, WritableAccount},
     account_utils::State as AccountUtilsState,
     feature_set, ic_msg,
-    instruction::{checked_add, InstructionError},
     keyed_account::KeyedAccount,
-    nonce::{self, state::Versions, State},
+    nonce_account::create_account,
     process_instruction::InvokeContext,
+};
+use solana_program::{
+    instruction::{checked_add, InstructionError},
+    nonce::{self, state::Versions, State},
     pubkey::Pubkey,
     system_instruction::{nonce_to_instruction_error, NonceError},
     sysvar::rent::Rent,
@@ -251,30 +256,30 @@ impl<'a> NonceKeyedAccount for KeyedAccount<'a> {
     }
 }
 
+/// Convenience function for working with keyed accounts in tests
+pub fn with_test_keyed_account<F>(lamports: u64, signer: bool, f: F)
+where
+    F: Fn(&KeyedAccount),
+{
+    let pubkey = Pubkey::new_unique();
+    let account = create_account(lamports);
+    let keyed_account = KeyedAccount::new(&pubkey, signer, &account);
+    f(&keyed_account)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use solana_sdk::{
+    use crate::{
         account::ReadableAccount,
         account_utils::State as AccountUtilsState,
-        hash::{hash, Hash},
         keyed_account::KeyedAccount,
         nonce::{self, State},
-        nonce_account::create_account,
         nonce_account::verify_nonce_account,
         process_instruction::MockInvokeContext,
         system_instruction::SystemError,
     };
-
-    fn with_test_keyed_account<F>(lamports: u64, signer: bool, f: F)
-    where
-        F: Fn(&KeyedAccount),
-    {
-        let pubkey = Pubkey::new_unique();
-        let account = create_account(lamports);
-        let keyed_account = KeyedAccount::new(&pubkey, signer, &account);
-        f(&keyed_account)
-    }
+    use solana_program::hash::{hash, Hash};
 
     fn create_test_blockhash(seed: usize) -> (Hash, u64) {
         (
