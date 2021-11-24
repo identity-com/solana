@@ -29,11 +29,9 @@ struct VoteAccountInner {
     vote_state_once: Once,
 }
 
-pub type VoteAccountsHashMap = HashMap<Pubkey, (/*stake:*/ u64, VoteAccount)>;
-
 #[derive(Debug, AbiExample)]
 pub struct VoteAccounts {
-    vote_accounts: Arc<VoteAccountsHashMap>,
+    vote_accounts: Arc<HashMap<Pubkey, (/*stake:*/ u64, VoteAccount)>>,
     // Inner Arc is meant to implement copy-on-write semantics as opposed to
     // sharing mutations (hence RwLock<Arc<...>> instead of Arc<RwLock<...>>).
     staked_nodes: RwLock<
@@ -48,12 +46,8 @@ pub struct VoteAccounts {
 }
 
 impl VoteAccount {
-    pub fn account(&self) -> &Account {
-        &self.0.account
-    }
-
     pub(crate) fn lamports(&self) -> u64 {
-        self.account().lamports
+        self.0.account.lamports
     }
 
     pub fn vote_state(&self) -> RwLockReadGuard<Result<VoteState, InstructionError>> {
@@ -198,12 +192,6 @@ impl From<Account> for VoteAccount {
     }
 }
 
-impl AsRef<VoteAccountInner> for VoteAccount {
-    fn as_ref(&self) -> &VoteAccountInner {
-        &self.0
-    }
-}
-
 impl From<AccountSharedData> for VoteAccountInner {
     fn from(account: AccountSharedData) -> Self {
         Self::from(Account::from(account))
@@ -272,6 +260,8 @@ impl PartialEq<VoteAccounts> for VoteAccounts {
         self.vote_accounts == other.vote_accounts
     }
 }
+
+type VoteAccountsHashMap = HashMap<Pubkey, (/*stake:*/ u64, VoteAccount)>;
 
 impl From<Arc<VoteAccountsHashMap>> for VoteAccounts {
     fn from(vote_accounts: Arc<VoteAccountsHashMap>) -> Self {
