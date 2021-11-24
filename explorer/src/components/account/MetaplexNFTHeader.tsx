@@ -17,7 +17,7 @@ export function NFTHeader({
   const metadata = nftData.metadata;
   return (
     <div className="row align-items-begin">
-      <div className="col-auto ml-2 d-flex align-items-center">
+      <div className="col-auto ml-2">
         <ArtContent metadata={metadata} pubkey={address} />
       </div>
 
