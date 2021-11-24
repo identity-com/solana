@@ -778,7 +778,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             return false; // range said to hold 'all', so not completed
         }
 
-        let mut removed = 0;
         // consider chunking these so we don't hold the write lock too long
         let mut map = self.map().write().unwrap();
         for k in removes {
@@ -816,14 +815,10 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
                 }
 
                 // all conditions for removing succeeded, so really remove item from in-mem cache
-                removed += 1;
+                self.stats().insert_or_delete_mem(false, self.bin);
                 occupied.remove();
             }
         }
-        self.stats()
-            .insert_or_delete_mem_count(false, self.bin, removed);
-        Self::update_stat(&self.stats().flush_entries_removed_from_mem, removed);
-
         completed_scan
     }
 
