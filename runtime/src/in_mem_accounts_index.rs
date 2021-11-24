@@ -106,21 +106,10 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
     }
 
     fn load_from_disk(&self, pubkey: &Pubkey) -> Option<(SlotList<T>, RefCount)> {
-        self.storage.disk.as_ref().and_then(|disk| {
-            let m = Measure::start("load_disk_found_count");
-            let entry_disk = disk.read_value(pubkey);
-            match &entry_disk {
-                Some(_) => {
-                    Self::update_time_stat(&self.stats().load_disk_found_us, m);
-                    Self::update_stat(&self.stats().load_disk_found_count, 1);
-                }
-                None => {
-                    Self::update_time_stat(&self.stats().load_disk_missing_us, m);
-                    Self::update_stat(&self.stats().load_disk_missing_count, 1);
-                }
-            }
-            entry_disk
-        })
+        self.storage
+            .disk
+            .as_ref()
+            .and_then(|disk| disk.read_value(pubkey))
     }
 
     fn load_account_entry_from_disk(&self, pubkey: &Pubkey) -> Option<AccountMapEntry<T>> {
