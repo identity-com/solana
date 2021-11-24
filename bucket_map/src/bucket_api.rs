@@ -89,8 +89,6 @@ impl<T: Clone + Copy> BucketApi<T> {
                 self.max_search,
                 Arc::clone(&self.stats),
             ));
-        } else {
-            bucket.as_mut().unwrap().handle_delayed_grows();
         }
         bucket
     }
@@ -113,11 +111,8 @@ impl<T: Clone + Copy> BucketApi<T> {
     }
 
     pub fn grow(&self, err: BucketMapError) {
-        // grows are special - they get a read lock and modify 'reallocated'
-        // the grown changes are applied the next time there is a write lock taken
-        if let Some(bucket) = self.bucket.read().unwrap().as_ref() {
-            bucket.grow(err)
-        }
+        let mut bucket = self.get_write_bucket();
+        bucket.as_mut().unwrap().grow(err)
     }
 
     pub fn update<F>(&self, key: &Pubkey, updatefn: F)
