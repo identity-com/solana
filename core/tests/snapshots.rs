@@ -505,7 +505,7 @@ mod tests {
             None,
             &exit,
             &cluster_info,
-            snapshot_config.clone(),
+            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         );
 
         let _package_receiver = std::thread::Builder::new()
@@ -926,7 +926,9 @@ mod tests {
             None,
             &exit,
             &cluster_info,
-            snapshot_test_config.snapshot_config.clone(),
+            snapshot_test_config
+                .snapshot_config
+                .maximum_full_snapshot_archives_to_retain,
         );
 
         let accounts_hash_verifier = AccountsHashVerifier::new(
