@@ -143,7 +143,10 @@ pub fn discover(
     Vec<ContactInfo>, // all gossip peers
     Vec<ContactInfo>, // tvu peers (validators)
 )> {
-    let keypair = keypair.unwrap_or_else(Keypair::new);
+    let keypair = {
+        #[allow(clippy::redundant_closure)]
+        keypair.unwrap_or_else(|| Keypair::new())
+    };
     let exit = Arc::new(AtomicBool::new(false));
     let (gossip_service, ip_echo, spy_ref) = make_gossip_node(
         keypair,
