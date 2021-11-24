@@ -23,7 +23,7 @@ pub struct AccountsIndexStorage<T: IndexValue> {
     handles: Option<Vec<JoinHandle<()>>>,
 
     // eventually the backing storage
-    pub storage: Arc<BucketMapHolder<T>>,
+    storage: Arc<BucketMapHolder<T>>,
     pub in_mem: Vec<Arc<InMemAccountsIndex<T>>>,
 }
 
