@@ -6,7 +6,10 @@ use crate::bucket_map_holder::BucketMapHolder;
 use crate::bucket_map_holder_stats::BucketMapHolderStats;
 use solana_measure::measure::Measure;
 use solana_sdk::{clock::Slot, pubkey::Pubkey};
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{
+    hash_map::{Entry, Keys},
+    HashMap,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -64,9 +67,9 @@ impl<T: IsCached> InMemAccountsIndex<T> {
         result
     }
 
-    pub fn keys(&self) -> Vec<Pubkey> {
+    pub fn keys(&self) -> Keys<K, AccountMapEntry<T>> {
         Self::update_stat(&self.stats().keys, 1);
-        self.map.keys().cloned().collect()
+        self.map.keys()
     }
 
     pub fn get(&self, key: &K) -> Option<AccountMapEntry<T>> {
