@@ -340,7 +340,6 @@ impl Tvu {
             tvu_config.accounts_db_caching_enabled,
             tvu_config.test_hash_calculation,
             tvu_config.use_index_hash_calculation,
-            None,
         );
 
         Tvu {

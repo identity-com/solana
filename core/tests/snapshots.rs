@@ -66,9 +66,7 @@ mod tests {
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
         snapshot_archive_info::FullSnapshotArchiveInfo,
         snapshot_config::{LastFullSnapshotSlot, SnapshotConfig},
-        snapshot_package::{
-            AccountsPackage, PendingSnapshotPackage, SnapshotPackage, SnapshotType,
-        },
+        snapshot_package::{AccountsPackage, PendingSnapshotPackage},
         snapshot_utils::{
             self, ArchiveFormat, SnapshotVersion, DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         },
@@ -257,19 +255,18 @@ mod tests {
             snapshot_request_receiver,
             accounts_package_sender,
         };
-        for slot in 1..=last_slot {
-            let mut bank = Bank::new_from_parent(&bank_forks[slot - 1], &Pubkey::default(), slot);
+        for slot in 0..last_slot {
+            let mut bank = Bank::new_from_parent(&bank_forks[slot], &Pubkey::default(), slot + 1);
             f(&mut bank, mint_keypair);
             let bank = bank_forks.insert(bank);
             // Set root to make sure we don't end up with too many account storage entries
             // and to allow snapshotting of bank and the purging logic on status_cache to
             // kick in
-            if slot % set_root_interval == 0 || slot == last_slot {
+            if slot % set_root_interval == 0 || slot == last_slot - 1 {
                 // set_root should send a snapshot request
                 bank_forks.set_root(bank.slot(), &request_sender, None);
                 bank.update_accounts_hash();
-                snapshot_request_handler
-                    .handle_snapshot_requests(false, false, false, 0, &mut None);
+                snapshot_request_handler.handle_snapshot_requests(false, false, false, 0);
             }
         }
 
@@ -280,7 +277,7 @@ mod tests {
         let last_bank_snapshot_info =
             snapshot_utils::get_highest_bank_snapshot_info(bank_snapshots_dir)
                 .expect("no bank snapshots found in path");
-        let accounts_package = AccountsPackage::new(
+        let accounts_package = AccountsPackage::new_for_full_snapshot(
             last_bank,
             &last_bank_snapshot_info,
             bank_snapshots_dir,
@@ -290,10 +287,13 @@ mod tests {
             ArchiveFormat::TarBzip2,
             snapshot_version,
             None,
-            Some(SnapshotType::FullSnapshot),
         )
         .unwrap();
-        let snapshot_package = SnapshotPackage::from(accounts_package);
+        let snapshot_package = snapshot_utils::process_accounts_package(
+            accounts_package,
+            Some(last_bank.get_thread_pool()),
+            None,
+        );
         snapshot_utils::archive_snapshot_package(
             &snapshot_package,
             DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
@@ -415,9 +415,8 @@ mod tests {
                 bank_snapshots_dir,
                 snapshot_archives_dir,
                 snapshot_config.snapshot_version,
-                snapshot_config.archive_format,
+                &snapshot_config.archive_format,
                 None,
-                Some(SnapshotType::FullSnapshot),
             )
             .unwrap();
 
@@ -505,6 +504,8 @@ mod tests {
             DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         );
 
+        let thread_pool = accounts_db::make_min_priority_thread_pool();
+
         let _package_receiver = std::thread::Builder::new()
             .name("package-receiver".to_string())
             .spawn(move || {
@@ -514,7 +515,11 @@ mod tests {
                         accounts_package = new_accounts_package;
                     }
 
-                    let snapshot_package = SnapshotPackage::from(accounts_package);
+                    let snapshot_package = solana_runtime::snapshot_utils::process_accounts_package(
+                        accounts_package,
+                        Some(&thread_pool),
+                        None,
+                    );
                     *pending_snapshot_package.lock().unwrap() = Some(snapshot_package);
                 }
 
@@ -620,7 +625,7 @@ mod tests {
             run_bank_forks_snapshot_n(
                 snapshot_version,
                 cluster_type,
-                (MAX_CACHE_ENTRIES * 2) as u64,
+                (MAX_CACHE_ENTRIES * 2 + 1) as u64,
                 |bank, mint_keypair| {
                     let tx = system_transaction::transfer(
                         mint_keypair,
@@ -707,19 +712,14 @@ mod tests {
                 // set_root sends a snapshot request
                 bank_forks.set_root(bank.slot(), &request_sender, None);
                 bank.update_accounts_hash();
-                snapshot_request_handler.handle_snapshot_requests(
-                    false,
-                    false,
-                    false,
-                    0,
-                    &mut last_full_snapshot_slot,
-                );
+                snapshot_request_handler.handle_snapshot_requests(false, false, false, 0);
             }
 
             // Since AccountsBackgroundService isn't running, manually make a full snapshot archive
             // at the right interval
             if slot % FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS == 0 {
                 make_full_snapshot_archive(&bank, &snapshot_test_config.snapshot_config).unwrap();
+                last_full_snapshot_slot = Some(slot);
             }
             // Similarly, make an incremental snapshot archive at the right interval, but only if
             // there's been at least one full snapshot first, and a full snapshot wasn't already
@@ -764,7 +764,7 @@ mod tests {
                         "did not find bank snapshot with this path",
                     )
                 })?;
-        snapshot_utils::package_and_archive_full_snapshot(
+        snapshot_utils::package_process_and_archive_full_snapshot(
             bank,
             &bank_snapshot_info,
             &snapshot_config.bank_snapshots_dir,
@@ -772,6 +772,7 @@ mod tests {
             bank.get_snapshot_storages(None),
             snapshot_config.archive_format,
             snapshot_config.snapshot_version,
+            None,
             snapshot_config.maximum_snapshots_to_retain,
         )?;
 
@@ -799,7 +800,7 @@ mod tests {
                     )
                 })?;
         let storages = bank.get_snapshot_storages(Some(incremental_snapshot_base_slot));
-        snapshot_utils::package_and_archive_incremental_snapshot(
+        snapshot_utils::package_process_and_archive_incremental_snapshot(
             bank,
             incremental_snapshot_base_slot,
             &bank_snapshot_info,
@@ -808,6 +809,7 @@ mod tests {
             storages,
             snapshot_config.archive_format,
             snapshot_config.snapshot_version,
+            None,
             snapshot_config.maximum_snapshots_to_retain,
         )?;
 
@@ -855,8 +857,9 @@ mod tests {
         const INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS: Slot = BANK_SNAPSHOT_INTERVAL_SLOTS * 3;
         const FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS: Slot =
             INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS * 5;
-        const LAST_SLOT: Slot = FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS * 3
-            + INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS * 2;
+        const LAST_SLOT: Slot = FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS * 3 - 1;
+        const EXPECTED_SLOT_FOR_LAST_SNAPSHOT_ARCHIVE: Slot =
+            LAST_SLOT + 1 - FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS;
 
         info!("Running snapshots with background services test...");
         trace!(
@@ -946,7 +949,6 @@ mod tests {
             false,
             false,
             true,
-            None,
         );
 
         let mint_keypair = &snapshot_test_config.genesis_config_info.mint_keypair;
@@ -1017,14 +1019,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(deserialized_bank.slot(), LAST_SLOT,);
         assert_eq!(
-            deserialized_bank,
-            **bank_forks
-                .read()
-                .unwrap()
-                .get(deserialized_bank.slot())
-                .unwrap()
+            deserialized_bank.slot(),
+            EXPECTED_SLOT_FOR_LAST_SNAPSHOT_ARCHIVE
         );
 
         // Stop the background services
