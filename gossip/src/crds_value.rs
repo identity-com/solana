@@ -91,7 +91,6 @@ pub enum CrdsData {
     Version(Version),
     NodeInstance(NodeInstance),
     DuplicateShred(DuplicateShredIndex, DuplicateShred),
-    IncrementalSnapshotHashes(IncrementalSnapshotHashes),
 }
 
 impl Sanitize for CrdsData {
@@ -128,7 +127,6 @@ impl Sanitize for CrdsData {
                     shred.sanitize()
                 }
             }
-            CrdsData::IncrementalSnapshotHashes(val) => val.sanitize(),
         }
     }
 }
@@ -206,33 +204,6 @@ impl SnapshotHashes {
         }
     }
 }
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
-pub struct IncrementalSnapshotHashes {
-    from: Pubkey,
-    base: (Slot, Hash),
-    hashes: Vec<(Slot, Hash)>,
-    wallclock: u64,
-}
-
-impl Sanitize for IncrementalSnapshotHashes {
-    fn sanitize(&self) -> Result<(), SanitizeError> {
-        sanitize_wallclock(self.wallclock)?;
-        if self.base.0 >= MAX_SLOT {
-            return Err(SanitizeError::ValueOutOfBounds);
-        }
-        for (slot, _) in &self.hashes {
-            if *slot >= MAX_SLOT {
-                return Err(SanitizeError::ValueOutOfBounds);
-            }
-            if self.base.0 >= *slot {
-                return Err(SanitizeError::InvalidValue);
-            }
-        }
-        self.from.sanitize()
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
 pub struct LowestSlot {
     pub from: Pubkey,
@@ -496,7 +467,6 @@ pub enum CrdsValueLabel {
     Version(Pubkey),
     NodeInstance(Pubkey),
     DuplicateShred(DuplicateShredIndex, Pubkey),
-    IncrementalSnapshotHashes(Pubkey),
 }
 
 impl fmt::Display for CrdsValueLabel {
@@ -512,9 +482,6 @@ impl fmt::Display for CrdsValueLabel {
             CrdsValueLabel::Version(_) => write!(f, "Version({})", self.pubkey()),
             CrdsValueLabel::NodeInstance(pk) => write!(f, "NodeInstance({})", pk),
             CrdsValueLabel::DuplicateShred(ix, pk) => write!(f, "DuplicateShred({}, {})", ix, pk),
-            CrdsValueLabel::IncrementalSnapshotHashes(_) => {
-                write!(f, "IncrementalSnapshotHashes({})", self.pubkey())
-            }
         }
     }
 }
@@ -532,7 +499,6 @@ impl CrdsValueLabel {
             CrdsValueLabel::Version(p) => *p,
             CrdsValueLabel::NodeInstance(p) => *p,
             CrdsValueLabel::DuplicateShred(_, p) => *p,
-            CrdsValueLabel::IncrementalSnapshotHashes(p) => *p,
         }
     }
 }
@@ -581,7 +547,6 @@ impl CrdsValue {
             CrdsData::Version(version) => version.wallclock,
             CrdsData::NodeInstance(node) => node.wallclock,
             CrdsData::DuplicateShred(_, shred) => shred.wallclock,
-            CrdsData::IncrementalSnapshotHashes(hash) => hash.wallclock,
         }
     }
     pub fn pubkey(&self) -> Pubkey {
@@ -596,7 +561,6 @@ impl CrdsValue {
             CrdsData::Version(version) => version.from,
             CrdsData::NodeInstance(node) => node.from,
             CrdsData::DuplicateShred(_, shred) => shred.from,
-            CrdsData::IncrementalSnapshotHashes(hash) => hash.from,
         }
     }
     pub fn label(&self) -> CrdsValueLabel {
@@ -611,9 +575,6 @@ impl CrdsValue {
             CrdsData::Version(_) => CrdsValueLabel::Version(self.pubkey()),
             CrdsData::NodeInstance(node) => CrdsValueLabel::NodeInstance(node.from),
             CrdsData::DuplicateShred(ix, shred) => CrdsValueLabel::DuplicateShred(*ix, shred.from),
-            CrdsData::IncrementalSnapshotHashes(_) => {
-                CrdsValueLabel::IncrementalSnapshotHashes(self.pubkey())
-            }
         }
     }
     pub fn contact_info(&self) -> Option<&ContactInfo> {
