@@ -114,16 +114,8 @@ pub struct AccountMapEntryInner<T> {
 }
 
 impl<T> AccountMapEntryInner<T> {
-    pub fn ref_count(&self) -> RefCount {
+    pub fn ref_count(&self) -> u64 {
         self.ref_count.load(Ordering::Relaxed)
-    }
-
-    pub fn add_un_ref(&self, add: bool) {
-        if add {
-            self.ref_count.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.ref_count.fetch_sub(1, Ordering::Relaxed);
-        }
     }
 }
 
@@ -161,15 +153,19 @@ impl<T: IsCached> ReadAccountMapEntry<T> {
     }
 
     pub fn ref_count(&self) -> RefCount {
-        self.borrow_owned_entry().ref_count()
+        self.borrow_owned_entry().ref_count.load(Ordering::Relaxed)
     }
 
     pub fn unref(&self) {
-        self.borrow_owned_entry().add_un_ref(false);
+        self.borrow_owned_entry()
+            .ref_count
+            .fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn addref(&self) {
-        self.borrow_owned_entry().add_un_ref(true);
+        self.borrow_owned_entry()
+            .ref_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -215,6 +211,10 @@ impl<T: IsCached> WriteAccountMapEntry<T> {
             ref_count: AtomicU64::new(ref_count),
             slot_list: RwLock::new(vec![(slot, account_info)]),
         })
+    }
+
+    fn addref(item: &AtomicU64) {
+        item.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn upsert<'a>(
@@ -278,7 +278,7 @@ impl<T: IsCached> WriteAccountMapEntry<T> {
             previous_slot_entry_was_cached,
         );
         if addref {
-            current.add_un_ref(true);
+            Self::addref(&current.ref_count);
         }
     }
 
