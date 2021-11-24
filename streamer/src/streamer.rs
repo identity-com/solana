@@ -95,7 +95,9 @@ pub fn receiver(
     use_pinned_memory: bool,
 ) -> JoinHandle<()> {
     let res = sock.set_read_timeout(Some(Duration::new(1, 0)));
-    assert!(!res.is_err(), "streamer::receiver set_read_timeout error");
+    if res.is_err() {
+        panic!("streamer::receiver set_read_timeout error");
+    }
     let exit = exit.clone();
     Builder::new()
         .name("solana-receiver".to_string())

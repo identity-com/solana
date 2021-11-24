@@ -183,10 +183,9 @@ impl TestBroadcastReceiver {
                     }
                 }
                 Err(TryRecvError::Empty) => {
-                    assert!(
-                        started.elapsed() <= timeout,
-                        "TestBroadcastReceiver: no data, timeout reached"
-                    );
+                    if started.elapsed() > timeout {
+                        panic!("TestBroadcastReceiver: no data, timeout reached");
+                    }
                     sleep(Duration::from_millis(50));
                 }
                 Err(err) => panic!("broadcast receiver error: {}", err),

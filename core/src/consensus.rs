@@ -1313,7 +1313,7 @@ pub mod test {
                 }
                 VoteState::serialize(
                     &VoteStateVersions::new_current(vote_state),
-                    account.data_as_mut_slice(),
+                    &mut account.data_as_mut_slice(),
                 )
                 .expect("serialize state");
                 (

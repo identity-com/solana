@@ -4,6 +4,7 @@ use {
     itertools::Itertools,
     solana_entry::entry::Entry,
     solana_ledger::shred::Shredder,
+    solana_runtime::blockhash_queue::BlockhashQueue,
     solana_sdk::{
         hash::Hash,
         signature::{Keypair, Signature, Signer},
@@ -25,6 +26,11 @@ pub struct BroadcastDuplicatesConfig {
 #[derive(Clone)]
 pub(super) struct BroadcastDuplicatesRun {
     config: BroadcastDuplicatesConfig,
+    // Local queue for broadcast to track which duplicate blockhashes we've sent
+    duplicate_queue: BlockhashQueue,
+    // Buffer for duplicate entries
+    duplicate_entries_buffer: Vec<Entry>,
+    last_duplicate_entry_hash: Hash,
     current_slot: Slot,
     next_shred_index: u32,
     shred_version: u16,
@@ -44,7 +50,10 @@ impl BroadcastDuplicatesRun {
         ));
         Self {
             config,
+            duplicate_queue: BlockhashQueue::default(),
+            duplicate_entries_buffer: vec![],
             next_shred_index: u32::MAX,
+            last_duplicate_entry_hash: Hash::default(),
             shred_version,
             current_slot: 0,
             recent_blockhash: None,

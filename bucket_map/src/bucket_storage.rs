@@ -121,7 +121,9 @@ impl BucketStorage {
     }
 
     pub fn uid(&self, ix: u64) -> Uid {
-        assert!(ix < self.capacity(), "bad index size");
+        if ix >= self.capacity() {
+            panic!("bad index size");
+        }
         let ix = (ix * self.cell_size) as usize;
         let hdr_slice: &[u8] = &self.mmap[ix..ix + std::mem::size_of::<Header>()];
         unsafe {
@@ -131,8 +133,12 @@ impl BucketStorage {
     }
 
     pub fn allocate(&self, ix: u64, uid: Uid) -> Result<(), BucketStorageError> {
-        assert!(ix < self.capacity(), "allocate: bad index size");
-        assert!(UID_UNLOCKED != uid, "allocate: bad uid");
+        if ix >= self.capacity() {
+            panic!("allocate: bad index size");
+        }
+        if UID_UNLOCKED == uid {
+            panic!("allocate: bad uid");
+        }
         let mut e = Err(BucketStorageError::AlreadyAllocated);
         let ix = (ix * self.cell_size) as usize;
         //debug!("ALLOC {} {}", ix, uid);
@@ -148,8 +154,12 @@ impl BucketStorage {
     }
 
     pub fn free(&self, ix: u64, uid: Uid) {
-        assert!(ix < self.capacity(), "bad index size");
-        assert!(UID_UNLOCKED != uid, "free: bad uid");
+        if ix >= self.capacity() {
+            panic!("free: bad index size");
+        }
+        if UID_UNLOCKED == uid {
+            panic!("free: bad uid");
+        }
         let ix = (ix * self.cell_size) as usize;
         //debug!("FREE {} {}", ix, uid);
         let hdr_slice: &[u8] = &self.mmap[ix..ix + std::mem::size_of::<Header>()];
@@ -167,7 +177,9 @@ impl BucketStorage {
     }
 
     pub fn get<T: Sized>(&self, ix: u64) -> &T {
-        assert!(ix < self.capacity(), "bad index size");
+        if ix >= self.capacity() {
+            panic!("bad index size");
+        }
         let start = (ix * self.cell_size) as usize + std::mem::size_of::<Header>();
         let end = start + std::mem::size_of::<T>();
         let item_slice: &[u8] = &self.mmap[start..end];
@@ -187,7 +199,9 @@ impl BucketStorage {
     }
 
     pub fn get_cell_slice<T: Sized>(&self, ix: u64, len: u64) -> &[T] {
-        assert!(ix < self.capacity(), "bad index size");
+        if ix >= self.capacity() {
+            panic!("bad index size");
+        }
         let ix = self.cell_size * ix;
         let start = ix as usize + std::mem::size_of::<Header>();
         let end = start + std::mem::size_of::<T>() * len as usize;
@@ -201,7 +215,9 @@ impl BucketStorage {
 
     #[allow(clippy::mut_from_ref)]
     pub fn get_mut<T: Sized>(&self, ix: u64) -> &mut T {
-        assert!(ix < self.capacity(), "bad index size");
+        if ix >= self.capacity() {
+            panic!("bad index size");
+        }
         let start = (ix * self.cell_size) as usize + std::mem::size_of::<Header>();
         let end = start + std::mem::size_of::<T>();
         let item_slice: &[u8] = &self.mmap[start..end];
@@ -213,7 +229,9 @@ impl BucketStorage {
 
     #[allow(clippy::mut_from_ref)]
     pub fn get_mut_cell_slice<T: Sized>(&self, ix: u64, len: u64) -> &mut [T] {
-        assert!(ix < self.capacity(), "bad index size");
+        if ix >= self.capacity() {
+            panic!("bad index size");
+        }
         let ix = self.cell_size * ix;
         let start = ix as usize + std::mem::size_of::<Header>();
         let end = start + std::mem::size_of::<T>() * len as usize;

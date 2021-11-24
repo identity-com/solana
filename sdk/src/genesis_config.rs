@@ -277,7 +277,9 @@ impl fmt::Display for GenesisConfig {
                 self.accounts
                     .iter()
                     .map(|(pubkey, account)| {
-                        assert!(account.lamports > 0, "{:?}", (pubkey, account));
+                        if account.lamports == 0 {
+                            panic!("{:?}", (pubkey, account));
+                        }
                         account.lamports
                     })
                     .sum::<u64>()

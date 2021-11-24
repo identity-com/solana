@@ -732,6 +732,7 @@ type AccountMapsReadLock<'a, T> = RwLockReadGuard<'a, MapType<T>>;
 #[derive(Debug, Default)]
 pub struct ScanSlotTracker {
     is_removed: bool,
+    ref_count: u64,
 }
 
 impl ScanSlotTracker {

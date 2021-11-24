@@ -155,7 +155,6 @@ pub struct JsonRpcRequestProcessor {
     blockstore: Arc<Blockstore>,
     config: JsonRpcConfig,
     snapshot_config: Option<SnapshotConfig>,
-    #[allow(dead_code)]
     validator_exit: Arc<RwLock<Exit>>,
     health: Arc<RpcHealth>,
     cluster_info: Arc<ClusterInfo>,

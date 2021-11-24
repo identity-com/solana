@@ -322,11 +322,9 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
                             break;
                         }
                     }
-                    assert!(
-                        program_signer,
-                        "Missing signer for {}",
-                        instruction_account.pubkey
-                    );
+                    if !program_signer {
+                        panic!("Missing signer for {}", instruction_account.pubkey);
+                    }
                 }
             }
         }
@@ -357,14 +355,15 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
                         unsafe { transmute::<&Pubkey, &mut Pubkey>(account_info.owner) };
                     *account_info_mut = *account.borrow().owner();
                 }
-                // TODO: Figure out how to allow the System Program to resize the account data
-                assert!(
-                    data.len() == new_data.len(),
-                    "Account data resizing not supported yet: {} -> {}. \
+                if data.len() != new_data.len() {
+                    // TODO: Figure out how to allow the System Program to resize the account data
+                    panic!(
+                        "Account data resizing not supported yet: {} -> {}. \
                         Consider making this test conditional on `#[cfg(feature = \"test-bpf\")]`",
-                    data.len(),
-                    new_data.len()
-                );
+                        data.len(),
+                        new_data.len()
+                    );
+                }
                 data.clone_from_slice(new_data);
             }
         }

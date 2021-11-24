@@ -95,9 +95,9 @@ impl ShredFetchStage {
                 }
             }
             stats.shred_count += p.packets.len();
-            p.packets.iter_mut().for_each(|packet| {
+            p.packets.iter_mut().for_each(|mut packet| {
                 Self::process_packet(
-                    packet,
+                    &mut packet,
                     &mut shreds_received,
                     &mut stats,
                     last_root,

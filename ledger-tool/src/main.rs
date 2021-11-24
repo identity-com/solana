@@ -1728,7 +1728,6 @@ fn main() {
         }
         ("shred-meta", Some(arg_matches)) => {
             #[derive(Debug)]
-            #[allow(dead_code)]
             struct ShredMeta<'a> {
                 slot: Slot,
                 full_slot: bool,
@@ -1877,10 +1876,9 @@ fn main() {
                 wal_recovery_mode,
             );
             let mut ancestors = BTreeSet::new();
-            assert!(
-                blockstore.meta(ending_slot).unwrap().is_some(),
-                "Ending slot doesn't exist"
-            );
+            if blockstore.meta(ending_slot).unwrap().is_none() {
+                panic!("Ending slot doesn't exist");
+            }
             for a in AncestorIterator::new(ending_slot, &blockstore) {
                 ancestors.insert(a);
                 if a <= starting_slot {
