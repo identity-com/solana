@@ -1,11 +1,9 @@
-#![allow(clippy::integer_arithmetic)]
 use {
-    log::*,
-    solana_client::rpc_client::RpcClient,
-    solana_core::{
+    crate::{
         tower_storage::TowerStorage,
         validator::{Validator, ValidatorConfig, ValidatorStartProgress},
     },
+    solana_client::rpc_client::RpcClient,
     solana_gossip::{
         cluster_info::{ClusterInfo, Node},
         gossip_service::discover_cluster,
@@ -195,7 +193,7 @@ impl TestValidatorGenesis {
             info!("Fetching {} over RPC...", address);
             let account = rpc_client.get_account(&address).unwrap_or_else(|err| {
                 error!("Failed to fetch {}: {}", address, err);
-                solana_core::validator::abort();
+                crate::validator::abort();
             });
             self.add_account(address, AccountSharedData::from(account));
         }
