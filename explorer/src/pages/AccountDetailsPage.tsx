@@ -207,7 +207,7 @@ export function AccountHeader({
       </div>
     );
   }
-  
+
   if (isGatewayProgram) {
     return (
       <>
@@ -275,7 +275,7 @@ function DetailsSections({
 
 function InfoSection({ account }: { account: Account }) {
   const data = account?.details?.data;
-  
+
   console.log(data);
 
   if (data && data.program === "bpf-upgradeable-loader") {
@@ -298,7 +298,12 @@ function InfoSection({ account }: { account: Account }) {
   } else if (data && data.program === "spl-token") {
     return <TokenAccountSection account={account} tokenAccount={data.parsed} />;
   } else if (data && data.program === "gateway") {
-    return <GatewayTokenAccountSection account={account} tokenAccount={data.parsed} />;
+    return (
+      <GatewayTokenAccountSection
+        account={account}
+        tokenAccount={data.parsed}
+      />
+    );
   } else if (data && data.program === "nonce") {
     return <NonceAccountSection account={account} nonceAccount={data.parsed} />;
   } else if (data && data.program === "vote") {

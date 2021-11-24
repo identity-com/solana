@@ -1,30 +1,44 @@
 import React from "react";
-import {AccountInfo, Connection, PublicKey, StakeActivationData} from "@solana/web3.js";
-import {Cluster, useCluster} from "../cluster";
-import {HistoryProvider} from "./history";
-import {TokensProvider} from "./tokens";
-import {create} from "superstruct";
-import {ParsedInfo} from "validators";
-import {StakeAccount} from "validators/accounts/stake";
-import {MintAccountInfo, TokenAccount, TokenAccountInfo,} from "validators/accounts/token";
+import {
+  AccountInfo,
+  Connection,
+  PublicKey,
+  StakeActivationData,
+} from "@solana/web3.js";
+import { Cluster, useCluster } from "../cluster";
+import { HistoryProvider } from "./history";
+import { TokensProvider } from "./tokens";
+import { create } from "superstruct";
+import { ParsedInfo } from "validators";
+import { StakeAccount } from "validators/accounts/stake";
+import {
+  MintAccountInfo,
+  TokenAccount,
+  TokenAccountInfo,
+} from "validators/accounts/token";
 import * as Cache from "providers/cache";
-import {ActionType, FetchStatus} from "providers/cache";
-import {reportError} from "utils/sentry";
-import {VoteAccount} from "validators/accounts/vote";
-import {NonceAccount} from "validators/accounts/nonce";
-import {SysvarAccount} from "validators/accounts/sysvar";
-import {ConfigAccount} from "validators/accounts/config";
-import {FlaggedAccountsProvider} from "./flagged-accounts";
+import { ActionType, FetchStatus } from "providers/cache";
+import { reportError } from "utils/sentry";
+import { VoteAccount } from "validators/accounts/vote";
+import { NonceAccount } from "validators/accounts/nonce";
+import { SysvarAccount } from "validators/accounts/sysvar";
+import { ConfigAccount } from "validators/accounts/config";
+import { FlaggedAccountsProvider } from "./flagged-accounts";
 import {
   ProgramDataAccount,
   ProgramDataAccountInfo,
   UpgradeableLoaderAccount,
 } from "validators/accounts/upgradeable-program";
-import {RewardsProvider} from "./rewards";
-import {Metadata, MetadataData} from "@metaplex/js";
+import { RewardsProvider } from "./rewards";
+import { Metadata, MetadataData } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
-import {GatewayTokenAccount} from "../../validators/accounts/gateway";
-import {GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
+import { GatewayTokenAccount } from "../../validators/accounts/gateway";
+import {
+  GatewayToken,
+  State as GatewayState,
+  GatewayTokenData,
+  GatewayTokenState,
+} from "@identity.com/solana-gateway-ts";
 
 export { useAccountHistory } from "./history";
 
@@ -99,7 +113,9 @@ export interface Account {
   details?: Details;
 }
 
-export const GATEWAY_PROGRAM_ID = new PublicKey("gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs");
+export const GATEWAY_PROGRAM_ID = new PublicKey(
+  "gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs"
+);
 function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
   if (!!state.active) return GatewayState.ACTIVE;
   if (!!state.revoked) return GatewayState.REVOKED;
@@ -139,7 +155,10 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
   );
 }
 
-function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):GatewayTokenProgramData {
+function parseGatewayToken(
+  result: AccountInfo<Buffer>,
+  pubkey: PublicKey
+): GatewayTokenProgramData {
   const parsedData = GatewayTokenData.fromAccount(result.data);
   const parsed = new GatewayToken(
     parsedData.issuingGatekeeper.toPublicKey(),
@@ -152,8 +171,8 @@ function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):Gatew
   );
   return {
     program: "gateway",
-    parsed: {info: parsed},
-  }
+    parsed: { info: parsed },
+  };
 }
 
 async function fetchAccountInfo(

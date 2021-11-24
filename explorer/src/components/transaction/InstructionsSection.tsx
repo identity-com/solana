@@ -42,7 +42,7 @@ import { isWormholeInstruction } from "components/instruction/wormhole/types";
 import { AssociatedTokenDetailsCard } from "components/instruction/AssociatedTokenDetailsCard";
 import { isMangoInstruction } from "components/instruction/mango/types";
 import { MangoDetailsCard } from "components/instruction/MangoDetails";
-import {isGatewayInstruction} from "../instruction/gateway/types";
+import { isGatewayInstruction } from "../instruction/gateway/types";
 
 export type InstructionDetailsProps = {
   tx: ParsedTransaction;
