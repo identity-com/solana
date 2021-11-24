@@ -294,9 +294,7 @@ fn check_for_simple_vote_transaction(
     packet_offsets: &PacketOffsets,
     current_offset: usize,
 ) -> Result<(), PacketError> {
-    // vote could have 1 or 2 sigs; zero sig has already been excluded at
-    // do_get_packet_offsets.
-    if packet_offsets.sig_len > 2 {
+    if packet_offsets.sig_len != 1 {
         return Err(PacketError::InvalidSignatureLen);
     }
 
