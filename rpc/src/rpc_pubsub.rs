@@ -8,6 +8,7 @@ use {
             ProgramSubscriptionParams, SignatureSubscriptionParams, SubscriptionControl,
             SubscriptionId, SubscriptionParams, SubscriptionToken,
         },
+        rpc_subscriptions::RpcVote,
     },
     dashmap::DashMap,
     jsonrpc_core::{Error, ErrorCode, Result},
@@ -20,7 +21,7 @@ use {
             RpcTransactionLogsConfig, RpcTransactionLogsFilter,
         },
         rpc_response::{
-            Response as RpcResponse, RpcKeyedAccount, RpcLogsResponse, RpcSignatureResult, RpcVote,
+            Response as RpcResponse, RpcKeyedAccount, RpcLogsResponse, RpcSignatureResult,
             SlotInfo, SlotUpdate,
         },
     },

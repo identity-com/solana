@@ -18,7 +18,7 @@ use {
         rpc_filter::RpcFilterType,
         rpc_response::{
             ProcessedSignatureResult, ReceivedSignatureResult, Response, RpcKeyedAccount,
-            RpcLogsResponse, RpcResponseContext, RpcSignatureResult, RpcVote, SlotInfo, SlotUpdate,
+            RpcLogsResponse, RpcResponseContext, RpcSignatureResult, SlotInfo, SlotUpdate,
         },
     },
     solana_measure::measure::Measure,
@@ -29,7 +29,7 @@ use {
     },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
-        clock::Slot,
+        clock::{Slot, UnixTimestamp},
         pubkey::Pubkey,
         signature::Signature,
         timing::timestamp,
@@ -69,6 +69,15 @@ fn get_transaction_logs(
     }
     logs
 }
+
+// A more human-friendly version of Vote, with the bank state signature base58 encoded.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RpcVote {
+    pub slots: Vec<Slot>,
+    pub hash: String,
+    pub timestamp: Option<UnixTimestamp>,
+}
+
 pub enum NotificationEntry {
     Slot(SlotInfo),
     SlotUpdate(SlotUpdate),
