@@ -666,10 +666,7 @@ export class Transaction {
   /**
    * Populate Transaction object from message and signatures
    */
-  static populate(
-    message: Message,
-    signatures: Array<string> = [],
-  ): Transaction {
+  static populate(message: Message, signatures: Array<string>): Transaction {
     const transaction = new Transaction();
     transaction.recentBlockhash = message.recentBlockhash;
     if (message.header.numRequiredSignatures > 0) {
@@ -691,10 +688,9 @@ export class Transaction {
         const pubkey = message.accountKeys[account];
         return {
           pubkey,
-          isSigner:
-            transaction.signatures.some(
-              keyObj => keyObj.publicKey.toString() === pubkey.toString(),
-            ) || message.isAccountSigner(account),
+          isSigner: transaction.signatures.some(
+            keyObj => keyObj.publicKey.toString() === pubkey.toString(),
+          ),
           isWritable: message.isAccountWritable(account),
         };
       });
