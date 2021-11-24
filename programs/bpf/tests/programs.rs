@@ -441,7 +441,6 @@ fn test_program_bpf_sanity() {
             ("sanity++", true),
             ("secp256k1_recover", true),
             ("sha", true),
-            ("stdlib", true),
             ("struct_pass", true),
             ("struct_ret", true),
         ]);
