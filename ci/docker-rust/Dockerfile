@@ -1,6 +1,6 @@
 # Note: when the rust version is changed also modify
 # ci/rust-version.sh to pick up the new image tag
-FROM rust:1.55.0
+FROM rust:1.54.0
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
@@ -14,10 +14,11 @@ RUN set -x \
  && apt update \
  && apt install -y \
       buildkite-agent \
-      clang \
+      clang-7 \
       cmake \
       lcov \
       libudev-dev \
+      libclang-common-7-dev \
       mscgen \
       net-tools \
       rsync \
