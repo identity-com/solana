@@ -59,7 +59,7 @@ export function AssignWithSeedDetailsCard(props: {
       </tr>
 
       <tr>
-        <td>Assigned Program Id</td>
+        <td>Assigned Owner</td>
         <td className="text-lg-right">
           <Address pubkey={info.owner} alignRight link />
         </td>

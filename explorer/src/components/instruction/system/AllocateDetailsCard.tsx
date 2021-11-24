@@ -42,8 +42,8 @@ export function AllocateDetailsCard(props: {
       </tr>
 
       <tr>
-        <td>Allocated Data Size</td>
-        <td className="text-lg-right">{info.space} byte(s)</td>
+        <td>Allocated Space (Bytes)</td>
+        <td className="text-lg-right">{info.space}</td>
       </tr>
     </InstructionCard>
   );

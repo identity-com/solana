@@ -74,12 +74,12 @@ export function CreateWithSeedDetailsCard(props: {
       </tr>
 
       <tr>
-        <td>Allocated Data Size</td>
-        <td className="text-lg-right">{info.space} byte(s)</td>
+        <td>Allocated Space (Bytes)</td>
+        <td className="text-lg-right">{info.space}</td>
       </tr>
 
       <tr>
-        <td>Assigned Program Id</td>
+        <td>Assigned Owner</td>
         <td className="text-lg-right">
           <Address pubkey={info.owner} alignRight link />
         </td>

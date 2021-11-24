@@ -42,14 +42,14 @@ export function UnknownAccountCard({ account }: { account: Account }) {
 
         {details?.space !== undefined && (
           <tr>
-            <td>Allocated Data Size</td>
-            <td className="text-lg-right">{details.space} byte(s)</td>
+            <td>Data (Bytes)</td>
+            <td className="text-lg-right">{details.space}</td>
           </tr>
         )}
 
         {details && (
           <tr>
-            <td>Assigned Program Id</td>
+            <td>Owner</td>
             <td className="text-lg-right">
               <Address pubkey={details.owner} alignRight link />
             </td>
