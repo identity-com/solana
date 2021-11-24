@@ -48,9 +48,7 @@ pub type AccountMap<V> = InMemAccountsIndex<V>;
 
 pub(crate) type AccountMapEntry<T> = Arc<AccountMapEntryInner<T>>;
 
-pub trait IsCached:
-    'static + Clone + Debug + PartialEq + ZeroLamport + Copy + Default + Sync + Send
-{
+pub trait IsCached: 'static + Clone + Debug + PartialEq + ZeroLamport + Copy + Default {
     fn is_cached(&self) -> bool;
 }
 
@@ -696,7 +694,7 @@ pub struct AccountsIndex<T: IsCached> {
     // scanning the fork with that Bank at the tip is no longer possible.
     pub removed_bank_ids: Mutex<HashSet<BankId>>,
 
-    storage: AccountsIndexStorage<T>,
+    storage: AccountsIndexStorage,
 }
 
 impl<T: IsCached> AccountsIndex<T> {
@@ -727,11 +725,7 @@ impl<T: IsCached> AccountsIndex<T> {
 
     fn allocate_accounts_index(
         config: Option<AccountsIndexConfig>,
-    ) -> (
-        LockMapType<T>,
-        PubkeyBinCalculator16,
-        AccountsIndexStorage<T>,
-    ) {
+    ) -> (LockMapType<T>, PubkeyBinCalculator16, AccountsIndexStorage) {
         let bins = config
             .and_then(|config| config.bins)
             .unwrap_or(BINS_DEFAULT);

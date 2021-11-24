@@ -22,12 +22,12 @@ type K = Pubkey;
 pub struct InMemAccountsIndex<T: IsCached> {
     // backing store
     map: HashMap<Pubkey, AccountMapEntry<T>>,
-    storage: Arc<BucketMapHolder<T>>,
+    storage: Arc<BucketMapHolder>,
     bin: usize,
 }
 
 impl<T: IsCached> InMemAccountsIndex<T> {
-    pub fn new(storage: &AccountsIndexStorage<T>, bin: usize) -> Self {
+    pub fn new(storage: &AccountsIndexStorage, bin: usize) -> Self {
         Self {
             map: HashMap::new(),
             storage: storage.storage().clone(),
@@ -35,7 +35,7 @@ impl<T: IsCached> InMemAccountsIndex<T> {
         }
     }
 
-    pub fn new_bucket_map_holder() -> Arc<BucketMapHolder<T>> {
+    pub fn new_bucket_map_holder() -> Arc<BucketMapHolder> {
         Arc::new(BucketMapHolder::new())
     }
 
