@@ -23,7 +23,6 @@ use std::{
         Bound::{Excluded, Included, Unbounded},
         Range, RangeBounds,
     },
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -39,12 +38,10 @@ pub const FLUSH_THREADS_TESTING: usize = 1;
 pub const ACCOUNTS_INDEX_CONFIG_FOR_TESTING: AccountsIndexConfig = AccountsIndexConfig {
     bins: Some(BINS_FOR_TESTING),
     flush_threads: Some(FLUSH_THREADS_TESTING),
-    drives: None,
 };
 pub const ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS: AccountsIndexConfig = AccountsIndexConfig {
     bins: Some(BINS_FOR_BENCHMARKS),
     flush_threads: Some(FLUSH_THREADS_TESTING),
-    drives: None,
 };
 pub type ScanResult<T> = Result<T, ScanError>;
 pub type SlotList<T> = Vec<(Slot, T)>;
@@ -100,7 +97,6 @@ pub struct AccountSecondaryIndexesIncludeExclude {
 pub struct AccountsIndexConfig {
     pub bins: Option<usize>,
     pub flush_threads: Option<usize>,
-    pub drives: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Default, Clone)]
