@@ -129,11 +129,9 @@ function FungibleTokenMintAccountCard({
               <div className="card-body">
                 <h4>
                   Price{" "}
-                  {tokenPriceInfo.market_cap_rank && (
-                    <span className="ml-2 badge badge-primary rank">
-                      Rank #{tokenPriceInfo.market_cap_rank}
-                    </span>
-                  )}
+                  <span className="ml-2 badge badge-primary rank">
+                    Rank #{tokenPriceInfo.market_cap_rank}
+                  </span>
                 </h4>
                 <h1 className="mb-0">
                   ${tokenPriceInfo.price.toFixed(tokenPriceDecimals)}{" "}
