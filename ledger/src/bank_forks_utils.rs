@@ -6,13 +6,11 @@ use crate::{
     },
     leader_schedule_cache::LeaderScheduleCache,
 };
-
 use log::*;
 use solana_entry::entry::VerifyRecyclers;
 use solana_runtime::{
-    accounts_update_notifier_interface::AccountsUpdateNotifier, bank_forks::BankForks,
-    snapshot_archive_info::SnapshotArchiveInfoGetter, snapshot_config::SnapshotConfig,
-    snapshot_package::AccountsPackageSender, snapshot_utils,
+    bank_forks::BankForks, snapshot_archive_info::SnapshotArchiveInfoGetter,
+    snapshot_config::SnapshotConfig, snapshot_package::AccountsPackageSender, snapshot_utils,
 };
 use solana_sdk::{clock::Slot, genesis_config::GenesisConfig, hash::Hash};
 use std::{fs, path::PathBuf, process, result};
@@ -47,7 +45,6 @@ fn to_loadresult(
 ///
 /// If a snapshot config is given, and a snapshot is found, it will be loaded.  Otherwise, load
 /// from genesis.
-#[allow(clippy::too_many_arguments)]
 pub fn load(
     genesis_config: &GenesisConfig,
     blockstore: &Blockstore,
@@ -58,7 +55,6 @@ pub fn load(
     transaction_status_sender: Option<&TransactionStatusSender>,
     cache_block_meta_sender: Option<&CacheBlockMetaSender>,
     accounts_package_sender: AccountsPackageSender,
-    accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> LoadResult {
     if let Some(snapshot_config) = snapshot_config {
         info!(
@@ -84,7 +80,6 @@ pub fn load(
                 transaction_status_sender,
                 cache_block_meta_sender,
                 accounts_package_sender,
-                accounts_update_notifier,
             );
         } else {
             info!("No snapshot package available; will load from genesis");
@@ -101,7 +96,6 @@ pub fn load(
         cache_block_meta_sender,
         snapshot_config,
         accounts_package_sender,
-        accounts_update_notifier,
     )
 }
 
@@ -113,7 +107,6 @@ fn load_from_genesis(
     cache_block_meta_sender: Option<&CacheBlockMetaSender>,
     snapshot_config: Option<&SnapshotConfig>,
     accounts_package_sender: AccountsPackageSender,
-    accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> LoadResult {
     info!("Processing ledger from genesis");
     to_loadresult(
@@ -125,7 +118,6 @@ fn load_from_genesis(
             cache_block_meta_sender,
             snapshot_config,
             accounts_package_sender,
-            accounts_update_notifier,
         ),
         None,
     )
@@ -142,7 +134,6 @@ fn load_from_snapshot(
     transaction_status_sender: Option<&TransactionStatusSender>,
     cache_block_meta_sender: Option<&CacheBlockMetaSender>,
     accounts_package_sender: AccountsPackageSender,
-    accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> LoadResult {
     // Fail hard here if snapshot fails to load, don't silently continue
     if account_paths.is_empty() {
@@ -167,7 +158,6 @@ fn load_from_snapshot(
             process_options.accounts_db_skip_shrink,
             process_options.verify_index,
             process_options.accounts_db_config.clone(),
-            accounts_update_notifier,
         )
         .expect("Load from snapshot failed");
 

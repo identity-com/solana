@@ -506,7 +506,6 @@ mod tests {
             None,
             None,
             accounts_package_sender,
-            None,
         )
         .unwrap();
         let leader_schedule_cache = Arc::new(cached_leader_schedule);

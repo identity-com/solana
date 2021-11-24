@@ -5,7 +5,6 @@ use crate::{
         ACCOUNTS_DB_CONFIG_FOR_TESTING,
     },
     accounts_index::{AccountSecondaryIndexes, IndexKey, ScanResult},
-    accounts_update_notifier_interface::AccountsUpdateNotifier,
     ancestors::Ancestors,
     bank::{
         NonceRollbackFull, NonceRollbackInfo, RentDebits, TransactionCheckResult,
@@ -140,7 +139,6 @@ impl Accounts {
             caching_enabled,
             shrink_ratio,
             Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
-            None,
         )
     }
 
@@ -158,7 +156,6 @@ impl Accounts {
             caching_enabled,
             shrink_ratio,
             Some(ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS),
-            None,
         )
     }
 
@@ -169,7 +166,6 @@ impl Accounts {
         caching_enabled: bool,
         shrink_ratio: AccountShrinkThreshold,
         accounts_db_config: Option<AccountsDbConfig>,
-        accounts_update_notifier: Option<AccountsUpdateNotifier>,
     ) -> Self {
         Self {
             accounts_db: Arc::new(AccountsDb::new_with_config(
@@ -179,7 +175,6 @@ impl Accounts {
                 caching_enabled,
                 shrink_ratio,
                 accounts_db_config,
-                accounts_update_notifier,
             )),
             account_locks: Mutex::new(AccountLocks::default()),
         }

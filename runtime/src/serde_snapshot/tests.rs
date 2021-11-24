@@ -84,7 +84,6 @@ where
         AccountShrinkThreshold::default(),
         false,
         Some(crate::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING),
-        None,
     )
 }
 
@@ -247,7 +246,6 @@ fn test_bank_serialize_style(serde_style: SerdeStyle) {
         AccountShrinkThreshold::default(),
         false,
         Some(crate::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING),
-        None,
     )
     .unwrap();
     dbank.src = ref_sc;

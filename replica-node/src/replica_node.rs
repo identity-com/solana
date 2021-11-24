@@ -133,7 +133,6 @@ fn initialize_from_snapshot(
         false,
         process_options.verify_index,
         process_options.accounts_db_config,
-        None,
     )
     .unwrap();
 
