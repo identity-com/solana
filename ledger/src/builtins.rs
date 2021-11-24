@@ -1,4 +1,7 @@
-use solana_runtime::builtins::{ActivationType, Builtin, Builtins};
+use solana_runtime::{
+    bank::{Builtin, Builtins},
+    builtins::ActivationType,
+};
 use solana_sdk::pubkey::Pubkey;
 
 macro_rules! to_builtin {

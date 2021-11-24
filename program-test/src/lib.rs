@@ -11,9 +11,8 @@ use {
     solana_banks_server::banks_server::start_local_server,
     solana_program_runtime::InstructionProcessor,
     solana_runtime::{
-        bank::{Bank, ExecuteTimings},
+        bank::{Bank, Builtin, ExecuteTimings},
         bank_forks::BankForks,
-        builtins::Builtin,
         commitment::BlockCommitmentCache,
         genesis_utils::{create_genesis_config_with_leader_ex, GenesisConfigInfo},
     },

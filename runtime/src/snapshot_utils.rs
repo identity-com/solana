@@ -2,8 +2,7 @@ use {
     crate::{
         accounts_db::AccountShrinkThreshold,
         accounts_index::{AccountSecondaryIndexes, AccountsIndexConfig},
-        bank::{Bank, BankSlotDelta},
-        builtins::Builtins,
+        bank::{Bank, BankSlotDelta, Builtins},
         hardened_unpack::{unpack_snapshot, ParallelSelector, UnpackError, UnpackedAppendVecMap},
         serde_snapshot::{
             bank_from_streams, bank_to_stream, SerdeStyle, SnapshotStorage, SnapshotStorages,
