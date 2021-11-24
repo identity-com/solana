@@ -31,6 +31,7 @@ use solana_runtime::{
     bank_forks::BankForks,
     cost_model::CostModel,
     cost_tracker::CostTracker,
+    cost_tracker_stats::CostTrackerStats,
     hardened_unpack::{open_genesis_config, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
     snapshot_archive_info::SnapshotArchiveInfoGetter,
     snapshot_config::SnapshotConfig,
@@ -772,6 +773,7 @@ fn compute_slot_cost(blockstore: &Blockstore, slot: Slot) -> Result<(), String> 
     let mut cost_model = CostModel::default();
     cost_model.initialize_cost_table(&blockstore.read_program_costs().unwrap());
     let mut cost_tracker = CostTracker::default();
+    let mut cost_tracker_stats = CostTrackerStats::default();
 
     for entry in entries {
         num_transactions += entry.transactions.len();
@@ -794,11 +796,15 @@ fn compute_slot_cost(blockstore: &Blockstore, slot: Slot) -> Result<(), String> 
                     &transaction,
                     true, // demote_program_write_locks
                 );
-                let result = cost_tracker.try_add(&transaction, &tx_cost);
-                if result.is_err() {
+                if cost_tracker
+                    .try_add(&transaction, &tx_cost, &mut cost_tracker_stats)
+                    .is_err()
+                {
                     println!(
-                        "Slot: {}, CostModel rejected transaction {:?}, reason {:?}",
-                        slot, transaction, result,
+                        "Slot: {}, CostModel rejected transaction {:?}, stats {:?}!",
+                        slot,
+                        transaction,
+                        cost_tracker.get_stats()
                     );
                 }
                 for (program_id, _instruction) in transaction.message().program_instructions_iter()
@@ -809,8 +815,12 @@ fn compute_slot_cost(blockstore: &Blockstore, slot: Slot) -> Result<(), String> 
     }
 
     println!(
-        "Slot: {}, Entries: {}, Transactions: {}, Programs {}",
-        slot, num_entries, num_transactions, num_programs,
+        "Slot: {}, Entries: {}, Transactions: {}, Programs {}, {:?}",
+        slot,
+        num_entries,
+        num_transactions,
+        num_programs,
+        cost_tracker.get_stats()
     );
     println!("  Programs: {:?}", program_ids);
 
