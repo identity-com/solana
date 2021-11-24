@@ -175,9 +175,12 @@ impl SanitizedMessage {
     /// Returns true if the account at the specified index is invoked as a
     /// program in this message.
     pub fn is_invoked(&self, key_index: usize) -> bool {
-        match self {
-            Self::Legacy(message) => message.is_key_called_as_program(key_index),
-            Self::V0(message) => message.is_key_called_as_program(key_index),
+        if let Ok(key_index) = u8::try_from(key_index) {
+            self.instructions()
+                .iter()
+                .any(|ix| ix.program_id_index == key_index)
+        } else {
+            false
         }
     }
 
@@ -189,10 +192,10 @@ impl SanitizedMessage {
 
     /// Returns true if the account at the specified index is writable by the
     /// instructions in this message.
-    pub fn is_writable(&self, index: usize, demote_program_write_locks: bool) -> bool {
+    pub fn is_writable(&self, index: usize) -> bool {
         match self {
-            Self::Legacy(message) => message.is_writable(index, demote_program_write_locks),
-            Self::V0(message) => message.is_writable(index, demote_program_write_locks),
+            Self::Legacy(message) => message.is_writable(index),
+            Self::V0(message) => message.is_writable(index),
         }
     }
 
@@ -216,7 +219,7 @@ impl SanitizedMessage {
     //   67..69 - data len - u16
     //   69..data_len - data
     #[allow(clippy::integer_arithmetic)]
-    pub fn serialize_instructions(&self, demote_program_write_locks: bool) -> Vec<u8> {
+    pub fn serialize_instructions(&self) -> Vec<u8> {
         // 64 bytes is a reasonable guess, calculating exactly is slower in benchmarks
         let mut data = Vec::with_capacity(self.instructions().len() * (32 * 2));
         append_u16(&mut data, self.instructions().len() as u16);
@@ -231,7 +234,7 @@ impl SanitizedMessage {
             for account_index in &instruction.accounts {
                 let account_index = *account_index as usize;
                 let is_signer = self.is_signer(account_index);
-                let is_writable = self.is_writable(account_index, demote_program_write_locks);
+                let is_writable = self.is_writable(account_index);
                 let mut account_meta = InstructionsSysvarAccountMeta::NONE;
                 if is_signer {
                     account_meta |= InstructionsSysvarAccountMeta::IS_SIGNER;
@@ -437,10 +440,9 @@ mod tests {
             ),
         ];
 
-        let demote_program_write_locks = true;
         let message = Message::new(&instructions, Some(&id1));
         let sanitized_message = SanitizedMessage::try_from(message.clone()).unwrap();
-        let serialized = sanitized_message.serialize_instructions(demote_program_write_locks);
+        let serialized = sanitized_message.serialize_instructions();
 
         // assert that SanitizedMessage::serialize_instructions has the same behavior as the
         // deprecated Message::serialize_instructions method

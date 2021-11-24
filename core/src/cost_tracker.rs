@@ -46,23 +46,18 @@ impl CostTracker {
     pub fn would_transaction_fit(
         &self,
         transaction: &SanitizedTransaction,
-        demote_program_write_locks: bool,
     ) -> Result<(), CostModelError> {
         let mut cost_model = self.cost_model.write().unwrap();
-        let tx_cost = cost_model.calculate_cost(transaction, demote_program_write_locks);
+        let tx_cost = cost_model.calculate_cost(transaction);
         self.would_fit(
             &tx_cost.writable_accounts,
             &(tx_cost.account_access_cost + tx_cost.execution_cost),
         )
     }
 
-    pub fn add_transaction_cost(
-        &mut self,
-        transaction: &SanitizedTransaction,
-        demote_program_write_locks: bool,
-    ) {
+    pub fn add_transaction_cost(&mut self, transaction: &SanitizedTransaction) {
         let mut cost_model = self.cost_model.write().unwrap();
-        let tx_cost = cost_model.calculate_cost(transaction, demote_program_write_locks);
+        let tx_cost = cost_model.calculate_cost(transaction);
         let cost = tx_cost.account_access_cost + tx_cost.execution_cost;
         for account_key in tx_cost.writable_accounts.iter() {
             *self

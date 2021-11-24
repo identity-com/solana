@@ -10,8 +10,7 @@ use solana_sdk::{
     account::{AccountSharedData, ReadableAccount, WritableAccount},
     compute_budget::ComputeBudget,
     feature_set::{
-        demote_program_write_locks, neon_evm_compute_budget, tx_wide_compute_cap,
-        updated_verify_policy, FeatureSet,
+        neon_evm_compute_budget, tx_wide_compute_cap, updated_verify_policy, FeatureSet,
     },
     fee_calculator::FeeCalculator,
     hash::Hash,
@@ -95,7 +94,6 @@ impl<'a> ThisInvokeContext<'a> {
             instruction,
             executable_accounts,
             accounts,
-            feature_set.is_active(&demote_program_write_locks::id()),
         );
         let compute_meter = if feature_set.is_active(&tx_wide_compute_cap::id()) {
             compute_meter
@@ -391,7 +389,6 @@ impl MessageProcessor {
     }
 
     /// Verify the results of an instruction
-    #[allow(clippy::too_many_arguments)]
     pub fn verify(
         message: &Message,
         instruction: &CompiledInstruction,
@@ -402,7 +399,6 @@ impl MessageProcessor {
         timings: &mut ExecuteDetailsTimings,
         logger: Rc<RefCell<dyn Logger>>,
         updated_verify_policy: bool,
-        demote_program_write_locks: bool,
     ) -> Result<(), InstructionError> {
         // Verify all executable accounts have zero outstanding refs
         Self::verify_account_references(executable_accounts)?;
@@ -423,7 +419,7 @@ impl MessageProcessor {
                 pre_accounts[unique_index]
                     .verify(
                         program_id,
-                        message.is_writable(account_index, demote_program_write_locks),
+                        message.is_writable(account_index),
                         rent,
                         &account,
                         timings,
@@ -538,7 +534,6 @@ impl MessageProcessor {
             timings,
             invoke_context.get_logger(),
             invoke_context.is_feature_active(&updated_verify_policy::id()),
-            invoke_context.is_feature_active(&demote_program_write_locks::id()),
         )?;
 
         timings.accumulate(&invoke_context.timings);
@@ -718,7 +713,7 @@ mod tests {
                 ))),
             ));
             let write_privileges: Vec<bool> = (0..message.account_keys.len())
-                .map(|i| message.is_writable(i, /*demote_program_write_locks=*/ true))
+                .map(|i| message.is_writable(i))
                 .collect();
             invoke_context
                 .verify_and_update(&message.instructions[0], &these_accounts, &write_privileges)
@@ -1198,8 +1193,6 @@ mod tests {
             metas.clone(),
         );
         let message = Message::new(&[instruction], None);
-        let feature_set = FeatureSet::all_enabled();
-        let demote_program_write_locks = feature_set.is_active(&demote_program_write_locks::id());
 
         let ancestors = Ancestors::default();
         let blockhash = Hash::default();
@@ -1217,7 +1210,7 @@ mod tests {
             Rc::new(RefCell::new(MockComputeMeter::default())),
             Rc::new(RefCell::new(Executors::default())),
             None,
-            Arc::new(feature_set),
+            Arc::new(FeatureSet::all_enabled()),
             Arc::new(Accounts::default_for_tests()),
             &ancestors,
             &blockhash,
@@ -1229,7 +1222,7 @@ mod tests {
             .account_keys
             .iter()
             .enumerate()
-            .map(|(i, _)| message.is_writable(i, demote_program_write_locks))
+            .map(|(i, _)| message.is_writable(i))
             .collect::<Vec<bool>>();
         accounts[0].1.borrow_mut().data_as_mut_slice()[0] = 1;
         assert_eq!(
@@ -1289,7 +1282,7 @@ mod tests {
                 .account_keys
                 .iter()
                 .enumerate()
-                .map(|(i, _)| message.is_writable(i, demote_program_write_locks))
+                .map(|(i, _)| message.is_writable(i))
                 .collect::<Vec<bool>>();
             assert_eq!(
                 InstructionProcessor::process_cross_program_instruction(

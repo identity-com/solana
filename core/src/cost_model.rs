@@ -113,11 +113,7 @@ impl CostModel {
         );
     }
 
-    pub fn calculate_cost(
-        &mut self,
-        transaction: &SanitizedTransaction,
-        demote_program_write_locks: bool,
-    ) -> &TransactionCost {
+    pub fn calculate_cost(&mut self, transaction: &SanitizedTransaction) -> &TransactionCost {
         self.transaction_cost.reset();
 
         // calculate transaction exeution cost
@@ -126,7 +122,7 @@ impl CostModel {
         // calculate account access cost
         let message = transaction.message();
         message.account_keys_iter().enumerate().for_each(|(i, k)| {
-            let is_writable = message.is_writable(i, demote_program_write_locks);
+            let is_writable = message.is_writable(i);
 
             if is_writable {
                 self.transaction_cost.writable_accounts.push(*k);
@@ -357,7 +353,7 @@ mod tests {
         .unwrap();
 
         let mut cost_model = CostModel::default();
-        let tx_cost = cost_model.calculate_cost(&tx, /*demote_program_write_locks=*/ true);
+        let tx_cost = cost_model.calculate_cost(&tx);
         assert_eq!(2 + 2, tx_cost.writable_accounts.len());
         assert_eq!(signer1.pubkey(), tx_cost.writable_accounts[0]);
         assert_eq!(signer2.pubkey(), tx_cost.writable_accounts[1]);
@@ -399,7 +395,7 @@ mod tests {
         cost_model
             .upsert_instruction_cost(&system_program::id(), expected_execution_cost)
             .unwrap();
-        let tx_cost = cost_model.calculate_cost(&tx, /*demote_program_write_locks=*/ true);
+        let tx_cost = cost_model.calculate_cost(&tx);
         assert_eq!(expected_account_cost, tx_cost.account_access_cost);
         assert_eq!(expected_execution_cost, tx_cost.execution_cost);
         assert_eq!(2, tx_cost.writable_accounts.len());
@@ -469,8 +465,7 @@ mod tests {
                 } else {
                     thread::spawn(move || {
                         let mut cost_model = cost_model.write().unwrap();
-                        let tx_cost = cost_model
-                            .calculate_cost(&tx, /*demote_program_write_locks=*/ true);
+                        let tx_cost = cost_model.calculate_cost(&tx);
                         assert_eq!(3, tx_cost.writable_accounts.len());
                         assert_eq!(expected_account_cost, tx_cost.account_access_cost);
                     })

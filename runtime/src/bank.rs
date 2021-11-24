@@ -2755,10 +2755,7 @@ impl Bank {
             .into_iter()
             .map(SanitizedTransaction::try_from)
             .collect::<Result<Vec<_>>>()?;
-        let lock_results = self
-            .rc
-            .accounts
-            .lock_accounts(sanitized_txs.iter(), self.demote_program_write_locks());
+        let lock_results = self.rc.accounts.lock_accounts(sanitized_txs.iter());
         Ok(TransactionBatch::new(
             lock_results,
             self,
@@ -2778,10 +2775,7 @@ impl Bank {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let lock_results = self
-            .rc
-            .accounts
-            .lock_accounts(sanitized_txs.iter(), self.demote_program_write_locks());
+        let lock_results = self.rc.accounts.lock_accounts(sanitized_txs.iter());
         Ok(TransactionBatch::new(
             lock_results,
             self,
@@ -2794,10 +2788,7 @@ impl Bank {
         &'a self,
         txs: &'b [SanitizedTransaction],
     ) -> TransactionBatch<'a, 'b> {
-        let lock_results = self
-            .rc
-            .accounts
-            .lock_accounts(txs.iter(), self.demote_program_write_locks());
+        let lock_results = self.rc.accounts.lock_accounts(txs.iter());
         TransactionBatch::new(lock_results, self, Cow::Borrowed(txs))
     }
 
@@ -2872,11 +2863,9 @@ impl Bank {
     pub fn unlock_accounts(&self, batch: &mut TransactionBatch) {
         if batch.needs_unlock {
             batch.needs_unlock = false;
-            self.rc.accounts.unlock_accounts(
-                batch.sanitized_transactions().iter(),
-                batch.lock_results(),
-                self.demote_program_write_locks(),
-            )
+            self.rc
+                .accounts
+                .unlock_accounts(batch.sanitized_transactions().iter(), batch.lock_results())
         }
     }
 
@@ -3635,7 +3624,6 @@ impl Bank {
             &self.last_blockhash_with_fee_calculator(),
             self.rent_for_sysvars(),
             self.merge_nonce_error_into_system_error(),
-            self.demote_program_write_locks(),
         );
         let rent_debits = self.collect_rent(executed, loaded_txs);
 
@@ -5386,11 +5374,6 @@ impl Bank {
     pub fn stake_program_advance_activating_credits_observed(&self) -> bool {
         self.feature_set
             .is_active(&feature_set::stake_program_advance_activating_credits_observed::id())
-    }
-
-    pub fn demote_program_write_locks(&self) -> bool {
-        self.feature_set
-            .is_active(&feature_set::demote_program_write_locks::id())
     }
 
     // Check if the wallclock time from bank creation to now has exceeded the allotted
