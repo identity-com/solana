@@ -1979,8 +1979,6 @@ export type ConnectionConfig = {
   fetchMiddleware?: FetchMiddleware;
   /** Optional Disable retring calls when server responds with HTTP 429 (Too Many Requests) */
   disableRetryOnRateLimit?: boolean;
-  /** time to allow for the server to initially process a transaction (in milliseconds) */
-  confirmTransactionInitialTimeout?: number;
 };
 
 /**
@@ -1988,7 +1986,6 @@ export type ConnectionConfig = {
  */
 export class Connection {
   /** @internal */ _commitment?: Commitment;
-  /** @internal */ _confirmTransactionInitialTimeout?: number;
   /** @internal */ _rpcEndpoint: string;
   /** @internal */ _rpcWsEndpoint: string;
   /** @internal */ _rpcClient: RpcClient;
@@ -2073,8 +2070,6 @@ export class Connection {
       this._commitment = commitmentOrConfig;
     } else if (commitmentOrConfig) {
       this._commitment = commitmentOrConfig.commitment;
-      this._confirmTransactionInitialTimeout =
-        commitmentOrConfig.confirmTransactionInitialTimeout;
       wsEndpoint = commitmentOrConfig.wsEndpoint;
       httpHeaders = commitmentOrConfig.httpHeaders;
       fetchMiddleware = commitmentOrConfig.fetchMiddleware;
@@ -2634,14 +2629,14 @@ export class Connection {
       }
     });
 
-    let timeoutMs = this._confirmTransactionInitialTimeout || 60 * 1000;
+    let timeoutMs = 60 * 1000;
     switch (subscriptionCommitment) {
       case 'processed':
       case 'recent':
       case 'single':
       case 'confirmed':
       case 'singleGossip': {
-        timeoutMs = this._confirmTransactionInitialTimeout || 30 * 1000;
+        timeoutMs = 30 * 1000;
         break;
       }
       // exhaust enums to ensure full coverage
