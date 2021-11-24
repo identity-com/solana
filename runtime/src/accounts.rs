@@ -1,10 +1,12 @@
 use crate::{
     accounts_db::{
-        AccountShrinkThreshold, AccountsDb, AccountsDbConfig, BankHashInfo, ErrorCounters,
-        LoadHint, LoadedAccount, ScanStorageResult, ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
-        ACCOUNTS_DB_CONFIG_FOR_TESTING,
+        AccountShrinkThreshold, AccountsDb, BankHashInfo, ErrorCounters, LoadHint, LoadedAccount,
+        ScanStorageResult,
     },
-    accounts_index::{AccountSecondaryIndexes, IndexKey, ScanResult},
+    accounts_index::{
+        AccountSecondaryIndexes, AccountsIndexConfig, IndexKey, ScanResult,
+        ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS, ACCOUNTS_INDEX_CONFIG_FOR_TESTING,
+    },
     ancestors::Ancestors,
     bank::{
         NonceRollbackFull, NonceRollbackInfo, RentDebits, TransactionCheckResult,
@@ -138,7 +140,7 @@ impl Accounts {
             account_indexes,
             caching_enabled,
             shrink_ratio,
-            Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
+            Some(ACCOUNTS_INDEX_CONFIG_FOR_TESTING),
         )
     }
 
@@ -155,7 +157,7 @@ impl Accounts {
             account_indexes,
             caching_enabled,
             shrink_ratio,
-            Some(ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS),
+            Some(ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS),
         )
     }
 
@@ -165,7 +167,7 @@ impl Accounts {
         account_indexes: AccountSecondaryIndexes,
         caching_enabled: bool,
         shrink_ratio: AccountShrinkThreshold,
-        accounts_db_config: Option<AccountsDbConfig>,
+        accounts_index_config: Option<AccountsIndexConfig>,
     ) -> Self {
         Self {
             accounts_db: Arc::new(AccountsDb::new_with_config(
@@ -174,7 +176,7 @@ impl Accounts {
                 account_indexes,
                 caching_enabled,
                 shrink_ratio,
-                accounts_db_config,
+                accounts_index_config,
             )),
             account_locks: Mutex::new(AccountLocks::default()),
         }
