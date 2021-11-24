@@ -4285,7 +4285,7 @@ impl RpcClient {
 
     #[deprecated(
         since = "1.9.0",
-        note = "Please do not use, will no longer be available in the future"
+        note = "Please use `get_new_latest_blockhash` instead"
     )]
     #[allow(deprecated)]
     pub fn get_new_blockhash(&self, blockhash: &Hash) -> ClientResult<(Hash, FeeCalculator)> {
@@ -4802,9 +4802,7 @@ impl RpcClient {
     #[allow(deprecated)]
     pub fn get_fee_for_message(&self, message: &Message) -> ClientResult<u64> {
         if self.get_node_version()? < semver::Version::new(1, 9, 0) {
-            let fee_calculator = self
-                .get_fee_calculator_for_blockhash(&message.recent_blockhash)?
-                .ok_or_else(|| ClientErrorKind::Custom("Invalid blockhash".to_string()))?;
+            let Fees { fee_calculator, .. } = self.get_fees()?;
             Ok(fee_calculator
                 .lamports_per_signature
                 .saturating_mul(message.header.num_required_signatures as u64))

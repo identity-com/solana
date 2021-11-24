@@ -314,15 +314,25 @@ impl SyncClient for BankClient {
 
     fn get_fee_for_message(&self, message: &Message) -> Result<u64> {
         SanitizedMessage::try_from(message.clone())
-            .ok()
-            .map(|sanitized_message| self.bank.get_fee_for_message(&sanitized_message))
-            .flatten()
-            .ok_or_else(|| {
+            .map(|message| self.bank.get_fee_for_message(&message))
+            .map_err(|_| {
                 TransportError::IoError(io::Error::new(
                     io::ErrorKind::Other,
                     "Unable calculate fee",
                 ))
             })
+    }
+
+    fn get_new_latest_blockhash(&self, blockhash: &Hash) -> Result<Hash> {
+        let latest_blockhash = self.get_latest_blockhash()?;
+        if latest_blockhash != *blockhash {
+            Ok(latest_blockhash)
+        } else {
+            Err(TransportError::IoError(io::Error::new(
+                io::ErrorKind::Other,
+                "Unable to get new blockhash",
+            )))
+        }
     }
 }
 

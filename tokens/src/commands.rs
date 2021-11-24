@@ -340,11 +340,7 @@ fn build_messages(
             do_create_associated_token_account,
         );
         let fee_payer_pubkey = args.fee_payer.pubkey();
-        let message = Message::new_with_blockhash(
-            &instructions,
-            Some(&fee_payer_pubkey),
-            &client.get_latest_blockhash()?,
-        );
+        let message = Message::new(&instructions, Some(&fee_payer_pubkey));
         messages.push(message);
         stake_extras.push((new_stake_account_keypair, lockup_date));
     }
@@ -1213,15 +1209,14 @@ mod tests {
     use solana_test_validator::TestValidator;
     use solana_transaction_status::TransactionConfirmationStatus;
 
-    fn one_signer_message(client: &RpcClient) -> Message {
-        Message::new_with_blockhash(
+    fn one_signer_message() -> Message {
+        Message::new(
             &[Instruction::new_with_bytes(
                 Pubkey::new_unique(),
                 &[],
                 vec![AccountMeta::new(Pubkey::default(), true)],
             )],
             None,
-            &client.get_latest_blockhash().unwrap(),
         )
     }
 
@@ -1603,7 +1598,7 @@ mod tests {
             &sender_keypair_file,
             None,
         );
-        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+        check_payer_balances(&[one_signer_message()], &allocations, &client, &args).unwrap();
 
         // Unfunded payer
         let unfunded_payer = Keypair::new();
@@ -1617,7 +1612,7 @@ mod tests {
             .into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(
@@ -1656,7 +1651,7 @@ mod tests {
             .unwrap()
             .into();
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(
@@ -1710,7 +1705,7 @@ mod tests {
             &sender_keypair_file,
             None,
         );
-        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+        check_payer_balances(&[one_signer_message()], &allocations, &client, &args).unwrap();
 
         // Unfunded sender
         let unfunded_payer = Keypair::new();
@@ -1722,7 +1717,7 @@ mod tests {
         args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(sources, vec![FundingSource::SystemAccount].into());
@@ -1738,7 +1733,7 @@ mod tests {
             .into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(sources, vec![FundingSource::FeePayer].into());
@@ -1826,7 +1821,7 @@ mod tests {
             &sender_keypair_file,
             Some(stake_args),
         );
-        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+        check_payer_balances(&[one_signer_message()], &allocations, &client, &args).unwrap();
 
         // Underfunded stake-account
         let expensive_allocation_amount = 5000.0;
@@ -1836,7 +1831,7 @@ mod tests {
             lockup_date: "".to_string(),
         }];
         let err_result = check_payer_balances(
-            &[one_signer_message(&client)],
+            &[one_signer_message()],
             &expensive_allocations,
             &client,
             &args,
@@ -1864,7 +1859,7 @@ mod tests {
             .into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(
@@ -1903,7 +1898,7 @@ mod tests {
             .unwrap()
             .into();
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(
@@ -1964,7 +1959,7 @@ mod tests {
             &sender_keypair_file,
             Some(stake_args),
         );
-        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+        check_payer_balances(&[one_signer_message()], &allocations, &client, &args).unwrap();
 
         // Unfunded sender
         let unfunded_payer = Keypair::new();
@@ -1976,7 +1971,7 @@ mod tests {
         args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(sources, vec![FundingSource::SystemAccount].into());
@@ -1992,7 +1987,7 @@ mod tests {
             .into();
 
         let err_result =
-            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+            check_payer_balances(&[one_signer_message()], &allocations, &client, &args)
                 .unwrap_err();
         if let Error::InsufficientFunds(sources, amount) = err_result {
             assert_eq!(sources, vec![FundingSource::FeePayer].into());

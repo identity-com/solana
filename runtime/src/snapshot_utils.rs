@@ -3042,19 +3042,18 @@ mod tests {
 
         let slot = slot + 1;
         let bank2 = Arc::new(Bank::new_from_parent(&bank1, &collector, slot));
-        let blockhash = bank2.last_blockhash();
         let tx = SanitizedTransaction::from_transaction_for_tests(system_transaction::transfer(
             &key1,
             &key2.pubkey(),
             lamports_to_transfer,
-            blockhash,
+            bank2.last_blockhash(),
         ));
-        let fee = bank2.get_fee_for_message(tx.message()).unwrap();
+        let fee = bank2.get_fee_for_message(tx.message());
         let tx = system_transaction::transfer(
             &key1,
             &key2.pubkey(),
             lamports_to_transfer - fee,
-            blockhash,
+            bank2.last_blockhash(),
         );
         bank2.process_transaction(&tx).unwrap();
         assert_eq!(
