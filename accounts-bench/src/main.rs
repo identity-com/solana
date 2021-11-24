@@ -123,7 +123,6 @@ fn main() {
                 None,
                 false,
                 None,
-                false,
             );
             time_store.stop();
             if results != results_store {

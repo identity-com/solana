@@ -5072,15 +5072,11 @@ impl AccountsDb {
     }
 
     pub fn update_accounts_hash(&self, slot: Slot, ancestors: &Ancestors) -> (Hash, u64) {
-        self.update_accounts_hash_with_index_option(
-            true, false, slot, ancestors, None, false, None, false,
-        )
+        self.update_accounts_hash_with_index_option(true, false, slot, ancestors, None, false, None)
     }
 
     pub fn update_accounts_hash_test(&self, slot: Slot, ancestors: &Ancestors) -> (Hash, u64) {
-        self.update_accounts_hash_with_index_option(
-            true, true, slot, ancestors, None, false, None, false,
-        )
+        self.update_accounts_hash_with_index_option(true, true, slot, ancestors, None, false, None)
     }
 
     fn scan_multiple_account_storages_one_slot<F, B>(
@@ -5327,7 +5323,6 @@ impl AccountsDb {
         check_hash: bool,
         can_cached_slot_be_unflushed: bool,
         slots_per_epoch: Option<Slot>,
-        is_startup: bool,
     ) -> Result<(Hash, u64), BankHashVerificationError> {
         if !use_index {
             let accounts_cache_and_ancestors = if can_cached_slot_be_unflushed {
@@ -5357,15 +5352,10 @@ impl AccountsDb {
                 ..HashStats::default()
             };
 
-            let thread_pool = if is_startup {
-                None
-            } else {
-                Some(&self.thread_pool_clean)
-            };
             Self::calculate_accounts_hash_without_index(
                 &self.accounts_hash_cache_path,
                 &storages,
-                thread_pool,
+                Some(&self.thread_pool_clean),
                 timings,
                 check_hash,
                 accounts_cache_and_ancestors,
@@ -5380,7 +5370,6 @@ impl AccountsDb {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn calculate_accounts_hash_helper_with_verify(
         &self,
         use_index: bool,
@@ -5391,7 +5380,6 @@ impl AccountsDb {
         can_cached_slot_be_unflushed: bool,
         check_hash: bool,
         slots_per_epoch: Option<Slot>,
-        is_startup: bool,
     ) -> Result<(Hash, u64), BankHashVerificationError> {
         let (hash, total_lamports) = self.calculate_accounts_hash_helper(
             use_index,
@@ -5400,7 +5388,6 @@ impl AccountsDb {
             check_hash,
             can_cached_slot_be_unflushed,
             slots_per_epoch,
-            is_startup,
         )?;
         if debug_verify {
             // calculate the other way (store or non-store) and verify results match.
@@ -5411,7 +5398,6 @@ impl AccountsDb {
                 check_hash,
                 can_cached_slot_be_unflushed,
                 None,
-                is_startup,
             )?;
 
             let success = hash == hash_other
@@ -5431,7 +5417,6 @@ impl AccountsDb {
         expected_capitalization: Option<u64>,
         can_cached_slot_be_unflushed: bool,
         slots_per_epoch: Option<Slot>,
-        is_startup: bool,
     ) -> (Hash, u64) {
         let check_hash = false;
         let (hash, total_lamports) = self
@@ -5444,7 +5429,6 @@ impl AccountsDb {
                 can_cached_slot_be_unflushed,
                 check_hash,
                 slots_per_epoch,
-                is_startup,
             )
             .unwrap(); // unwrap here will never fail since check_hash = false
         let mut bank_hashes = self.bank_hashes.write().unwrap();
@@ -5625,7 +5609,6 @@ impl AccountsDb {
         }
     }
 
-    /// Only called from startup or test code.
     pub fn verify_bank_hash_and_lamports(
         &self,
         slot: Slot,
@@ -5637,7 +5620,6 @@ impl AccountsDb {
 
         let use_index = false;
         let check_hash = true;
-        let is_startup = true;
         let can_cached_slot_be_unflushed = false;
         let (calculated_hash, calculated_lamports) = self
             .calculate_accounts_hash_helper_with_verify(
@@ -5649,7 +5631,6 @@ impl AccountsDb {
                 can_cached_slot_be_unflushed,
                 check_hash,
                 None,
-                is_startup,
             )?;
 
         if calculated_lamports != total_lamports {
@@ -9798,7 +9779,7 @@ pub mod tests {
         for use_index in [true, false] {
             assert!(db
                 .calculate_accounts_hash_helper(
-                    use_index, some_slot, &ancestors, check_hash, false, None, false,
+                    use_index, some_slot, &ancestors, check_hash, false, None
                 )
                 .is_err());
         }
@@ -9821,13 +9802,11 @@ pub mod tests {
         let check_hash = true;
         assert_eq!(
             db.calculate_accounts_hash_helper(
-                false, some_slot, &ancestors, check_hash, false, None, false,
+                false, some_slot, &ancestors, check_hash, false, None
             )
             .unwrap(),
-            db.calculate_accounts_hash_helper(
-                true, some_slot, &ancestors, check_hash, false, None, false,
-            )
-            .unwrap(),
+            db.calculate_accounts_hash_helper(true, some_slot, &ancestors, check_hash, false, None)
+                .unwrap(),
         );
     }
 
