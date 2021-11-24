@@ -423,9 +423,10 @@ async fn get_blockhash_post_warp() {
 
     let new_blockhash = context
         .banks_client
-        .get_new_latest_blockhash(&context.last_blockhash)
+        .get_new_blockhash(&context.last_blockhash)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
     let mut tx = Transaction::new_with_payer(&[], Some(&context.payer.pubkey()));
     tx.sign(&[&context.payer], new_blockhash);
     context.banks_client.process_transaction(tx).await.unwrap();
@@ -434,9 +435,10 @@ async fn get_blockhash_post_warp() {
 
     let new_blockhash = context
         .banks_client
-        .get_new_latest_blockhash(&context.last_blockhash)
+        .get_new_blockhash(&context.last_blockhash)
         .await
-        .unwrap();
+        .unwrap()
+        .0;
 
     let mut tx = Transaction::new_with_payer(&[], Some(&context.payer.pubkey()));
     tx.sign(&[&context.payer], new_blockhash);
