@@ -7,7 +7,6 @@ use solana_sdk::{
     hash::Hash,
     instruction::{CompiledInstruction, Instruction, InstructionError},
     keyed_account::{create_keyed_accounts_unified, KeyedAccount},
-    message::Message,
     pubkey::Pubkey,
     sysvar::Sysvar,
 };
@@ -56,10 +55,7 @@ pub trait InvokeContext {
     fn push(
         &mut self,
         key: &Pubkey,
-        message: &Message,
-        instruction: &CompiledInstruction,
-        program_indices: &[usize],
-        instruction_accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
+        keyed_accounts: &[(bool, bool, &Pubkey, &RefCell<AccountSharedData>)],
     ) -> Result<(), InstructionError>;
     /// Pop a stack frame from the invocation stack
     ///
@@ -99,8 +95,8 @@ pub trait InvokeContext {
     fn record_instruction(&self, instruction: &Instruction);
     /// Get the bank's active feature set
     fn is_feature_active(&self, feature_id: &Pubkey) -> bool;
-    /// Find an account_index and account by its key
-    fn get_account(&self, pubkey: &Pubkey) -> Option<(usize, Rc<RefCell<AccountSharedData>>)>;
+    /// Get an account by its key
+    fn get_account(&self, pubkey: &Pubkey) -> Option<Rc<RefCell<AccountSharedData>>>;
     /// Update timing
     fn update_timing(
         &mut self,
@@ -444,15 +440,15 @@ pub fn mock_set_sysvar<T: Sysvar>(
 impl<'a> InvokeContext for MockInvokeContext<'a> {
     fn push(
         &mut self,
-        _key: &Pubkey,
-        _message: &Message,
-        _instruction: &CompiledInstruction,
-        _program_indices: &[usize],
-        _instruction_accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
+        key: &Pubkey,
+        keyed_accounts: &[(bool, bool, &Pubkey, &RefCell<AccountSharedData>)],
     ) -> Result<(), InstructionError> {
+        fn transmute_lifetime<'a, 'b>(value: Vec<KeyedAccount<'a>>) -> Vec<KeyedAccount<'b>> {
+            unsafe { std::mem::transmute(value) }
+        }
         self.invoke_stack.push(InvokeContextStackFrame::new(
-            *_key,
-            create_keyed_accounts_unified(&[]),
+            *key,
+            transmute_lifetime(create_keyed_accounts_unified(keyed_accounts)),
         ));
         Ok(())
     }
@@ -513,10 +509,10 @@ impl<'a> InvokeContext for MockInvokeContext<'a> {
     fn is_feature_active(&self, feature_id: &Pubkey) -> bool {
         !self.disabled_features.contains(feature_id)
     }
-    fn get_account(&self, pubkey: &Pubkey) -> Option<(usize, Rc<RefCell<AccountSharedData>>)> {
-        for (index, (key, account)) in self.accounts.iter().enumerate().rev() {
+    fn get_account(&self, pubkey: &Pubkey) -> Option<Rc<RefCell<AccountSharedData>>> {
+        for (key, account) in self.accounts.iter() {
             if key == pubkey {
-                return Some((index, account.clone()));
+                return Some(account.clone());
             }
         }
         None
