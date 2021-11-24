@@ -26,6 +26,16 @@ solana transaction-count
 View the [metrics dashboard](https://metrics.solana.com:3000/d/monitor/cluster-telemetry) for more
 detail on cluster activity.
 
+## Confirm your Installation
+
+Try running following command to join the gossip network and view all the other
+nodes in the cluster:
+
+```bash
+solana-gossip spy --entrypoint entrypoint.devnet.solana.com:8001
+# Press ^C to exit
+```
+
 ## Enabling CUDA
 
 If your machine has a GPU with CUDA installed \(Linux-only currently\), include
@@ -308,11 +318,11 @@ The ledger will be placed in the `ledger/` directory by default, use the
 > `solana-validator --identity ASK ... --authorized-voter ASK ...`
 > and you will be prompted to enter your seed phrases and optional passphrase.
 
-Confirm your validator is connected to the network by opening a new terminal and
+Confirm your validator connected to the network by opening a new terminal and
 running:
 
 ```bash
-solana gossip
+solana-gossip spy --entrypoint entrypoint.devnet.solana.com:8001
 ```
 
 If your validator is connected, its public key and IP address will appear in the list.
