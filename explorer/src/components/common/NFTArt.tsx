@@ -40,7 +40,7 @@ const ViewOriginalArtContentLink = ({ src }: { src: string }) => {
       <a href={src}>VIEW ORIGINAL</a>
     </h6>
   );
-};
+}
 
 const CachedImageContent = ({ uri }: { uri?: string }) => {
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -93,7 +93,9 @@ const CachedImageContent = ({ uri }: { uri?: string }) => {
                 setShowError(true);
               }}
             />
-            {uri && <ViewOriginalArtContentLink src={uri} />}
+            {uri && (
+              <ViewOriginalArtContentLink src={uri} />
+            )}
           </div>
         </>
       )}
@@ -137,7 +139,7 @@ const VideoArtContent = ({
 
   const content =
     likelyVideo &&
-    likelyVideo.startsWith("https://watch.videodelivery.net/") ? (
+      likelyVideo.startsWith("https://watch.videodelivery.net/") ? (
       <div className={"d-block"}>
         <Stream
           streamRef={(e: any) => playerRef(e)}
@@ -154,9 +156,7 @@ const VideoArtContent = ({
           autoplay={true}
           muted={true}
         />
-        <ViewOriginalArtContentLink
-          src={likelyVideo.replace("https://watch.videodelivery.net/", "")}
-        />
+        <ViewOriginalArtContentLink src={likelyVideo.replace("https://watch.videodelivery.net/", "")} />
       </div>
     ) : (
       <div className={"d-block"}>
@@ -182,7 +182,7 @@ const VideoArtContent = ({
           <ViewOriginalArtContentLink src={(likelyVideo || animationURL)!} />
         )}
       </div>
-    );
+    )
 
   return content;
 };
@@ -226,7 +226,9 @@ const HTMLContent = ({
                 setShowError(true);
               }}
             ></iframe>
-            {htmlURL && <ViewOriginalArtContentLink src={htmlURL} />}
+            {htmlURL && (
+              <ViewOriginalArtContentLink src={htmlURL} />
+            )}
           </div>
         </>
       )}
