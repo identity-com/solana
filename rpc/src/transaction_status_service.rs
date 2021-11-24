@@ -134,7 +134,8 @@ impl TransactionStatusService {
                         let post_token_balances = Some(post_token_balances);
                         let rewards = Some(
                             rent_debits
-                                .into_unordered_rewards_iter()
+                                .0
+                                .into_iter()
                                 .map(|(pubkey, reward_info)| Reward {
                                     pubkey: pubkey.to_string(),
                                     lamports: reward_info.lamports,
