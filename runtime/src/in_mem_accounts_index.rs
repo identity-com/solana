@@ -34,8 +34,8 @@ impl<V: IsCached> InMemAccountsIndex<V> {
         self.map.keys()
     }
 
-    pub fn get(&self, key: &K) -> Option<AccountMapEntry<V>> {
-        self.map.get(key).cloned()
+    pub fn get(&self, key: &K) -> Option<&AccountMapEntry<V>> {
+        self.map.get(key)
     }
 
     pub fn remove(&mut self, key: &K) {
