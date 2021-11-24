@@ -791,7 +791,7 @@ impl Accounts {
         )
     }
 
-    pub fn load_to_collect_rent_eagerly<R: RangeBounds<Pubkey> + std::fmt::Debug>(
+    pub fn load_to_collect_rent_eagerly<R: RangeBounds<Pubkey>>(
         &self,
         ancestors: &Ancestors,
         range: R,
