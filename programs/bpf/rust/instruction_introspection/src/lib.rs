@@ -33,9 +33,9 @@ fn process_instruction(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let instruction = instructions::load_instruction_at_checked(
+    let instruction = instructions::load_instruction_at(
         secp_instruction_index as usize,
-        instruction_accounts,
+        &instruction_accounts.try_borrow_data()?,
     )
     .map_err(|_| ProgramError::InvalidAccountData)?;
 
