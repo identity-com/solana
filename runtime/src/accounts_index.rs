@@ -1,5 +1,4 @@
 use crate::{
-    accounts_index_storage::AccountsIndexStorage,
     ancestors::Ancestors,
     contains::Contains,
     in_mem_accounts_index::InMemAccountsIndex,
@@ -800,8 +799,6 @@ pub struct AccountsIndex<T: IsCached> {
     // on any of these slots fails. This is safe to purge once the associated Bank is dropped and
     // scanning the fork with that Bank at the tip is no longer possible.
     pub removed_bank_ids: Mutex<HashSet<BankId>>,
-
-    storage: AccountsIndexStorage,
 }
 
 impl<T: IsCached> AccountsIndex<T> {
@@ -810,7 +807,7 @@ impl<T: IsCached> AccountsIndex<T> {
     }
 
     pub fn new(config: Option<AccountsIndexConfig>) -> Self {
-        let (account_maps, bin_calculator, storage) = Self::allocate_accounts_index(config);
+        let (account_maps, bin_calculator) = Self::allocate_accounts_index(config);
         Self {
             account_maps,
             bin_calculator,
@@ -826,24 +823,22 @@ impl<T: IsCached> AccountsIndex<T> {
             roots_tracker: RwLock::<RootsTracker>::default(),
             ongoing_scan_roots: RwLock::<BTreeMap<Slot, u64>>::default(),
             removed_bank_ids: Mutex::<HashSet<BankId>>::default(),
-            storage,
         }
     }
 
     fn allocate_accounts_index(
         config: Option<AccountsIndexConfig>,
-    ) -> (LockMapType<T>, PubkeyBinCalculator16, AccountsIndexStorage) {
+    ) -> (LockMapType<T>, PubkeyBinCalculator16) {
         let bins = config
             .and_then(|config| config.bins)
             .unwrap_or(BINS_DEFAULT);
         // create bin_calculator early to verify # bins is reasonable
         let bin_calculator = PubkeyBinCalculator16::new(bins);
-        let storage = AccountsIndexStorage::new();
         let account_maps = (0..bins)
             .into_iter()
-            .map(|_bin| RwLock::new(AccountMap::new(&storage)))
+            .map(|_bin| RwLock::new(AccountMap::new()))
             .collect::<Vec<_>>();
-        (account_maps, bin_calculator, storage)
+        (account_maps, bin_calculator)
     }
 
     fn iter<R>(&self, range: Option<&R>, collect_all_unsorted: bool) -> AccountsIndexIterator<T>
