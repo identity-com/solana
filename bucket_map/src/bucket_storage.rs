@@ -332,23 +332,21 @@ impl BucketStorage {
         self.stats.resize_us.fetch_add(m.as_us(), Ordering::Relaxed);
     }
 
-    /// allocate a new bucket, copying data from 'bucket'
-    pub fn new_resized(
-        drives: &Arc<Vec<PathBuf>>,
-        max_search: MaxSearch,
+    /// allocate a new bucket based on 'self', but copying data from 'bucket'
+    pub fn grow(
+        &self,
         bucket: Option<&Self>,
         capacity_pow_2: u8,
         num_elems: u64,
         elem_size: u64,
-        stats: &Arc<BucketStats>,
     ) -> Self {
         let mut new_bucket = Self::new_with_capacity(
-            Arc::clone(drives),
+            Arc::clone(&self.drives),
             num_elems,
             elem_size,
             capacity_pow_2,
-            max_search,
-            Arc::clone(stats),
+            self.max_search,
+            Arc::clone(&self.stats),
         );
         if let Some(bucket) = bucket {
             new_bucket.copy_contents(bucket);
