@@ -207,10 +207,6 @@ pub mod fix_write_privs {
     solana_sdk::declare_id!("7Tr5C1tdcCeBVD8jxtHYnvjL1DGdFboYBHCJkEFdenBb");
 }
 
-pub mod reduce_required_deploy_balance {
-    solana_sdk::declare_id!("EBeznQDjcPG8491sFsKZYBi5S5jTVXMpAKNDJMQPS2kq");
-}
-
 lazy_static! {
     /// Map of feature identifiers to user-visible description
     pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
@@ -258,7 +254,6 @@ lazy_static! {
         (check_seed_length::id(), "Check program address seed lengths"),
         (return_data_syscall_enabled::id(), "enable sol_{set,get}_return_data syscall"),
         (fix_write_privs::id(), "fix native invoke write privileges"),
-        (reduce_required_deploy_balance::id(), "reduce required payer balance for program deploys"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
