@@ -18,7 +18,7 @@ type K = Pubkey;
 #[derive(Debug)]
 pub struct InMemAccountsIndex<T: IndexValue> {
     // backing store
-    map_internal: RwLock<HashMap<Pubkey, AccountMapEntry<T>>>,
+    map: RwLock<HashMap<Pubkey, AccountMapEntry<T>>>,
     storage: Arc<BucketMapHolder<T>>,
     bin: usize,
 }
@@ -26,14 +26,10 @@ pub struct InMemAccountsIndex<T: IndexValue> {
 impl<T: IndexValue> InMemAccountsIndex<T> {
     pub fn new(storage: &AccountsIndexStorage<T>, bin: usize) -> Self {
         Self {
-            map_internal: RwLock::default(),
+            map: RwLock::default(),
             storage: storage.storage().clone(),
             bin,
         }
-    }
-
-    fn map(&self) -> &RwLock<HashMap<Pubkey, AccountMapEntry<T>>> {
-        &self.map_internal
     }
 
     pub fn new_bucket_map_holder() -> Arc<BucketMapHolder<T>> {
@@ -45,7 +41,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         R: RangeBounds<Pubkey> + std::fmt::Debug,
     {
         Self::update_stat(&self.stats().items, 1);
-        let map = self.map().read().unwrap();
+        let map = self.map.read().unwrap();
         let mut result = Vec::with_capacity(map.len());
         map.iter().for_each(|(k, v)| {
             if range.map(|range| range.contains(k)).unwrap_or(true) {
@@ -57,12 +53,12 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
 
     pub fn keys(&self) -> Vec<Pubkey> {
         Self::update_stat(&self.stats().keys, 1);
-        self.map().read().unwrap().keys().cloned().collect()
+        self.map.read().unwrap().keys().cloned().collect()
     }
 
     pub fn get(&self, key: &K) -> Option<AccountMapEntry<T>> {
         let m = Measure::start("get");
-        let result = self.map().read().unwrap().get(key).cloned();
+        let result = self.map.read().unwrap().get(key).cloned();
         let stats = self.stats();
         let (count, time) = if result.is_some() {
             (&stats.gets_from_mem, &stats.get_mem_us)
@@ -78,7 +74,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
     // Return false otherwise.
     pub fn remove_if_slot_list_empty(&mut self, pubkey: Pubkey) -> bool {
         let m = Measure::start("entry");
-        let mut map = self.map().write().unwrap();
+        let mut map = self.map.write().unwrap();
         let entry = map.entry(pubkey);
         let stats = &self.storage.stats;
         let (count, time) = if matches!(entry, Entry::Occupied(_)) {
@@ -107,7 +103,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         previous_slot_entry_was_cached: bool,
     ) {
         let m = Measure::start("entry");
-        let mut map = self.map().write().unwrap();
+        let mut map = self.map.write().unwrap();
         let entry = map.entry(*pubkey);
         let stats = &self.storage.stats;
         let (count, time) = if matches!(entry, Entry::Occupied(_)) {
@@ -201,7 +197,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         reclaims: &mut SlotList<T>,
         previous_slot_entry_was_cached: bool,
     ) -> bool {
-        if let Some(current) = self.map().read().unwrap().get(pubkey) {
+        if let Some(current) = self.map.read().unwrap().get(pubkey) {
             Self::lock_and_update_slot_list(
                 current,
                 new_value,
@@ -215,7 +211,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.map().read().unwrap().len()
+        self.map.read().unwrap().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -230,7 +226,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         new_entry: AccountMapEntry<T>,
     ) -> Option<(WriteAccountMapEntry<T>, T, Pubkey)> {
         let m = Measure::start("entry");
-        let mut map = self.map().write().unwrap();
+        let mut map = self.map.write().unwrap();
         let entry = map.entry(pubkey);
         let stats = &self.storage.stats;
         let (count, time) = if matches!(entry, Entry::Occupied(_)) {
