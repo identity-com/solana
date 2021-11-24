@@ -2,7 +2,7 @@ import BN from 'bn.js';
 import bs58 from 'bs58';
 import {Buffer} from 'buffer';
 import nacl from 'tweetnacl';
-import {ethers} from 'ethers';
+import {sha256} from 'crypto-hash';
 
 import {Struct, SOLANA_SCHEMA} from './util/borsh-schema';
 import {toBuffer} from './util/to-buffer';
@@ -120,7 +120,6 @@ export class PublicKey extends Struct {
    * The program ID will also serve as the owner of the public key, giving
    * it permission to write data to the account.
    */
-  /* eslint-disable require-await */
   static async createWithSeed(
     fromPublicKey: PublicKey,
     seed: string,
@@ -131,14 +130,13 @@ export class PublicKey extends Struct {
       Buffer.from(seed),
       programId.toBuffer(),
     ]);
-    const hash = ethers.utils.sha256(new Uint8Array(buffer)).slice(2);
+    const hash = await sha256(new Uint8Array(buffer));
     return new PublicKey(Buffer.from(hash, 'hex'));
   }
 
   /**
    * Derive a program address from seeds and a program ID.
    */
-  /* eslint-disable require-await */
   static async createProgramAddress(
     seeds: Array<Buffer | Uint8Array>,
     programId: PublicKey,
@@ -155,7 +153,7 @@ export class PublicKey extends Struct {
       programId.toBuffer(),
       Buffer.from('ProgramDerivedAddress'),
     ]);
-    let hash = ethers.utils.sha256(new Uint8Array(buffer)).slice(2);
+    let hash = await sha256(new Uint8Array(buffer));
     let publicKeyBytes = new BN(hash, 16).toArray(undefined, 32);
     if (is_on_curve(publicKeyBytes)) {
       throw new Error(`Invalid seeds, address must fall off the curve`);
