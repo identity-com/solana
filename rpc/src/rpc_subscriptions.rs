@@ -12,7 +12,6 @@ use {
         },
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender},
-    rayon::prelude::*,
     serde::Serialize,
     solana_account_decoder::{parse_token::spl_token_id_v2_0, UiAccount, UiAccountEncoding},
     solana_client::{
@@ -23,7 +22,6 @@ use {
         },
     },
     solana_measure::measure::Measure,
-    solana_rayon_threadlimit::get_thread_count,
     solana_runtime::{
         bank::{Bank, TransactionLogInfo},
         bank_forks::BankForks,
@@ -39,17 +37,15 @@ use {
     },
     solana_vote_program::vote_state::Vote,
     std::{
-        cell::RefCell,
         collections::{HashMap, VecDeque},
         io::Cursor,
         iter, str,
         sync::{
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-            Arc, Mutex, RwLock, Weak,
+            atomic::{AtomicBool, Ordering},
+            Arc, RwLock, Weak,
         },
         thread::{Builder, JoinHandle},
         time::Duration,
-        time::Instant,
     },
     tokio::sync::broadcast,
 };
@@ -73,21 +69,6 @@ fn get_transaction_logs(
     }
     logs
 }
-#[derive(Debug)]
-pub struct TimestampedNotificationEntry {
-    pub entry: NotificationEntry,
-    pub queued_at: Instant,
-}
-
-impl From<NotificationEntry> for TimestampedNotificationEntry {
-    fn from(entry: NotificationEntry) -> Self {
-        TimestampedNotificationEntry {
-            entry,
-            queued_at: Instant::now(),
-        }
-    }
-}
-
 pub enum NotificationEntry {
     Slot(SlotInfo),
     SlotUpdate(SlotUpdate),
@@ -134,7 +115,7 @@ fn check_commitment_and_notify<P, S, B, F, X>(
     commitment_slots: &CommitmentSlots,
     bank_method: B,
     filter_results: F,
-    notifier: &RpcNotifier,
+    notifier: &mut RpcNotifier,
     is_final: bool,
 ) -> bool
 where
@@ -184,7 +165,6 @@ pub struct RpcNotification {
     pub subscription_id: SubscriptionId,
     pub is_final: bool,
     pub json: Weak<String>,
-    pub created_at: Instant,
 }
 
 struct RecentItems {
@@ -229,11 +209,8 @@ impl RecentItems {
 
 struct RpcNotifier {
     sender: broadcast::Sender<RpcNotification>,
-    recent_items: Mutex<RecentItems>,
-}
-
-thread_local! {
-    static RPC_NOTIFIER_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    buf: Vec<u8>,
+    recent_items: RecentItems,
 }
 
 #[derive(Debug, Serialize)]
@@ -250,32 +227,28 @@ struct Notification<T> {
 }
 
 impl RpcNotifier {
-    fn notify<T>(&self, value: T, subscription: &SubscriptionInfo, is_final: bool)
+    fn notify<T>(&mut self, value: T, subscription: &SubscriptionInfo, is_final: bool)
     where
         T: serde::Serialize,
     {
-        let buf_arc = RPC_NOTIFIER_BUF.with(|buf| {
-            let mut buf = buf.borrow_mut();
-            buf.clear();
-            let notification = Notification {
-                jsonrpc: Some(jsonrpc_core::Version::V2),
-                method: subscription.method(),
-                params: NotificationParams {
-                    result: value,
-                    subscription: subscription.id(),
-                },
-            };
-            serde_json::to_writer(Cursor::new(&mut *buf), &notification)
-                .expect("serialization never fails");
-            let buf_str = str::from_utf8(&buf).expect("json is always utf-8");
-            Arc::new(String::from(buf_str))
-        });
+        self.buf.clear();
+        let notification = Notification {
+            jsonrpc: Some(jsonrpc_core::Version::V2),
+            method: subscription.method(),
+            params: NotificationParams {
+                result: value,
+                subscription: subscription.id(),
+            },
+        };
+        serde_json::to_writer(Cursor::new(&mut self.buf), &notification)
+            .expect("serialization never fails");
+        let buf_str = str::from_utf8(&self.buf).expect("json is always utf-8");
+        let buf_arc = Arc::new(String::from(buf_str));
 
         let notification = RpcNotification {
             subscription_id: subscription.id(),
             json: Arc::downgrade(&buf_arc),
             is_final,
-            created_at: Instant::now(),
         };
         // There is an unlikely case where this can fail: if the last subscription is closed
         // just as the notifier generates a notification for it.
@@ -284,7 +257,7 @@ impl RpcNotifier {
         inc_new_counter_info!("rpc-pubsub-messages", 1);
         inc_new_counter_info!("rpc-pubsub-bytes", buf_arc.len());
 
-        self.recent_items.lock().unwrap().push(buf_arc);
+        self.recent_items.push(buf_arc);
     }
 }
 
@@ -432,7 +405,8 @@ fn initial_last_notified_slot(
 }
 
 pub struct RpcSubscriptions {
-    notification_sender: Sender<TimestampedNotificationEntry>,
+    notification_sender: Sender<NotificationEntry>,
+
     t_cleanup: Option<JoinHandle<()>>,
 
     exit: Arc<AtomicBool>,
@@ -494,31 +468,24 @@ impl RpcSubscriptions {
 
         let notifier = RpcNotifier {
             sender: broadcast_sender.clone(),
-            recent_items: Mutex::new(RecentItems::new(
+            buf: Vec::new(),
+            recent_items: RecentItems::new(
                 config.queue_capacity_items,
                 config.queue_capacity_bytes,
-            )),
+            ),
         };
-        let notification_threads = config.notification_threads;
         let t_cleanup = Builder::new()
             .name("solana-rpc-notifications".to_string())
             .spawn(move || {
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(notification_threads.unwrap_or_else(get_thread_count))
-                    .thread_name(|i| format!("sol-sub-notif-{}", i))
-                    .build()
-                    .unwrap();
-                pool.install(|| {
-                    Self::process_notifications(
-                        exit_clone,
-                        notifier,
-                        notification_receiver,
-                        subscriptions,
-                        bank_forks,
-                        block_commitment_cache,
-                        optimistically_confirmed_bank,
-                    )
-                });
+                Self::process_notifications(
+                    exit_clone,
+                    notifier,
+                    notification_receiver,
+                    subscriptions,
+                    bank_forks,
+                    block_commitment_cache,
+                    optimistically_confirmed_bank,
+                );
             })
             .unwrap();
 
@@ -598,7 +565,7 @@ impl RpcSubscriptions {
     }
 
     fn enqueue_notification(&self, notification_entry: NotificationEntry) {
-        match self.notification_sender.send(notification_entry.into()) {
+        match self.notification_sender.send(notification_entry) {
             Ok(()) => (),
             Err(SendError(notification)) => {
                 warn!(
@@ -611,8 +578,8 @@ impl RpcSubscriptions {
 
     fn process_notifications(
         exit: Arc<AtomicBool>,
-        notifier: RpcNotifier,
-        notification_receiver: Receiver<TimestampedNotificationEntry>,
+        mut notifier: RpcNotifier,
+        notification_receiver: Receiver<NotificationEntry>,
         mut subscriptions: SubscriptionsTracker,
         bank_forks: Arc<RwLock<BankForks>>,
         block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
@@ -624,8 +591,7 @@ impl RpcSubscriptions {
             }
             match notification_receiver.recv_timeout(Duration::from_millis(RECEIVE_DELAY_MILLIS)) {
                 Ok(notification_entry) => {
-                    let TimestampedNotificationEntry { entry, queued_at } = notification_entry;
-                    match entry {
+                    match notification_entry {
                         NotificationEntry::Subscribed(params, id) => {
                             subscriptions.subscribe(params.clone(), id, || {
                                 initial_last_notified_slot(
@@ -692,7 +658,7 @@ impl RpcSubscriptions {
                                 subscriptions.commitment_watchers(),
                                 &bank_forks,
                                 &commitment_slots,
-                                &notifier,
+                                &mut notifier,
                                 "bank",
                             )
                         }
@@ -706,7 +672,7 @@ impl RpcSubscriptions {
                                 subscriptions.gossip_watchers(),
                                 &bank_forks,
                                 &commitment_slots,
-                                &notifier,
+                                &mut notifier,
                                 "gossip",
                             )
                         }
@@ -738,14 +704,6 @@ impl RpcSubscriptions {
                             }
                         }
                     }
-                    datapoint_info!(
-                        "pubsub_notification_entries",
-                        (
-                            "notification_entry_processing_time_us",
-                            queued_at.elapsed().as_micros() as i64,
-                            i64
-                        )
-                    );
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     // not a problem - try reading again
@@ -762,24 +720,23 @@ impl RpcSubscriptions {
         subscriptions: &HashMap<SubscriptionId, Arc<SubscriptionInfo>>,
         bank_forks: &Arc<RwLock<BankForks>>,
         commitment_slots: &CommitmentSlots,
-        notifier: &RpcNotifier,
+        notifier: &mut RpcNotifier,
         source: &'static str,
     ) {
         let mut total_time = Measure::start("notify_accounts_logs_programs_signatures");
-        let num_accounts_found = AtomicUsize::new(0);
-        let num_accounts_notified = AtomicUsize::new(0);
+        let mut num_accounts_found = 0;
+        let mut num_accounts_notified = 0;
 
-        let num_logs_found = AtomicUsize::new(0);
-        let num_logs_notified = AtomicUsize::new(0);
+        let mut num_logs_found = 0;
+        let mut num_logs_notified = 0;
 
-        let num_signatures_found = AtomicUsize::new(0);
-        let num_signatures_notified = AtomicUsize::new(0);
+        let mut num_signatures_found = 0;
+        let mut num_signatures_notified = 0;
 
-        let num_programs_found = AtomicUsize::new(0);
-        let num_programs_notified = AtomicUsize::new(0);
+        let mut num_programs_found = 0;
+        let mut num_programs_notified = 0;
 
-        let subscriptions = subscriptions.into_par_iter();
-        subscriptions.for_each(|(_id, subscription)| {
+        for subscription in subscriptions.values() {
             match subscription.params() {
                 SubscriptionParams::Account(params) => {
                     let notified = check_commitment_and_notify(
@@ -793,10 +750,10 @@ impl RpcSubscriptions {
                         false,
                     );
 
-                    num_accounts_found.fetch_add(1, Ordering::Relaxed);
+                    num_accounts_found += 1;
 
                     if notified {
-                        num_accounts_notified.fetch_add(1, Ordering::Relaxed);
+                        num_accounts_notified += 1;
                     }
                 }
                 SubscriptionParams::Logs(params) => {
@@ -810,10 +767,10 @@ impl RpcSubscriptions {
                         notifier,
                         false,
                     );
-                    num_logs_found.fetch_add(1, Ordering::Relaxed);
+                    num_logs_found += 1;
 
                     if notified {
-                        num_logs_notified.fetch_add(1, Ordering::Relaxed);
+                        num_logs_notified += 1;
                     }
                 }
                 SubscriptionParams::Program(params) => {
@@ -829,10 +786,10 @@ impl RpcSubscriptions {
                         notifier,
                         false,
                     );
-                    num_programs_found.fetch_add(1, Ordering::Relaxed);
+                    num_programs_found += 1;
 
                     if notified {
-                        num_programs_notified.fetch_add(1, Ordering::Relaxed);
+                        num_programs_notified += 1;
                     }
                 }
                 SubscriptionParams::Signature(params) => {
@@ -848,97 +805,65 @@ impl RpcSubscriptions {
                         notifier,
                         true, // Unsubscribe.
                     );
-                    num_signatures_found.fetch_add(1, Ordering::Relaxed);
+                    num_signatures_found += 1;
 
                     if notified {
-                        num_signatures_notified.fetch_add(1, Ordering::Relaxed);
+                        num_signatures_notified += 1;
                     }
                 }
                 _ => error!("wrong subscription type in alps map"),
             }
-        });
+        }
 
         total_time.stop();
 
-        let total_notified = num_accounts_notified.load(Ordering::Relaxed)
-            + num_logs_notified.load(Ordering::Relaxed)
-            + num_programs_notified.load(Ordering::Relaxed)
-            + num_signatures_notified.load(Ordering::Relaxed);
+        let total_notified = num_accounts_notified
+            + num_logs_notified
+            + num_programs_notified
+            + num_signatures_notified;
         let total_ms = total_time.as_ms();
         if total_notified > 0 || total_ms > 10 {
             debug!(
                 "notified({}): accounts: {} / {} logs: {} / {} programs: {} / {} signatures: {} / {}",
                 source,
-                num_accounts_found.load(Ordering::Relaxed),
-                num_accounts_notified.load(Ordering::Relaxed),
-                num_logs_found.load(Ordering::Relaxed),
-                num_logs_notified.load(Ordering::Relaxed),
-                num_programs_found.load(Ordering::Relaxed),
-                num_programs_notified.load(Ordering::Relaxed),
-                num_signatures_found.load(Ordering::Relaxed),
-                num_signatures_notified.load(Ordering::Relaxed),
+                num_accounts_found,
+                num_accounts_notified,
+                num_logs_found,
+                num_logs_notified,
+                num_programs_found,
+                num_programs_notified,
+                num_signatures_found,
+                num_signatures_notified,
             );
             inc_new_counter_info!("rpc-subscription-notify-bank-or-gossip", total_notified);
             datapoint_info!(
                 "rpc_subscriptions",
                 ("source", source.to_string(), String),
-                (
-                    "num_account_subscriptions",
-                    num_accounts_found.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_account_pubkeys_notified",
-                    num_accounts_notified.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_logs_subscriptions",
-                    num_logs_found.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_logs_notified",
-                    num_logs_notified.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_program_subscriptions",
-                    num_programs_found.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_programs_notified",
-                    num_programs_notified.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_signature_subscriptions",
-                    num_signatures_found.load(Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "num_signatures_notified",
-                    num_signatures_notified.load(Ordering::Relaxed),
-                    i64
-                ),
+                ("num_account_subscriptions", num_accounts_found, i64),
+                ("num_account_pubkeys_notified", num_accounts_notified, i64),
+                ("num_logs_subscriptions", num_logs_found, i64),
+                ("num_logs_notified", num_logs_notified, i64),
+                ("num_program_subscriptions", num_programs_found, i64),
+                ("num_programs_notified", num_programs_notified, i64),
+                ("num_signature_subscriptions", num_signatures_found, i64),
+                ("num_signatures_notified", num_signatures_notified, i64),
                 ("notifications_time", total_time.as_us() as i64, i64),
             );
             inc_new_counter_info!(
                 "rpc-subscription-counter-num_accounts_notified",
-                num_accounts_notified.load(Ordering::Relaxed)
+                num_accounts_notified
             );
             inc_new_counter_info!(
                 "rpc-subscription-counter-num_logs_notified",
-                num_logs_notified.load(Ordering::Relaxed)
+                num_logs_notified
             );
             inc_new_counter_info!(
                 "rpc-subscription-counter-num_programs_notified",
-                num_programs_notified.load(Ordering::Relaxed)
+                num_programs_notified
             );
             inc_new_counter_info!(
                 "rpc-subscription-counter-num_signatures_notified",
-                num_signatures_notified.load(Ordering::Relaxed)
+                num_signatures_notified
             );
         }
     }

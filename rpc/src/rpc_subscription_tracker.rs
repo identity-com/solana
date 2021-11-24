@@ -1,5 +1,5 @@
 use {
-    crate::rpc_subscriptions::{NotificationEntry, RpcNotification, TimestampedNotificationEntry},
+    crate::rpc_subscriptions::{NotificationEntry, RpcNotification},
     dashmap::{mapref::entry::Entry as DashEntry, DashMap},
     solana_account_decoder::{UiAccountEncoding, UiDataSliceConfig},
     solana_client::rpc_filter::RpcFilterType,
@@ -164,7 +164,7 @@ struct SubscriptionControlInner {
     subscriptions: DashMap<SubscriptionParams, Weak<SubscriptionTokenInner>>,
     next_id: AtomicU64,
     max_active_subscriptions: usize,
-    sender: crossbeam_channel::Sender<TimestampedNotificationEntry>,
+    sender: crossbeam_channel::Sender<NotificationEntry>,
     broadcast_sender: broadcast::Sender<RpcNotification>,
     counter: TokenCounter,
 }
@@ -172,7 +172,7 @@ struct SubscriptionControlInner {
 impl SubscriptionControl {
     pub fn new(
         max_active_subscriptions: usize,
-        sender: crossbeam_channel::Sender<TimestampedNotificationEntry>,
+        sender: crossbeam_channel::Sender<NotificationEntry>,
         broadcast_sender: broadcast::Sender<RpcNotification>,
     ) -> Self {
         Self(Arc::new(SubscriptionControlInner {
@@ -220,7 +220,7 @@ impl SubscriptionControl {
                 let _ = self
                     .0
                     .sender
-                    .send(NotificationEntry::Subscribed(token.0.params.clone(), id).into());
+                    .send(NotificationEntry::Subscribed(token.0.params.clone(), id));
                 entry.insert(Arc::downgrade(&token.0));
                 datapoint_info!(
                     "rpc-subscription",
@@ -506,10 +506,10 @@ impl Drop for SubscriptionTokenInner {
                 warn!("Subscriptions inconsistency (missing entry in by_params)");
             }
             DashEntry::Occupied(entry) => {
-                let _ = self
-                    .control
-                    .sender
-                    .send(NotificationEntry::Unsubscribed(self.params.clone(), self.id).into());
+                let _ = self.control.sender.send(NotificationEntry::Unsubscribed(
+                    self.params.clone(),
+                    self.id,
+                ));
                 entry.remove();
                 datapoint_info!(
                     "rpc-subscription",
@@ -543,7 +543,7 @@ mod tests {
 
     struct ControlWrapper {
         control: SubscriptionControl,
-        receiver: crossbeam_channel::Receiver<TimestampedNotificationEntry>,
+        receiver: crossbeam_channel::Receiver<NotificationEntry>,
     }
 
     impl ControlWrapper {
@@ -560,7 +560,7 @@ mod tests {
         }
 
         fn assert_subscribed(&self, expected_params: &SubscriptionParams, expected_id: u64) {
-            if let NotificationEntry::Subscribed(params, id) = self.receiver.recv().unwrap().entry {
+            if let NotificationEntry::Subscribed(params, id) = self.receiver.recv().unwrap() {
                 assert_eq!(&params, expected_params);
                 assert_eq!(id, SubscriptionId::from(expected_id));
             } else {
@@ -570,8 +570,7 @@ mod tests {
         }
 
         fn assert_unsubscribed(&self, expected_params: &SubscriptionParams, expected_id: u64) {
-            if let NotificationEntry::Unsubscribed(params, id) = self.receiver.recv().unwrap().entry
-            {
+            if let NotificationEntry::Unsubscribed(params, id) = self.receiver.recv().unwrap() {
                 assert_eq!(&params, expected_params);
                 assert_eq!(id, SubscriptionId::from(expected_id));
             } else {
