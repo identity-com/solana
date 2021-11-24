@@ -16,7 +16,10 @@ The affected RPC endpoints are:
 - [getConfirmedSignaturesForAddress](developing/clients/jsonrpc-api.md#getconfirmedsignaturesforaddress)
 - [getConfirmedTransaction](developing/clients/jsonrpc-api.md#getconfirmedtransaction)
 - [getSignatureStatuses](developing/clients/jsonrpc-api.md#getsignaturestatuses)
-- [getBlockTime](developing/clients/jsonrpc-api.md#getblocktime)
+
+Note that [getBlockTime](developing/clients/jsonrpc-api.md#getblocktime)
+is not supported, as once https://github.com/solana-labs/solana/issues/10089 is
+fixed then `getBlockTime` can be removed.
 
 Some system design constraints:
 
