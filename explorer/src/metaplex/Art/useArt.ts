@@ -2,27 +2,13 @@ import { IMetadataExtension, Metadata } from "metaplex/classes";
 import { StringPublicKey } from "metaplex/types";
 import { useEffect, useState } from "react";
 
-enum ArtFetchStatus {
-  ReadyToFetch,
-  Fetching,
-  FetchFailed,
-  FetchSucceeded,
-}
-
 const cachedImages = new Map<string, string>();
 export const useCachedImage = (uri: string) => {
   const [cachedBlob, setCachedBlob] = useState<string | undefined>(undefined);
-  const [fetchStatus, setFetchStatus] = useState<ArtFetchStatus>(
-    ArtFetchStatus.ReadyToFetch
-  );
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (!uri) {
-      return;
-    }
-
-    if (fetchStatus === ArtFetchStatus.FetchFailed) {
-      setCachedBlob(uri);
       return;
     }
 
@@ -32,9 +18,9 @@ export const useCachedImage = (uri: string) => {
       return;
     }
 
-    if (fetchStatus === ArtFetchStatus.ReadyToFetch) {
+    if (!isLoading) {
       (async () => {
-        setFetchStatus(ArtFetchStatus.Fetching);
+        setIsLoading(true);
         let response: Response;
         try {
           response = await fetch(uri, { cache: "force-cache" });
@@ -42,10 +28,11 @@ export const useCachedImage = (uri: string) => {
           try {
             response = await fetch(uri, { cache: "reload" });
           } catch {
+            // If external URL, just use the uri
             if (uri?.startsWith("http")) {
               setCachedBlob(uri);
             }
-            setFetchStatus(ArtFetchStatus.FetchFailed);
+            setIsLoading(false);
             return;
           }
         }
@@ -54,12 +41,12 @@ export const useCachedImage = (uri: string) => {
         const blobURI = URL.createObjectURL(blob);
         cachedImages.set(uri, blobURI);
         setCachedBlob(blobURI);
-        setFetchStatus(ArtFetchStatus.FetchSucceeded);
+        setIsLoading(false);
       })();
     }
-  }, [uri, setCachedBlob, fetchStatus, setFetchStatus]);
+  }, [uri, setCachedBlob, isLoading, setIsLoading]);
 
-  return { cachedBlob };
+  return { cachedBlob, isLoading };
 };
 
 export const useExtendedArt = (id: StringPublicKey, metadata: Metadata) => {
@@ -67,8 +54,21 @@ export const useExtendedArt = (id: StringPublicKey, metadata: Metadata) => {
 
   useEffect(() => {
     if (id && !data) {
+      const USE_CDN = false;
+      const routeCDN = (uri: string) => {
+        let result = uri;
+        if (USE_CDN) {
+          result = uri.replace(
+            "https://arweave.net/",
+            "https://coldcdn.com/api/cdn/bronil/"
+          );
+        }
+
+        return result;
+      };
+
       if (metadata.data.uri) {
-        const uri = metadata.data.uri;
+        const uri = routeCDN(metadata.data.uri);
 
         const processJson = (extended: any) => {
           if (!extended || extended?.properties?.files?.length === 0) {
@@ -76,9 +76,10 @@ export const useExtendedArt = (id: StringPublicKey, metadata: Metadata) => {
           }
 
           if (extended?.image) {
-            extended.image = extended.image.startsWith("http")
+            const file = extended.image.startsWith("http")
               ? extended.image
               : `${metadata.data.uri}/${extended.image}`;
+            extended.image = routeCDN(file);
           }
 
           return extended;
