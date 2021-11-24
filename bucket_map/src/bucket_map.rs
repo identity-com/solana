@@ -11,7 +11,7 @@ use std::fs;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::{RwLock, RwLockWriteGuard};
+use std::sync::RwLock;
 use tempfile::TempDir;
 
 #[derive(Debug, Default, Clone)]
@@ -166,12 +166,8 @@ impl<T: Clone + Copy + Debug> BucketMap<T> {
     }
 
     /// Update Pubkey `key`'s value with 'value'
-    pub fn insert(&self, ix: usize, key: &Pubkey, value: (&[T], RefCount)) {
-        let mut bucket = self.get_bucket(ix);
-        bucket.as_mut().unwrap().insert(key, value)
-    }
-
-    fn get_bucket(&self, ix: usize) -> RwLockWriteGuard<Option<Bucket<T>>> {
+    pub fn insert(&self, key: &Pubkey, value: (&[T], RefCount)) {
+        let ix = self.bucket_ix(key);
         let mut bucket = self.buckets[ix].write().unwrap();
         if bucket.is_none() {
             *bucket = Some(Bucket::new(
@@ -180,24 +176,8 @@ impl<T: Clone + Copy + Debug> BucketMap<T> {
                 Arc::clone(&self.stats),
             ));
         }
-        bucket
-    }
-
-    /// Update Pubkey `key`'s value with 'value'
-    pub fn try_insert(
-        &self,
-        ix: usize,
-        key: &Pubkey,
-        value: (&[T], RefCount),
-    ) -> Result<(), BucketMapError> {
-        let mut bucket = self.get_bucket(ix);
-        bucket.as_mut().unwrap().try_write(key, value.0, value.1)
-    }
-
-    /// if err is a grow error, then grow the appropriate piece
-    pub fn grow(&self, ix: usize, err: BucketMapError) {
-        let mut bucket = self.get_bucket(ix);
-        bucket.as_mut().unwrap().grow(err);
+        let bucket = bucket.as_mut().unwrap();
+        bucket.insert(key, value)
     }
 
     /// Update Pubkey `key`'s value with function `updatefn`
@@ -206,8 +186,16 @@ impl<T: Clone + Copy + Debug> BucketMap<T> {
         F: Fn(Option<(&[T], RefCount)>) -> Option<(Vec<T>, RefCount)>,
     {
         let ix = self.bucket_ix(key);
-        let mut bucket = self.get_bucket(ix);
-        bucket.as_mut().unwrap().update(key, updatefn)
+        let mut bucket = self.buckets[ix].write().unwrap();
+        if bucket.is_none() {
+            *bucket = Some(Bucket::new(
+                Arc::clone(&self.drives),
+                self.max_search,
+                Arc::clone(&self.stats),
+            ));
+        }
+        let bucket = bucket.as_mut().unwrap();
+        bucket.update(key, updatefn)
     }
 
     /// Get the bucket index for Pubkey `key`
@@ -259,29 +247,11 @@ mod tests {
 
     #[test]
     fn bucket_map_test_insert2() {
-        for pass in 0..3 {
-            let key = Pubkey::new_unique();
-            let config = BucketMapConfig::new(1 << 1);
-            let index = BucketMap::new(config);
-            let ix = index.bucket_ix(&key);
-            if pass == 0 {
-                index.insert(ix, &key, (&[0], 0));
-            } else {
-                let result = index.try_insert(ix, &key, (&[0], 0));
-                assert!(result.is_err());
-                assert_eq!(index.read_value(&key), None);
-                if pass == 2 {
-                    // another call to try insert again - should still return an error
-                    let result = index.try_insert(ix, &key, (&[0], 0));
-                    assert!(result.is_err());
-                    assert_eq!(index.read_value(&key), None);
-                }
-                index.grow(ix, result.unwrap_err());
-                let result = index.try_insert(ix, &key, (&[0], 0));
-                assert!(result.is_ok());
-            }
-            assert_eq!(index.read_value(&key), Some((vec![0], 0)));
-        }
+        let key = Pubkey::new_unique();
+        let config = BucketMapConfig::new(1 << 1);
+        let index = BucketMap::new(config);
+        index.insert(&key, (&[0], 0));
+        assert_eq!(index.read_value(&key), Some((vec![0], 0)));
     }
 
     #[test]
@@ -289,9 +259,9 @@ mod tests {
         let key = Pubkey::new_unique();
         let config = BucketMapConfig::new(1 << 1);
         let index = BucketMap::new(config);
-        index.insert(index.bucket_ix(&key), &key, (&[0], 0));
+        index.insert(&key, (&[0], 0));
         assert_eq!(index.read_value(&key), Some((vec![0], 0)));
-        index.insert(index.bucket_ix(&key), &key, (&[1], 0));
+        index.insert(&key, (&[1], 0));
         assert_eq!(index.read_value(&key), Some((vec![1], 0)));
     }
 
@@ -505,7 +475,7 @@ mod tests {
                 let insert = thread_rng().gen_range(0, 2) == 0;
                 maps.iter().for_each(|map| {
                     if insert {
-                        map.insert(map.bucket_ix(&k), &k, (&v.0, v.1))
+                        map.insert(&k, (&v.0, v.1))
                     } else {
                         map.update(&k, |current| {
                             assert!(current.is_none());
@@ -524,7 +494,7 @@ mod tests {
                     let insert = thread_rng().gen_range(0, 2) == 0;
                     maps.iter().for_each(|map| {
                         if insert {
-                            map.insert(map.bucket_ix(&k), &k, (&v, rc))
+                            map.insert(&k, (&v, rc))
                         } else {
                             map.update(&k, |current| {
                                 assert_eq!(current, v_old.map(|(v, rc)| (&v[..], *rc)), "{}", k);
