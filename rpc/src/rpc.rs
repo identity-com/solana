@@ -56,7 +56,6 @@ use {
         epoch_info::EpochInfo,
         epoch_schedule::EpochSchedule,
         exit::Exit,
-        feature_set,
         hash::Hash,
         message::{Message, SanitizedMessage},
         pubkey::Pubkey,
@@ -1970,13 +1969,17 @@ impl JsonRpcRequestProcessor {
 
 fn verify_transaction(
     transaction: &SanitizedTransaction,
-    feature_set: &Arc<feature_set::FeatureSet>,
+    libsecp256k1_0_5_upgrade_enabled: bool,
+    libsecp256k1_fail_on_bad_count: bool,
 ) -> Result<()> {
     if transaction.verify().is_err() {
         return Err(RpcCustomError::TransactionSignatureVerificationFailure.into());
     }
 
-    if let Err(e) = transaction.verify_precompiles(feature_set) {
+    if let Err(e) = transaction.verify_precompiles(
+        libsecp256k1_0_5_upgrade_enabled,
+        libsecp256k1_fail_on_bad_count,
+    ) {
         return Err(RpcCustomError::TransactionPrecompileVerificationFailure(e).into());
     }
 
@@ -3344,7 +3347,11 @@ pub mod rpc_full {
             }
 
             if !config.skip_preflight {
-                if let Err(e) = verify_transaction(&transaction, &preflight_bank.feature_set) {
+                if let Err(e) = verify_transaction(
+                    &transaction,
+                    preflight_bank.libsecp256k1_0_5_upgrade_enabled(),
+                    preflight_bank.libsecp256k1_fail_on_bad_count(),
+                ) {
                     return Err(e);
                 }
 
@@ -3430,7 +3437,11 @@ pub mod rpc_full {
 
             let transaction = sanitize_transaction(unsanitized_tx)?;
             if config.sig_verify {
-                verify_transaction(&transaction, &bank.feature_set)?;
+                verify_transaction(
+                    &transaction,
+                    bank.libsecp256k1_0_5_upgrade_enabled(),
+                    bank.libsecp256k1_fail_on_bad_count(),
+                )?;
             }
 
             let TransactionSimulationResult {
