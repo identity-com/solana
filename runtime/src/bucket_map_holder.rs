@@ -1,4 +1,5 @@
 use crate::accounts_index::{AccountsIndexConfig, IndexValue};
+use crate::accounts_index_storage::AccountsIndexStorage;
 use crate::bucket_map_holder_stats::BucketMapHolderStats;
 use crate::in_mem_accounts_index::{InMemAccountsIndex, SlotT};
 use crate::waitable_condvar::WaitableCondvar;
@@ -24,9 +25,11 @@ pub struct BucketMapHolder<T: IndexValue> {
     age_timer: AtomicInterval,
 
     // used by bg processing to know when any bucket has become dirty
-    pub wait_dirty_or_aged: Arc<WaitableCondvar>,
+    pub wait_dirty_or_aged: WaitableCondvar,
     next_bucket_to_flush: Mutex<usize>,
     bins: usize,
+
+    _threads: usize,
 
     // how much mb are we allowed to keep in the in-mem index?
     // Rest goes to disk.
@@ -38,6 +41,8 @@ pub struct BucketMapHolder<T: IndexValue> {
     /// and writing to disk in parallel are.
     /// Note startup is an optimization and is not required for correctness.
     startup: AtomicBool,
+
+    startup_worker_threads: Mutex<Option<AccountsIndexStorage<T>>>,
 }
 
 impl<T: IndexValue> Debug for BucketMapHolder<T> {
@@ -73,25 +78,26 @@ impl<T: IndexValue> BucketMapHolder<T> {
         self.startup.load(Ordering::Relaxed)
     }
 
-    /// startup=true causes:
-    ///      in mem to act in a way that flushes to disk asap
-    /// startup=false is 'normal' operation
-    pub fn set_startup(&self, value: bool) {
-        if !value {
+    pub fn set_startup(&self, storage: &AccountsIndexStorage<T>, value: bool) {
+        if value {
+            let num_threads = std::cmp::max(2, num_cpus::get() / 4);
+            *self.startup_worker_threads.lock().unwrap() = Some(
+                AccountsIndexStorage::add_worker_threads(storage, num_threads),
+            );
+        } else {
             self.wait_for_idle();
+            *self.startup_worker_threads.lock().unwrap() = None;
         }
         self.startup.store(value, Ordering::Relaxed)
     }
 
-    /// return when the bg threads have reached an 'idle' state
     pub(crate) fn wait_for_idle(&self) {
         assert!(self.get_startup());
         if self.disk.is_none() {
             return;
         }
 
-        // when age has incremented twice, we know that we have made it through scanning all bins since we started waiting,
-        //  so we are then 'idle'
+        // when age has incremented twice, we know that we have made it through scanning all bins, so we are 'idle'
         let end_age = self.current_age().wrapping_add(2);
         loop {
             self.wait_dirty_or_aged
@@ -111,7 +117,7 @@ impl<T: IndexValue> BucketMapHolder<T> {
         self.maybe_advance_age();
     }
 
-    /// have all buckets been flushed at the current age?
+    // have all buckets been flushed at the current age?
     pub fn all_buckets_flushed_at_current_age(&self) -> bool {
         self.count_ages_flushed() >= self.bins
     }
@@ -130,7 +136,7 @@ impl<T: IndexValue> BucketMapHolder<T> {
         }
     }
 
-    pub fn new(bins: usize, config: &Option<AccountsIndexConfig>) -> Self {
+    pub fn new(bins: usize, config: &Option<AccountsIndexConfig>, threads: usize) -> Self {
         const DEFAULT_AGE_TO_STAY_IN_CACHE: Age = 5;
         let ages_to_stay_in_cache = config
             .as_ref()
@@ -148,12 +154,14 @@ impl<T: IndexValue> BucketMapHolder<T> {
             count_ages_flushed: AtomicUsize::default(),
             age: AtomicU8::default(),
             stats: BucketMapHolderStats::new(bins),
-            wait_dirty_or_aged: Arc::default(),
+            wait_dirty_or_aged: WaitableCondvar::default(),
             next_bucket_to_flush: Mutex::new(0),
             age_timer: AtomicInterval::default(),
             bins,
             startup: AtomicBool::default(),
             mem_budget_mb,
+            startup_worker_threads: Mutex::default(),
+            _threads: threads,
         }
     }
 
@@ -293,7 +301,7 @@ pub mod tests {
     fn test_next_bucket_to_flush() {
         solana_logger::setup();
         let bins = 4;
-        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()));
+        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()), 1);
         let visited = (0..bins)
             .into_iter()
             .map(|_| AtomicUsize::default())
@@ -317,7 +325,7 @@ pub mod tests {
     fn test_age_increment() {
         solana_logger::setup();
         let bins = 4;
-        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()));
+        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()), 1);
         for age in 0..513 {
             assert_eq!(test.current_age(), (age % 256) as Age);
 
@@ -337,7 +345,7 @@ pub mod tests {
     fn test_throttle() {
         solana_logger::setup();
         let bins = 100;
-        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()));
+        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()), 1);
         let bins = test.bins as u64;
         let interval_ms = test.age_interval_ms();
         // 90% of time elapsed, all but 1 bins flushed, should not wait since we'll end up right on time
@@ -366,7 +374,7 @@ pub mod tests {
     fn test_age_time() {
         solana_logger::setup();
         let bins = 1;
-        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()));
+        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()), 1);
         let threads = 2;
         let time = AGE_MS * 5 / 2;
         let expected = (time / AGE_MS) as Age;
@@ -386,7 +394,7 @@ pub mod tests {
     fn test_age_broad() {
         solana_logger::setup();
         let bins = 4;
-        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()));
+        let test = BucketMapHolder::<u64>::new(bins, &Some(AccountsIndexConfig::default()), 1);
         assert_eq!(test.current_age(), 0);
         for _ in 0..bins {
             assert!(!test.all_buckets_flushed_at_current_age());
