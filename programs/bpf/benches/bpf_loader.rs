@@ -113,7 +113,6 @@ fn bench_program_alu(bencher: &mut Bencher) {
         executable.as_ref(),
         &mut inner_iter,
         &mut invoke_context,
-        &[],
     )
     .unwrap();
 
@@ -221,7 +220,7 @@ fn bench_instruction_count_tuner(_bencher: &mut Bencher) {
 
     // Serialize account data
     let keyed_accounts = invoke_context.get_keyed_accounts().unwrap();
-    let (mut serialized, account_lengths) = serialize_parameters(
+    let (mut serialized, _account_lengths) = serialize_parameters(
         &bpf_loader::id(),
         &solana_sdk::pubkey::new_rand(),
         keyed_accounts,
@@ -244,7 +243,6 @@ fn bench_instruction_count_tuner(_bencher: &mut Bencher) {
         executable.as_ref(),
         serialized.as_slice_mut(),
         &mut invoke_context,
-        &account_lengths,
     )
     .unwrap();
 
