@@ -240,7 +240,7 @@ impl<T: Clone + Copy> Bucket<T> {
                 if best_bucket.uid(ix) == 0 {
                     let elem_loc = elem.data_loc(current_bucket);
                     if elem.num_slots > 0 {
-                        current_bucket.free(elem_loc, elem_uid);
+                        current_bucket.free(elem_loc, elem_uid).unwrap();
                     }
                     // elem: &mut IndexEntry = self.index.get_mut(elem_ix);
                     elem.storage_offset = ix;
@@ -266,10 +266,10 @@ impl<T: Clone + Copy> Bucket<T> {
                 let data_bucket = &self.data[elem.data_bucket_ix() as usize];
                 let loc = elem.data_loc(data_bucket);
                 //debug!(                    "DATA FREE {:?} {} {} {}",                    key, elem.data_location, data_bucket.capacity, elem_uid                );
-                data_bucket.free(loc, elem_uid);
+                data_bucket.free(loc, elem_uid).unwrap();
             }
             //debug!("INDEX FREE {:?} {}", key, elem_uid);
-            self.index.free(elem_ix, elem_uid);
+            self.index.free(elem_ix, elem_uid).unwrap();
         }
     }
 
