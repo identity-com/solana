@@ -4,8 +4,9 @@
 //!
 //! The main function is `calculate_cost` which returns &TransactionCost.
 //!
-use crate::{block_cost_limits::*, execute_cost_table::ExecuteCostTable};
+use crate::execute_cost_table::ExecuteCostTable;
 use log::*;
+use solana_ledger::block_cost_limits::*;
 use solana_sdk::{pubkey::Pubkey, transaction::SanitizedTransaction};
 use std::collections::HashMap;
 
@@ -24,7 +25,7 @@ pub enum CostModelError {
     WouldExceedAccountMaxLimit,
 }
 
-#[derive(AbiExample, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct TransactionCost {
     pub writable_accounts: Vec<Pubkey>,
     pub signature_cost: u64,
@@ -54,7 +55,7 @@ impl TransactionCost {
     }
 }
 
-#[derive(AbiExample, Debug)]
+#[derive(Debug)]
 pub struct CostModel {
     account_cost_limit: u64,
     block_cost_limit: u64,
@@ -218,7 +219,7 @@ impl CostModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use solana_runtime::{
         bank::Bank,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
     };

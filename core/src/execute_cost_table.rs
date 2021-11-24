@@ -5,7 +5,7 @@
 /// to make room for new ones.
 use log::*;
 use solana_sdk::pubkey::Pubkey;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::SystemTime};
 
 // prune is rather expensive op, free up bulk space in each operation
 // would be more efficient. PRUNE_RATIO defines the after prune table
@@ -16,11 +16,11 @@ const OCCURRENCES_WEIGHT: i64 = 100;
 
 const DEFAULT_CAPACITY: usize = 1024;
 
-#[derive(AbiExample, Debug)]
+#[derive(Debug)]
 pub struct ExecuteCostTable {
     capacity: usize,
     table: HashMap<Pubkey, u64>,
-    occurrences: HashMap<Pubkey, (usize, u128)>,
+    occurrences: HashMap<Pubkey, (usize, SystemTime)>,
 }
 
 impl Default for ExecuteCostTable {
@@ -91,9 +91,9 @@ impl ExecuteCostTable {
         let (count, timestamp) = self
             .occurrences
             .entry(*key)
-            .or_insert((0, Self::micros_since_epoch()));
+            .or_insert((0, SystemTime::now()));
         *count += 1;
-        *timestamp = Self::micros_since_epoch();
+        *timestamp = SystemTime::now();
 
         Some(*program_cost)
     }
@@ -120,12 +120,12 @@ impl ExecuteCostTable {
             return;
         }
 
-        let now = Self::micros_since_epoch();
+        let now = SystemTime::now();
         let mut sorted_by_weighted_age: Vec<_> = self
             .occurrences
             .iter()
             .map(|(key, (count, timestamp))| {
-                let age = now - timestamp;
+                let age = now.duration_since(*timestamp).unwrap().as_micros();
                 let weighted_age = *count as i64 * OCCURRENCES_WEIGHT + -(age as i64);
                 (weighted_age, *key)
             })
@@ -139,13 +139,6 @@ impl ExecuteCostTable {
                 break;
             }
         }
-    }
-
-    fn micros_since_epoch() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_micros()
     }
 }
 

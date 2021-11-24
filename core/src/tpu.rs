@@ -8,6 +8,8 @@ use crate::{
         ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
         VerifiedVoteSender, VoteTracker,
     },
+    cost_model::CostModel,
+    cost_tracker::CostTracker,
     fetch_stage::FetchStage,
     sigverify::TransactionSigVerifier,
     sigverify_stage::SigVerifyStage,
@@ -22,8 +24,6 @@ use solana_rpc::{
 };
 use solana_runtime::{
     bank_forks::BankForks,
-    cost_model::CostModel,
-    cost_tracker::CostTracker,
     vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
 };
 use std::{
