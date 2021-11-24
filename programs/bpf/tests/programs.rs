@@ -230,7 +230,7 @@ fn run_program(
     for i in 0..2 {
         let mut parameter_bytes = parameter_bytes.clone();
         {
-            invoke_context.set_return_data(Vec::new()).unwrap();
+            invoke_context.set_return_data(None);
 
             let mut vm = create_vm(
                 &loader_id,

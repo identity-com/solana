@@ -602,7 +602,7 @@ impl InstructionProcessor {
         invoke_context.verify_and_update(instruction, account_indices, caller_write_privileges)?;
 
         // clear the return data
-        invoke_context.set_return_data(Vec::new())?;
+        invoke_context.set_return_data(None);
 
         // Invoke callee
         invoke_context.push(

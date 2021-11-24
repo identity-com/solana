@@ -69,7 +69,8 @@ pub struct ThisInvokeContext<'a> {
     sysvars: RefCell<Vec<(Pubkey, Option<Rc<Vec<u8>>>)>>,
     blockhash: &'a Hash,
     fee_calculator: &'a FeeCalculator,
-    return_data: (Pubkey, Vec<u8>),
+    // return data and program_id that set it
+    return_data: Option<(Pubkey, Vec<u8>)>,
 }
 impl<'a> ThisInvokeContext<'a> {
     #[allow(clippy::too_many_arguments)]
@@ -108,7 +109,7 @@ impl<'a> ThisInvokeContext<'a> {
             sysvars: RefCell::new(vec![]),
             blockhash,
             fee_calculator,
-            return_data: (Pubkey::default(), Vec::new()),
+            return_data: None,
         }
     }
 }
@@ -427,12 +428,11 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
     fn get_fee_calculator(&self) -> &FeeCalculator {
         self.fee_calculator
     }
-    fn set_return_data(&mut self, data: Vec<u8>) -> Result<(), InstructionError> {
-        self.return_data = (*self.get_caller()?, data);
-        Ok(())
+    fn set_return_data(&mut self, return_data: Option<(Pubkey, Vec<u8>)>) {
+        self.return_data = return_data;
     }
-    fn get_return_data(&self) -> (Pubkey, &[u8]) {
-        (self.return_data.0, &self.return_data.1)
+    fn get_return_data(&self) -> &Option<(Pubkey, Vec<u8>)> {
+        &self.return_data
     }
 }
 pub struct ThisLogger {

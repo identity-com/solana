@@ -44,6 +44,7 @@ use solana_sdk::{
 use std::{
     alloc::Layout,
     cell::{Ref, RefCell, RefMut},
+    cmp::min,
     mem::{align_of, size_of},
     rc::Rc,
     slice::from_raw_parts_mut,
@@ -2323,21 +2324,23 @@ impl<'a> SyscallObject<BpfError> for SyscallSetReturnData<'a> {
             return;
         }
 
-        let return_data = if len == 0 {
-            Vec::new()
+        if len == 0 {
+            invoke_context.set_return_data(None);
         } else {
-            question_mark!(
+            let return_data = question_mark!(
                 translate_slice::<u8>(memory_mapping, addr, len, self.loader_id),
                 result
-            )
-            .to_vec()
-        };
-        question_mark!(
-            invoke_context
-                .set_return_data(return_data)
-                .map_err(SyscallError::InstructionError),
-            result
-        );
+            );
+
+            let program_id = *question_mark!(
+                invoke_context
+                    .get_caller()
+                    .map_err(SyscallError::InstructionError),
+                result
+            );
+
+            invoke_context.set_return_data(Some((program_id, return_data.to_vec())));
+        }
 
         *result = Ok(0);
     }
@@ -2351,7 +2354,7 @@ impl<'a> SyscallObject<BpfError> for SyscallGetReturnData<'a> {
     fn call(
         &mut self,
         return_data_addr: u64,
-        mut length: u64,
+        len: u64,
         program_id_addr: u64,
         _arg4: u64,
         _arg5: u64,
@@ -2374,33 +2377,47 @@ impl<'a> SyscallObject<BpfError> for SyscallGetReturnData<'a> {
             result
         );
 
-        let (program_id, return_data) = invoke_context.get_return_data();
-        length = length.min(return_data.len() as u64);
-        if length != 0 {
-            question_mark!(
-                invoke_context
-                    .get_compute_meter()
-                    .consume((length + size_of::<Pubkey>() as u64) / budget.cpi_bytes_per_unit),
-                result
-            );
+        if let Some((program_id, return_data)) = invoke_context.get_return_data() {
+            if len != 0 {
+                let length = min(return_data.len() as u64, len);
 
-            let return_data_result = question_mark!(
-                translate_slice_mut::<u8>(memory_mapping, return_data_addr, length, self.loader_id,),
-                result
-            );
+                question_mark!(
+                    invoke_context
+                        .get_compute_meter()
+                        .consume((length + size_of::<Pubkey>() as u64) / budget.cpi_bytes_per_unit),
+                    result
+                );
 
-            return_data_result.copy_from_slice(&return_data[..length as usize]);
+                let return_data_result = question_mark!(
+                    translate_slice_mut::<u8>(
+                        memory_mapping,
+                        return_data_addr,
+                        length,
+                        self.loader_id,
+                    ),
+                    result
+                );
 
-            let program_id_result = question_mark!(
-                translate_slice_mut::<Pubkey>(memory_mapping, program_id_addr, 1, self.loader_id,),
-                result
-            );
+                return_data_result.copy_from_slice(&return_data[..length as usize]);
 
-            program_id_result[0] = program_id;
+                let program_id_result = question_mark!(
+                    translate_slice_mut::<Pubkey>(
+                        memory_mapping,
+                        program_id_addr,
+                        1,
+                        self.loader_id,
+                    ),
+                    result
+                );
+
+                program_id_result[0] = *program_id;
+            }
+
+            // Return the actual length, rather the length returned
+            *result = Ok(return_data.len() as u64);
+        } else {
+            *result = Ok(0);
         }
-
-        // Return the actual length, rather the length returned
-        *result = Ok(return_data.len() as u64);
     }
 }
 
