@@ -134,9 +134,6 @@ impl CachedAccountInner {
             }
         }
     }
-    pub fn pubkey(&self) -> Pubkey {
-        self.pubkey
-    }
 }
 
 #[derive(Debug, Default)]

@@ -67,28 +67,12 @@ pub fn main() {
                 .help("Use DIR as snapshot location [default: --ledger value]"),
         )
         .arg(
-            Arg::with_name("peer_address")
-                .long("peer-address")
-                .value_name("IP")
+            Arg::with_name("peer")
+                .long("peer")
+                .value_name("IP:PORT")
                 .takes_value(true)
                 .required(true)
-                .help("The the address for the peer validator/replica to download from"),
-        )
-        .arg(
-            Arg::with_name("peer_rpc_port")
-                .long("peer-rpc-port")
-                .value_name("PORT")
-                .takes_value(true)
-                .required(true)
-                .help("The the PORT for the peer validator/replica from which to download the snapshots"),
-        )
-        .arg(
-            Arg::with_name("peer_accountsdb_repl_port")
-                .long("peer-accountsdb-repl-port")
-                .value_name("PORT")
-                .takes_value(true)
-                .required(true)
-                .help("The the PORT for the peer validator/replica serving the AccountsDb replication"),
+                .help("The the IP:PORT for the peer validator/replica to download from"),
         )
         .arg(
             Arg::with_name("peer_pubkey")
@@ -312,29 +296,18 @@ pub fn main() {
             vec![ledger_path.join("accounts")]
         };
 
-    let peer_address = solana_net_utils::parse_host(matches.value_of("peer_address").unwrap())
-        .expect("invalid peer_address");
-
-    let peer_rpc_port = value_t!(matches, "peer_rpc_port", u16).unwrap_or_else(|_| {
-        clap::Error::with_description(
-            "The --peer-rpc-port <PORT> argument is required",
-            clap::ErrorKind::ArgumentNotFound,
-        )
-        .exit();
-    });
-
-    let rpc_peer_addr = SocketAddr::new(peer_address, peer_rpc_port);
-
-    let peer_accountsdb_repl_port = value_t!(matches, "peer_accountsdb_repl_port", u16)
-        .unwrap_or_else(|_| {
+    let rpc_source_addr =
+        solana_net_utils::parse_host_port(matches.value_of("peer").unwrap_or_else(|| {
             clap::Error::with_description(
-                "The --peer-accountsdb-repl-port <PORT> argument is required",
+                "The --peer <IP:PORT> argument is required",
                 clap::ErrorKind::ArgumentNotFound,
             )
             .exit();
+        }))
+        .unwrap_or_else(|e| {
+            eprintln!("failed to parse entrypoint address: {}", e);
+            exit(1);
         });
-
-    let accountsdb_repl_peer_addr = SocketAddr::new(peer_address, peer_accountsdb_repl_port);
 
     let rpc_port = value_t!(matches, "rpc_port", u16).unwrap_or_else(|_| {
         clap::Error::with_description(
@@ -385,8 +358,7 @@ pub fn main() {
     );
 
     let config = ReplicaNodeConfig {
-        rpc_peer_addr,
-        accountsdb_repl_peer_addr: Some(accountsdb_repl_peer_addr),
+        rpc_source_addr,
         rpc_addr: rpc_addrs.0,
         rpc_pubsub_addr: rpc_addrs.1,
         ledger_path,
@@ -404,6 +376,6 @@ pub fn main() {
         replica_exit: Arc::new(RwLock::new(Exit::default())),
     };
 
-    let replica = ReplicaNode::new(config);
-    replica.join();
+    let validator = ReplicaNode::new(config);
+    validator.join();
 }

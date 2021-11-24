@@ -73,7 +73,6 @@ members = [
     "rayon-threadlimit",
     "watchtower",
     "replica-node",
-    "replica-lib",
 ]
 
 exclude = [
