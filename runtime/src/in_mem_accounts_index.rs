@@ -264,16 +264,19 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
     // If the slot list for pubkey exists in the index and is empty, remove the index entry for pubkey and return true.
     // Return false otherwise.
     pub fn remove_if_slot_list_empty(&self, pubkey: Pubkey) -> bool {
-        let mut m = Measure::start("entry");
+        let m = Measure::start("entry");
         let mut map = self.map().write().unwrap();
         let entry = map.entry(pubkey);
-        m.stop();
-        let found = matches!(entry, Entry::Occupied(_));
-        let result = self.remove_if_slot_list_empty_entry(entry);
-        drop(map);
+        let stats = &self.stats();
+        let (count, time) = if matches!(entry, Entry::Occupied(_)) {
+            (&stats.entries_from_mem, &stats.entry_mem_us)
+        } else {
+            (&stats.entries_missing, &stats.entry_missing_us)
+        };
+        Self::update_time_stat(time, m);
+        Self::update_stat(count, 1);
 
-        self.update_entry_stats(m, found);
-        result
+        self.remove_if_slot_list_empty_entry(entry)
     }
 
     pub fn slot_list_mut<RT>(
@@ -308,11 +311,17 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
                 );
                 Self::update_stat(&self.stats().updates_in_mem, 1);
             } else {
-                let mut m = Measure::start("entry");
+                let m = Measure::start("entry");
                 let mut map = self.map().write().unwrap();
                 let entry = map.entry(*pubkey);
-                m.stop();
-                let found = matches!(entry, Entry::Occupied(_));
+                let stats = &self.stats();
+                let (count, time) = if matches!(entry, Entry::Occupied(_)) {
+                    (&stats.entries_from_mem, &stats.entry_mem_us)
+                } else {
+                    (&stats.entries_missing, &stats.entry_missing_us)
+                };
+                Self::update_time_stat(time, m);
+                Self::update_stat(count, 1);
                 match entry {
                     Entry::Occupied(mut occupied) => {
                         let current = occupied.get_mut();
@@ -347,22 +356,8 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
                         self.stats().insert_or_delete_mem(true, self.bin);
                     }
                 }
-
-                drop(map);
-                self.update_entry_stats(m, found);
             };
         })
-    }
-
-    fn update_entry_stats(&self, stopped_measure: Measure, found: bool) {
-        let stats = &self.stats();
-        let (count, time) = if found {
-            (&stats.entries_from_mem, &stats.entry_mem_us)
-        } else {
-            (&stats.entries_missing, &stats.entry_missing_us)
-        };
-        Self::update_stat(time, stopped_measure.as_us());
-        Self::update_stat(count, 1);
     }
 
     // Try to update an item in the slot list the given `slot` If an item for the slot
@@ -468,11 +463,17 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         pubkey: Pubkey,
         new_entry: PreAllocatedAccountMapEntry<T>,
     ) -> Option<(AccountMapEntry<T>, T, Pubkey)> {
-        let mut m = Measure::start("entry");
+        let m = Measure::start("entry");
         let mut map = self.map().write().unwrap();
         let entry = map.entry(pubkey);
-        m.stop();
-        let found = matches!(entry, Entry::Occupied(_));
+        let stats = &self.stats();
+        let (count, time) = if matches!(entry, Entry::Occupied(_)) {
+            (&stats.entries_from_mem, &stats.entry_mem_us)
+        } else {
+            (&stats.entries_missing, &stats.entry_missing_us)
+        };
+        Self::update_time_stat(time, m);
+        Self::update_stat(count, 1);
         let result = match entry {
             Entry::Occupied(occupied) => Some(Self::insert_returner(
                 occupied.get(),
@@ -482,7 +483,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             Entry::Vacant(vacant) => {
                 // not in cache, look on disk
                 let disk_entry = self.load_account_entry_from_disk(vacant.key());
-                self.stats().insert_or_delete_mem(true, self.bin);
+                stats.insert_or_delete_mem(true, self.bin);
                 if let Some(disk_entry) = disk_entry {
                     // on disk, so insert into cache, then return cache value so caller will merge
                     let result = Some(Self::insert_returner(&disk_entry, vacant.key(), new_entry));
@@ -498,8 +499,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
                 }
             }
         };
-        drop(map);
-        self.update_entry_stats(m, found);
         let stats = self.stats();
         if result.is_none() {
             stats.insert_or_delete(true, self.bin);
@@ -778,8 +777,6 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         if ranges.iter().any(|range| range.is_none()) {
             return false; // range said to hold 'all', so not completed
         }
-
-        // consider chunking these so we don't hold the write lock too long
         let mut map = self.map().write().unwrap();
         for k in removes {
             if let Entry::Occupied(occupied) = map.entry(k) {
