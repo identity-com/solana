@@ -17,7 +17,6 @@ pub struct ReplicaAccountInfo<'a> {
     pub executable: bool,
     pub rent_epoch: u64,
     pub data: &'a [u8],
-    pub write_version: u64,
 }
 
 pub enum ReplicaAccountInfoVersions<'a> {
