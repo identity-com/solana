@@ -20,7 +20,7 @@ pub struct AccountsIndexStorage<T: IndexValue> {
     // for managing the bg threads
     exit: Arc<AtomicBool>,
     wait: Arc<WaitableCondvar>,
-    handles: Option<Vec<JoinHandle<()>>>,
+    handle: Option<JoinHandle<()>>,
 
     // eventually the backing storage
     storage: Arc<BucketMapHolder<T>>,
@@ -37,10 +37,8 @@ impl<T: IndexValue> Drop for AccountsIndexStorage<T> {
     fn drop(&mut self) {
         self.exit.store(true, Ordering::Relaxed);
         self.wait.notify_all();
-        if let Some(handles) = self.handles.take() {
-            handles
-                .into_iter()
-                .for_each(|handle| handle.join().unwrap());
+        if let Some(x) = self.handle.take() {
+            x.join().unwrap()
         }
     }
 }
@@ -54,32 +52,24 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
             .map(|bin| Arc::new(InMemAccountsIndex::new(&storage, bin)))
             .collect();
 
-        const DEFAULT_THREADS: usize = 1; // soon, this will be a cpu calculation
-        let threads = DEFAULT_THREADS;
+        let storage_ = Arc::clone(&storage);
         let exit = Arc::new(AtomicBool::default());
+        let exit_ = Arc::clone(&exit);
         let wait = Arc::new(WaitableCondvar::default());
-        let handles = Some(
-            (0..threads)
-                .into_iter()
-                .map(|_| {
-                    let storage_ = Arc::clone(&storage);
-                    let exit_ = Arc::clone(&exit);
-                    let wait_ = Arc::clone(&wait);
-                    // note that rayon use here causes us to exhaust # rayon threads and many tests running in parallel deadlock
-                    Builder::new()
-                        .name("solana-idx-flusher".to_string())
-                        .spawn(move || {
-                            Self::background(storage_, exit_, wait_);
-                        })
-                        .unwrap()
+        let wait_ = Arc::clone(&wait);
+        let handle = Some(
+            Builder::new()
+                .name("solana-index-flusher".to_string())
+                .spawn(move || {
+                    Self::background(storage_, exit_, wait_);
                 })
-                .collect(),
+                .unwrap(),
         );
 
         Self {
             exit,
             wait,
-            handles,
+            handle,
             storage,
             in_mem,
         }
