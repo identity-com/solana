@@ -79,11 +79,6 @@ pub enum RpcRequest {
     )]
     GetRecentBlockhash,
     GetRecentPerformanceSamples,
-    GetHighestSnapshotSlot,
-    #[deprecated(
-        since = "1.8.0",
-        note = "Please use RpcRequest::GetHighestSnapshotSlot instead"
-    )]
     GetSnapshotSlot,
     GetSignaturesForAddress,
     GetSignatureStatuses,
@@ -156,7 +151,6 @@ impl fmt::Display for RpcRequest {
             RpcRequest::GetProgramAccounts => "getProgramAccounts",
             RpcRequest::GetRecentBlockhash => "getRecentBlockhash",
             RpcRequest::GetRecentPerformanceSamples => "getRecentPerformanceSamples",
-            RpcRequest::GetHighestSnapshotSlot => "getHighestSnapshotSlot",
             RpcRequest::GetSnapshotSlot => "getSnapshotSlot",
             RpcRequest::GetSignaturesForAddress => "getSignaturesForAddress",
             RpcRequest::GetSignatureStatuses => "getSignatureStatuses",
