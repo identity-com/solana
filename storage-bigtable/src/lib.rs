@@ -17,10 +17,7 @@ use {
         TransactionConfirmationStatus, TransactionStatus, TransactionStatusMeta,
         TransactionWithStatusMeta,
     },
-    std::{
-        collections::{HashMap, HashSet},
-        convert::TryInto,
-    },
+    std::{collections::HashMap, convert::TryInto},
     thiserror::Error,
 };
 
@@ -257,7 +254,7 @@ impl From<Reward> for StoredConfirmedBlockReward {
 }
 
 // A serialized `TransactionInfo` is stored in the `tx` table
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize)]
 struct TransactionInfo {
     slot: Slot, // The slot that contains the block with this transaction in it
     index: u32, // Where the transaction is located in the block
@@ -397,7 +394,6 @@ impl LedgerStorage {
         let block = self.get_confirmed_block(slot).await?;
         match block.transactions.into_iter().nth(index as usize) {
             None => {
-                // report this somewhere actionable?
                 warn!("Transaction info for {} is corrupt", signature);
                 Ok(None)
             }
@@ -637,110 +633,6 @@ impl LedgerStorage {
         info!(
             "uploaded block for slot {}: {} transactions, {} bytes",
             slot, num_transactions, bytes_written
-        );
-
-        Ok(())
-    }
-
-    // Delete a confirmed block and associated meta data.
-    pub async fn delete_confirmed_block(&self, slot: Slot, dry_run: bool) -> Result<()> {
-        let mut addresses: HashSet<&Pubkey> = HashSet::new();
-        let mut expected_tx_infos: HashMap<String, TransactionInfo> = HashMap::new();
-        let confirmed_block = self.get_confirmed_block(slot).await?;
-        for (index, transaction_with_meta) in confirmed_block.transactions.iter().enumerate() {
-            let TransactionWithStatusMeta { meta, transaction } = transaction_with_meta;
-            let signature = transaction.signatures[0];
-            let index = index as u32;
-            let err = meta.as_ref().and_then(|meta| meta.status.clone().err());
-            let memo = extract_and_fmt_memos(&transaction.message);
-
-            for address in &transaction.message.account_keys {
-                if !is_sysvar_id(address) {
-                    addresses.insert(address);
-                }
-            }
-
-            expected_tx_infos.insert(
-                signature.to_string(),
-                TransactionInfo {
-                    slot,
-                    index,
-                    err,
-                    memo,
-                },
-            );
-        }
-
-        let address_slot_rows: Vec<_> = addresses
-            .into_iter()
-            .map(|address| format!("{}/{}", address, slot_to_key(!slot)))
-            .collect();
-
-        let tx_deletion_rows = if !expected_tx_infos.is_empty() {
-            let signatures = expected_tx_infos
-                .iter()
-                .map(|(signature, _info)| signature)
-                .cloned()
-                .collect::<Vec<_>>();
-            let fetched_tx_infos = self
-                .connection
-                .get_bincode_cells_with_retry::<TransactionInfo>("tx", &signatures)
-                .await?
-                .into_iter()
-                .collect::<HashMap<_, _>>();
-
-            let mut deletion_rows = Vec::with_capacity(expected_tx_infos.len());
-            for (signature, expected_tx_info) in expected_tx_infos {
-                match fetched_tx_infos.get(&signature) {
-                    Some(Ok(fetched_tx_info)) if fetched_tx_info == &expected_tx_info => {
-                        deletion_rows.push(signature);
-                    }
-                    Some(Ok(_)) => {
-                        warn!(
-                            "skipped tx row {} because the bigtable entry did not match",
-                            signature
-                        );
-                    }
-                    Some(Err(err)) => {
-                        warn!(
-                            "skipped tx row {} because the bigtable entry was corrupted: {:?}",
-                            signature, err
-                        );
-                    }
-                    None => {
-                        warn!("skipped tx row {} because it was not found", signature);
-                    }
-                }
-            }
-            deletion_rows
-        } else {
-            vec![]
-        };
-
-        if !dry_run {
-            if !address_slot_rows.is_empty() {
-                self.connection
-                    .delete_rows_with_retry("tx-by-addr", &address_slot_rows)
-                    .await?;
-            }
-
-            if !tx_deletion_rows.is_empty() {
-                self.connection
-                    .delete_rows_with_retry("tx", &tx_deletion_rows)
-                    .await?;
-            }
-
-            self.connection
-                .delete_rows_with_retry("blocks", &[slot.to_string()])
-                .await?;
-        }
-
-        info!(
-            "{}deleted ledger data for slot {}: {} transaction rows, {} address slot rows",
-            if dry_run { "[dry run] " } else { "" },
-            slot,
-            tx_deletion_rows.len(),
-            address_slot_rows.len()
         );
 
         Ok(())
