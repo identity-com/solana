@@ -13,7 +13,6 @@ pub mod bpf_loader_deprecated;
 pub mod bpf_loader_upgradeable;
 pub mod clock;
 pub mod decode_error;
-pub mod ed25519_program;
 pub mod entrypoint;
 pub mod entrypoint_deprecated;
 pub mod epoch_schedule;
