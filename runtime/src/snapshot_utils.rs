@@ -45,12 +45,12 @@ use {
 
 pub const SNAPSHOT_STATUS_CACHE_FILE_NAME: &str = "status_cache";
 
+pub const MAX_BANK_SNAPSHOTS: usize = 8; // Save some snapshots but not too many
 const MAX_SNAPSHOT_DATA_FILE_SIZE: u64 = 32 * 1024 * 1024 * 1024; // 32 GiB
 const VERSION_STRING_V1_2_0: &str = "1.2.0";
 const DEFAULT_SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion::V1_2_0;
 pub(crate) const TMP_BANK_SNAPSHOT_PREFIX: &str = "tmp-bank-snapshot-";
 pub const TMP_SNAPSHOT_ARCHIVE_PREFIX: &str = "tmp-snapshot-archive-";
-pub const MAX_BANK_SNAPSHOTS_TO_RETAIN: usize = 8; // Save some bank snapshots but not too many
 pub const DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN: usize = 2;
 pub const DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN: usize = 4;
 pub const FULL_SNAPSHOT_ARCHIVE_FILENAME_REGEX: &str = r"^snapshot-(?P<slot>[[:digit:]]+)-(?P<hash>[[:alnum:]]+)\.(?P<ext>tar|tar\.bz2|tar\.zst|tar\.gz)$";
@@ -242,8 +242,7 @@ pub fn remove_tmp_snapshot_archives(snapshot_archives_dir: impl AsRef<Path>) {
 /// Make a snapshot archive out of the snapshot package
 pub fn archive_snapshot_package(
     snapshot_package: &SnapshotPackage,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
+    maximum_snapshot_archives_to_retain: usize,
 ) -> Result<()> {
     info!(
         "Generating snapshot archive for slot {}",
@@ -375,8 +374,8 @@ pub fn archive_snapshot_package(
 
     purge_old_snapshot_archives(
         tar_dir,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
+        maximum_snapshot_archives_to_retain,
+        DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
     );
 
     timer.stop();
@@ -1553,12 +1552,12 @@ where
     bank_snapshot_infos
         .into_iter()
         .rev()
-        .skip(MAX_BANK_SNAPSHOTS_TO_RETAIN)
+        .skip(MAX_BANK_SNAPSHOTS)
         .for_each(|bank_snapshot_info| {
             let r = remove_bank_snapshot(bank_snapshot_info.slot, &bank_snapshots_dir);
             if r.is_err() {
                 warn!(
-                    "Couldn't remove bank snapshot at: {}",
+                    "Couldn't remove snapshot at: {}",
                     bank_snapshot_info.snapshot_path.display()
                 );
             }
@@ -1631,8 +1630,7 @@ pub fn bank_to_full_snapshot_archive(
     snapshot_version: Option<SnapshotVersion>,
     snapshot_archives_dir: impl AsRef<Path>,
     archive_format: ArchiveFormat,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
+    maximum_snapshots_to_retain: usize,
 ) -> Result<FullSnapshotArchiveInfo> {
     let snapshot_version = snapshot_version.unwrap_or_default();
 
@@ -1656,8 +1654,7 @@ pub fn bank_to_full_snapshot_archive(
         snapshot_storages,
         archive_format,
         snapshot_version,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
+        maximum_snapshots_to_retain,
     )
 }
 
@@ -1674,8 +1671,7 @@ pub fn bank_to_incremental_snapshot_archive(
     snapshot_version: Option<SnapshotVersion>,
     snapshot_archives_dir: impl AsRef<Path>,
     archive_format: ArchiveFormat,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
+    maximum_snapshots_to_retain: usize,
 ) -> Result<IncrementalSnapshotArchiveInfo> {
     let snapshot_version = snapshot_version.unwrap_or_default();
 
@@ -1701,8 +1697,7 @@ pub fn bank_to_incremental_snapshot_archive(
         snapshot_storages,
         archive_format,
         snapshot_version,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
+        maximum_snapshots_to_retain,
     )
 }
 
@@ -1715,8 +1710,7 @@ pub fn package_and_archive_full_snapshot(
     snapshot_storages: SnapshotStorages,
     archive_format: ArchiveFormat,
     snapshot_version: SnapshotVersion,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
+    maximum_snapshots_to_retain: usize,
 ) -> Result<FullSnapshotArchiveInfo> {
     let accounts_package = AccountsPackage::new(
         bank,
@@ -1732,11 +1726,7 @@ pub fn package_and_archive_full_snapshot(
     )?;
 
     let snapshot_package = SnapshotPackage::from(accounts_package);
-    archive_snapshot_package(
-        &snapshot_package,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
-    )?;
+    archive_snapshot_package(&snapshot_package, maximum_snapshots_to_retain)?;
 
     Ok(FullSnapshotArchiveInfo::new(
         snapshot_package.snapshot_archive_info,
@@ -1754,8 +1744,7 @@ pub fn package_and_archive_incremental_snapshot(
     snapshot_storages: SnapshotStorages,
     archive_format: ArchiveFormat,
     snapshot_version: SnapshotVersion,
-    maximum_full_snapshot_archives_to_retain: usize,
-    maximum_incremental_snapshot_archives_to_retain: usize,
+    maximum_snapshots_to_retain: usize,
 ) -> Result<IncrementalSnapshotArchiveInfo> {
     let accounts_package = AccountsPackage::new(
         bank,
@@ -1773,11 +1762,7 @@ pub fn package_and_archive_incremental_snapshot(
     )?;
 
     let snapshot_package = SnapshotPackage::from(accounts_package);
-    archive_snapshot_package(
-        &snapshot_package,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
-    )?;
+    archive_snapshot_package(&snapshot_package, maximum_snapshots_to_retain)?;
 
     Ok(IncrementalSnapshotArchiveInfo::new(
         incremental_snapshot_base_slot,
@@ -2559,8 +2544,7 @@ mod tests {
             None,
             snapshot_archives_dir.path(),
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            1,
         )
         .unwrap();
 
@@ -2650,8 +2634,7 @@ mod tests {
             None,
             snapshot_archives_dir.path(),
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            std::usize::MAX,
         )
         .unwrap();
 
@@ -2727,8 +2710,7 @@ mod tests {
             None,
             snapshot_archives_dir.path(),
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            std::usize::MAX,
         )
         .unwrap();
 
@@ -2760,8 +2742,7 @@ mod tests {
             None,
             snapshot_archives_dir.path(),
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            std::usize::MAX,
         )
         .unwrap();
 
@@ -2827,8 +2808,7 @@ mod tests {
             None,
             &snapshot_archives_dir,
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            std::usize::MAX,
         )
         .unwrap();
 
@@ -2860,8 +2840,7 @@ mod tests {
             None,
             &snapshot_archives_dir,
             snapshot_archive_format,
-            DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            std::usize::MAX,
         )
         .unwrap();
 
@@ -2960,7 +2939,6 @@ mod tests {
             snapshot_archives_dir.path(),
             snapshot_archive_format,
             DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         )
         .unwrap();
 
@@ -3002,7 +2980,6 @@ mod tests {
             snapshot_archives_dir.path(),
             snapshot_archive_format,
             DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         )
         .unwrap();
         let (deserialized_bank, _) = bank_from_snapshot_archives(
@@ -3063,7 +3040,6 @@ mod tests {
             snapshot_archives_dir.path(),
             snapshot_archive_format,
             DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         )
         .unwrap();
 
