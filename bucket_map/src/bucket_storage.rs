@@ -36,18 +36,15 @@ struct Header {
     lock: AtomicU64,
 }
 
-/// A Header UID of 0 indicates that the header is unlocked
-pub(crate) const UID_UNLOCKED: u64 = 0;
-
 impl Header {
     fn try_lock(&self, uid: u64) -> bool {
-        Ok(UID_UNLOCKED)
+        Ok(0)
             == self
                 .lock
-                .compare_exchange(UID_UNLOCKED, uid, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(0, uid, Ordering::Acquire, Ordering::Relaxed)
     }
     fn unlock(&self) -> u64 {
-        self.lock.swap(UID_UNLOCKED, Ordering::Release)
+        self.lock.swap(0, Ordering::Release)
     }
     fn uid(&self) -> u64 {
         self.lock.load(Ordering::Relaxed)
@@ -136,7 +133,7 @@ impl BucketStorage {
         if ix >= self.num_cells() {
             panic!("allocate: bad index size");
         }
-        if UID_UNLOCKED == uid {
+        if 0 == uid {
             panic!("allocate: bad uid");
         }
         let mut e = Err(BucketStorageError::AlreadyAllocated);
@@ -157,7 +154,7 @@ impl BucketStorage {
         if ix >= self.num_cells() {
             panic!("free: bad index size");
         }
-        if UID_UNLOCKED == uid {
+        if 0 == uid {
             panic!("free: bad uid");
         }
         let ix = (ix * self.cell_size) as usize;
