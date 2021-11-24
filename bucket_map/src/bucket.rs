@@ -482,9 +482,9 @@ impl<T: Clone + Copy> Bucket<T> {
         }
     }
 
-    pub fn update<F>(&mut self, key: &Pubkey, mut updatefn: F)
+    pub fn update<F>(&mut self, key: &Pubkey, updatefn: F)
     where
-        F: FnMut(Option<(&[T], RefCount)>) -> Option<(Vec<T>, RefCount)>,
+        F: Fn(Option<(&[T], RefCount)>) -> Option<(Vec<T>, RefCount)>,
     {
         let current = self.read_value(key);
         let new = updatefn(current);
