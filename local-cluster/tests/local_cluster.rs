@@ -3533,7 +3533,12 @@ fn setup_snapshot_validator_config(
         incremental_snapshot_archive_interval_slots: Slot::MAX,
         snapshot_archives_dir: snapshot_archives_dir.path().to_path_buf(),
         bank_snapshots_dir: bank_snapshots_dir.path().to_path_buf(),
-        ..SnapshotConfig::default()
+        archive_format: ArchiveFormat::TarBzip2,
+        snapshot_version: snapshot_utils::SnapshotVersion::default(),
+        maximum_full_snapshot_archives_to_retain:
+            snapshot_utils::DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+        maximum_incremental_snapshot_archives_to_retain:
+            snapshot_utils::DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
     };
 
     // Create the account paths

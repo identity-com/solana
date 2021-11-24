@@ -69,7 +69,10 @@ mod tests {
         snapshot_package::{
             AccountsPackage, PendingSnapshotPackage, SnapshotPackage, SnapshotType,
         },
-        snapshot_utils::{self, ArchiveFormat, SnapshotVersion},
+        snapshot_utils::{
+            self, ArchiveFormat, SnapshotVersion, DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+        },
         status_cache::MAX_CACHE_ENTRIES,
     };
     use solana_sdk::{
@@ -143,8 +146,12 @@ mod tests {
                 incremental_snapshot_archive_interval_slots,
                 snapshot_archives_dir: snapshot_archives_dir.path().to_path_buf(),
                 bank_snapshots_dir: bank_snapshots_dir.path().to_path_buf(),
+                archive_format: ArchiveFormat::TarBzip2,
                 snapshot_version,
-                ..SnapshotConfig::default()
+                maximum_full_snapshot_archives_to_retain:
+                    DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
+                maximum_incremental_snapshot_archives_to_retain:
+                    DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
             };
             bank_forks.set_snapshot_config(Some(snapshot_config.clone()));
             SnapshotTestConfig {
