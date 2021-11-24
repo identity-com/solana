@@ -32,7 +32,6 @@ use {
         instruction::InstructionError,
         message::Message,
         native_token::sol_to_lamports,
-        poh_config::PohConfig,
         process_instruction::{stable_log, InvokeContext, ProcessInstructionWithContext},
         program_error::{ProgramError, ACCOUNT_BORROW_FAILED, UNSUPPORTED_SYSVAR},
         pubkey::Pubkey,
@@ -757,7 +756,7 @@ impl ProgramTest {
         let mint_keypair = Keypair::new();
         let voting_keypair = Keypair::new();
 
-        let mut genesis_config = create_genesis_config_with_leader_ex(
+        let genesis_config = create_genesis_config_with_leader_ex(
             sol_to_lamports(1_000_000.0),
             &mint_keypair.pubkey(),
             &bootstrap_validator_pubkey,
@@ -770,8 +769,6 @@ impl ProgramTest {
             ClusterType::Development,
             vec![],
         );
-        let target_tick_duration = Duration::from_micros(100);
-        genesis_config.poh_config = PohConfig::new_sleep(target_tick_duration);
         debug!("Payer address: {}", mint_keypair.pubkey());
         debug!("Genesis config: {}", genesis_config);
 
@@ -841,13 +838,8 @@ impl ProgramTest {
 
     pub async fn start(self) -> (BanksClient, Keypair, Hash) {
         let (bank_forks, block_commitment_cache, last_blockhash, gci) = self.setup_bank();
-        let target_tick_duration = gci.genesis_config.poh_config.target_tick_duration;
-        let transport = start_local_server(
-            bank_forks.clone(),
-            block_commitment_cache.clone(),
-            target_tick_duration,
-        )
-        .await;
+        let transport =
+            start_local_server(bank_forks.clone(), block_commitment_cache.clone()).await;
         let banks_client = start_client(transport)
             .await
             .unwrap_or_else(|err| panic!("Failed to start banks client: {}", err));
@@ -855,6 +847,7 @@ impl ProgramTest {
         // Run a simulated PohService to provide the client with new blockhashes.  New blockhashes
         // are required when sending multiple otherwise identical transactions in series from a
         // test
+        let target_tick_duration = gci.genesis_config.poh_config.target_tick_duration;
         tokio::spawn(async move {
             loop {
                 bank_forks
@@ -875,13 +868,8 @@ impl ProgramTest {
     /// with SOL for sending transactions
     pub async fn start_with_context(self) -> ProgramTestContext {
         let (bank_forks, block_commitment_cache, last_blockhash, gci) = self.setup_bank();
-        let target_tick_duration = gci.genesis_config.poh_config.target_tick_duration;
-        let transport = start_local_server(
-            bank_forks.clone(),
-            block_commitment_cache.clone(),
-            target_tick_duration,
-        )
-        .await;
+        let transport =
+            start_local_server(bank_forks.clone(), block_commitment_cache.clone()).await;
         let banks_client = start_client(transport)
             .await
             .unwrap_or_else(|err| panic!("Failed to start banks client: {}", err));
