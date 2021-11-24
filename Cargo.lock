@@ -5152,7 +5152,6 @@ dependencies = [
  "solana-transaction-status",
  "solana-version",
  "solana-vote-program",
- "tikv-jemallocator",
  "tokio",
 ]
 
