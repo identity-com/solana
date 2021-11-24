@@ -630,22 +630,22 @@ pub struct AccountsIndexIterator<'a, T: IsCached> {
 }
 
 impl<'a, T: IsCached> AccountsIndexIterator<'a, T> {
-    fn range<R>(
-        map: &AccountMapsReadLock<T>,
+    fn range<'b, R>(
+        map: &'b AccountMapsReadLock<'b, T>,
         range: R,
         collect_all_unsorted: bool,
-    ) -> Vec<(Pubkey, AccountMapEntry<T>)>
+    ) -> Vec<(&'b Pubkey, &'b AccountMapEntry<T>)>
     where
         R: RangeBounds<Pubkey>,
     {
         let mut result = Vec::with_capacity(map.len());
         for (k, v) in map.iter() {
             if range.contains(k) {
-                result.push((*k, v.clone()));
+                result.push((k, v));
             }
         }
         if !collect_all_unsorted {
-            result.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            result.sort_unstable_by(|a, b| a.0.cmp(b.0));
         }
         result
     }
@@ -735,7 +735,7 @@ impl<'a, T: IsCached> Iterator for AccountsIndexIterator<'a, T> {
                 if chunk.len() >= ITER_BATCH_SIZE && !self.collect_all_unsorted {
                     break 'outer;
                 }
-                let item = (pubkey, account_map_entry);
+                let item = (*pubkey, account_map_entry.clone());
                 chunk.push(item);
             }
         }
