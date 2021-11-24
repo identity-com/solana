@@ -129,7 +129,8 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
         if self.invoke_stack.is_empty() {
             self.pre_accounts = Vec::with_capacity(instruction.accounts.len());
             let mut work = |_unique_index: usize, account_index: usize| {
-                if account_index < self.accounts.len() {
+                if account_index < message.account_keys.len() && account_index < self.accounts.len()
+                {
                     let account = self.accounts[account_index].1.borrow();
                     self.pre_accounts
                         .push(PreAccount::new(&self.accounts[account_index].0, &account));
@@ -695,13 +696,7 @@ mod tests {
         let mut depth_reached = 0;
         for program_id in invoke_stack.iter() {
             if Err(InstructionError::CallDepth)
-                == invoke_context.push(
-                    program_id,
-                    &message,
-                    &message.instructions[0],
-                    &[MAX_DEPTH + depth_reached],
-                    None,
-                )
+                == invoke_context.push(program_id, &message, &message.instructions[0], &[], None)
             {
                 break;
             }
@@ -1193,8 +1188,7 @@ mod tests {
 
         let owned_account = AccountSharedData::new(42, 1, &callee_program_id);
         let not_owned_account = AccountSharedData::new(84, 1, &solana_sdk::pubkey::new_rand());
-        let readonly_account = AccountSharedData::new(168, 1, &solana_sdk::pubkey::new_rand());
-        let loader_account = AccountSharedData::new(0, 0, &native_loader::id());
+        let readonly_account = AccountSharedData::new(168, 1, &caller_program_id);
         let mut program_account = AccountSharedData::new(1, 0, &native_loader::id());
         program_account.set_executable(true);
 
@@ -1211,11 +1205,10 @@ mod tests {
                 solana_sdk::pubkey::new_rand(),
                 Rc::new(RefCell::new(readonly_account)),
             ),
-            (caller_program_id, Rc::new(RefCell::new(loader_account))),
             (callee_program_id, Rc::new(RefCell::new(program_account))),
         ];
         let account_indices = [0, 1, 2];
-        let program_indices = [3, 4];
+        let program_indices = vec![3];
 
         let programs: Vec<(_, ProcessInstructionWithContext)> =
             vec![(callee_program_id, mock_process_instruction)];
@@ -1225,14 +1218,16 @@ mod tests {
             AccountMeta::new_readonly(accounts[2].0, false),
         ];
 
-        let caller_instruction =
-            CompiledInstruction::new(program_indices[0] as u8, &(), vec![0, 1, 2, 3, 4]);
+        let caller_instruction = CompiledInstruction::new(2, &(), vec![0, 1, 2, 3]);
         let callee_instruction = Instruction::new_with_bincode(
             callee_program_id,
             &MockInstruction::NoopSuccess,
             metas.clone(),
         );
         let message = Message::new(&[callee_instruction], None);
+
+        let feature_set = FeatureSet::all_enabled();
+        let demote_program_write_locks = feature_set.is_active(&demote_program_write_locks::id());
 
         let ancestors = Ancestors::default();
         let blockhash = Hash::default();
@@ -1246,7 +1241,7 @@ mod tests {
             Rc::new(RefCell::new(MockComputeMeter::default())),
             Rc::new(RefCell::new(Executors::default())),
             None,
-            Arc::new(FeatureSet::all_enabled()),
+            Arc::new(feature_set),
             Arc::new(Accounts::default_for_tests()),
             &ancestors,
             &blockhash,
@@ -1257,14 +1252,12 @@ mod tests {
                 &caller_program_id,
                 &message,
                 &caller_instruction,
-                &program_indices[..1],
+                &program_indices,
                 None,
             )
             .unwrap();
 
         // not owned account modified by the caller (before the invoke)
-        let demote_program_write_locks =
-            invoke_context.is_feature_active(&demote_program_write_locks::id());
         let caller_write_privileges = message
             .account_keys
             .iter()
@@ -1275,7 +1268,7 @@ mod tests {
         assert_eq!(
             InstructionProcessor::process_cross_program_instruction(
                 &message,
-                &program_indices[1..],
+                &program_indices,
                 &account_indices,
                 &caller_write_privileges,
                 &mut invoke_context,
@@ -1289,7 +1282,7 @@ mod tests {
         assert_eq!(
             InstructionProcessor::process_cross_program_instruction(
                 &message,
-                &program_indices[1..],
+                &program_indices,
                 &account_indices,
                 &caller_write_privileges,
                 &mut invoke_context,
@@ -1297,8 +1290,6 @@ mod tests {
             Err(InstructionError::ReadonlyDataModified)
         );
         accounts[2].1.borrow_mut().data_as_mut_slice()[0] = 0;
-
-        invoke_context.pop();
 
         let cases = vec![
             (MockInstruction::NoopSuccess, Ok(())),
@@ -1312,19 +1303,40 @@ mod tests {
                 Err(InstructionError::ExternalAccountDataModified),
             ),
         ];
+
         for case in cases {
             let callee_instruction =
                 Instruction::new_with_bincode(callee_program_id, &case.0, metas.clone());
             let message = Message::new(&[callee_instruction], None);
+
+            let ancestors = Ancestors::default();
+            let blockhash = Hash::default();
+            let fee_calculator = FeeCalculator::default();
+            let mut invoke_context = ThisInvokeContext::new(
+                Rent::default(),
+                &accounts,
+                programs.as_slice(),
+                None,
+                ComputeBudget::default(),
+                Rc::new(RefCell::new(MockComputeMeter::default())),
+                Rc::new(RefCell::new(Executors::default())),
+                None,
+                Arc::new(FeatureSet::all_enabled()),
+                Arc::new(Accounts::default_for_tests()),
+                &ancestors,
+                &blockhash,
+                &fee_calculator,
+            );
             invoke_context
                 .push(
                     &caller_program_id,
                     &message,
                     &caller_instruction,
-                    &program_indices[..1],
+                    &program_indices,
                     None,
                 )
                 .unwrap();
+
             let caller_write_privileges = message
                 .account_keys
                 .iter()
@@ -1334,14 +1346,13 @@ mod tests {
             assert_eq!(
                 InstructionProcessor::process_cross_program_instruction(
                     &message,
-                    &program_indices[1..],
+                    &program_indices,
                     &account_indices,
                     &caller_write_privileges,
                     &mut invoke_context,
                 ),
                 case.1
             );
-            invoke_context.pop();
         }
     }
 
@@ -1352,8 +1363,7 @@ mod tests {
 
         let owned_account = AccountSharedData::new(42, 1, &callee_program_id);
         let not_owned_account = AccountSharedData::new(84, 1, &solana_sdk::pubkey::new_rand());
-        let readonly_account = AccountSharedData::new(168, 1, &solana_sdk::pubkey::new_rand());
-        let loader_account = AccountSharedData::new(0, 0, &native_loader::id());
+        let readonly_account = AccountSharedData::new(168, 1, &caller_program_id);
         let mut program_account = AccountSharedData::new(1, 0, &native_loader::id());
         program_account.set_executable(true);
 
@@ -1370,10 +1380,9 @@ mod tests {
                 solana_sdk::pubkey::new_rand(),
                 Rc::new(RefCell::new(readonly_account)),
             ),
-            (caller_program_id, Rc::new(RefCell::new(loader_account))),
             (callee_program_id, Rc::new(RefCell::new(program_account))),
         ];
-        let program_indices = [3];
+        let program_indices = vec![3];
         let programs: Vec<(_, ProcessInstructionWithContext)> =
             vec![(callee_program_id, mock_process_instruction)];
         let metas = vec![
@@ -1382,8 +1391,7 @@ mod tests {
             AccountMeta::new_readonly(accounts[2].0, false),
         ];
 
-        let caller_instruction =
-            CompiledInstruction::new(program_indices[0] as u8, &(), vec![0, 1, 2, 3, 4]);
+        let caller_instruction = CompiledInstruction::new(2, &(), vec![0, 1, 2, 3]);
         let callee_instruction = Instruction::new_with_bincode(
             callee_program_id,
             &MockInstruction::NoopSuccess,
@@ -1391,6 +1399,7 @@ mod tests {
         );
         let message = Message::new(&[callee_instruction.clone()], None);
 
+        let feature_set = FeatureSet::all_enabled();
         let ancestors = Ancestors::default();
         let blockhash = Hash::default();
         let fee_calculator = FeeCalculator::default();
@@ -1403,7 +1412,7 @@ mod tests {
             Rc::new(RefCell::new(MockComputeMeter::default())),
             Rc::new(RefCell::new(Executors::default())),
             None,
-            Arc::new(FeatureSet::all_enabled()),
+            Arc::new(feature_set),
             Arc::new(Accounts::default_for_tests()),
             &ancestors,
             &blockhash,
@@ -1445,8 +1454,6 @@ mod tests {
         );
         accounts[2].1.borrow_mut().data_as_mut_slice()[0] = 0;
 
-        invoke_context.pop();
-
         // Other test cases
         let cases = vec![
             (MockInstruction::NoopSuccess, Ok(())),
@@ -1468,6 +1475,25 @@ mod tests {
             let callee_instruction =
                 Instruction::new_with_bincode(callee_program_id, &case.0, metas.clone());
             let message = Message::new(&[callee_instruction.clone()], None);
+
+            let ancestors = Ancestors::default();
+            let blockhash = Hash::default();
+            let fee_calculator = FeeCalculator::default();
+            let mut invoke_context = ThisInvokeContext::new(
+                Rent::default(),
+                &accounts,
+                programs.as_slice(),
+                None,
+                ComputeBudget::default(),
+                Rc::new(RefCell::new(MockComputeMeter::default())),
+                Rc::new(RefCell::new(Executors::default())),
+                None,
+                Arc::new(FeatureSet::all_enabled()),
+                Arc::new(Accounts::default_for_tests()),
+                &ancestors,
+                &blockhash,
+                &fee_calculator,
+            );
             invoke_context
                 .push(
                     &caller_program_id,
@@ -1477,6 +1503,7 @@ mod tests {
                     None,
                 )
                 .unwrap();
+
             assert_eq!(
                 InstructionProcessor::native_invoke(
                     &mut invoke_context,
@@ -1486,7 +1513,6 @@ mod tests {
                 ),
                 case.1
             );
-            invoke_context.pop();
         }
     }
 
