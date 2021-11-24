@@ -100,8 +100,7 @@ impl<T: IndexValue> AccountsIndexStorage<T> {
         wait: Arc<WaitableCondvar>,
     ) {
         loop {
-            // this will transition to waits and thread throttling
-            wait.wait_timeout(Duration::from_millis(10000));
+            wait.wait_timeout(Duration::from_millis(10000)); // account index stats every 10 s
             if exit.load(Ordering::Relaxed) {
                 break;
             }
