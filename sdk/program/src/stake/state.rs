@@ -11,7 +11,6 @@ use {
         },
         stake_history::StakeHistory,
     },
-    borsh::{maybestd::io, BorshDeserialize, BorshSchema},
     std::collections::HashSet,
 };
 
@@ -22,29 +21,6 @@ pub enum StakeState {
     Initialized(Meta),
     Stake(Meta, Stake),
     RewardsPool,
-}
-
-impl BorshDeserialize for StakeState {
-    fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
-        let enum_value: u32 = BorshDeserialize::deserialize(buf)?;
-        match enum_value {
-            0 => Ok(StakeState::Uninitialized),
-            1 => {
-                let meta: Meta = BorshDeserialize::deserialize(buf)?;
-                Ok(StakeState::Initialized(meta))
-            }
-            2 => {
-                let meta: Meta = BorshDeserialize::deserialize(buf)?;
-                let stake: Stake = BorshDeserialize::deserialize(buf)?;
-                Ok(StakeState::Stake(meta, stake))
-            }
-            3 => Ok(StakeState::RewardsPool),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid enum value",
-            )),
-        }
-    }
 }
 
 impl Default for StakeState {
@@ -99,18 +75,7 @@ pub enum StakeAuthorize {
     Withdrawer,
 }
 
-#[derive(
-    Default,
-    Debug,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Clone,
-    Copy,
-    AbiExample,
-    BorshDeserialize,
-    BorshSchema,
-)]
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
 pub struct Lockup {
     /// UnixTimestamp at which this stake will allow withdrawal, unless the
     ///   transaction is signed by the custodian
@@ -132,18 +97,7 @@ impl Lockup {
     }
 }
 
-#[derive(
-    Default,
-    Debug,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Clone,
-    Copy,
-    AbiExample,
-    BorshDeserialize,
-    BorshSchema,
-)]
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
 pub struct Authorized {
     pub staker: Pubkey,
     pub withdrawer: Pubkey,
@@ -210,18 +164,7 @@ impl Authorized {
     }
 }
 
-#[derive(
-    Default,
-    Debug,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Clone,
-    Copy,
-    AbiExample,
-    BorshDeserialize,
-    BorshSchema,
-)]
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
 pub struct Meta {
     pub rent_exempt_reserve: u64,
     pub authorized: Authorized,
@@ -294,9 +237,7 @@ impl Meta {
     }
 }
 
-#[derive(
-    Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample, BorshDeserialize, BorshSchema,
-)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
 pub struct Delegation {
     /// to whom the stake is delegated
     pub voter_pubkey: Pubkey,
@@ -515,18 +456,7 @@ impl Delegation {
     }
 }
 
-#[derive(
-    Debug,
-    Default,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Clone,
-    Copy,
-    AbiExample,
-    BorshDeserialize,
-    BorshSchema,
-)]
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
 pub struct Stake {
     pub delegation: Delegation,
     /// credits observed is credits from vote account state when delegated or redeemed
@@ -564,78 +494,5 @@ impl Stake {
             self.delegation.deactivation_epoch = epoch;
             Ok(())
         }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use {
-        super::*, crate::borsh::try_from_slice_unchecked, assert_matches::assert_matches,
-        bincode::serialize,
-    };
-
-    fn check_borsh_deserialization(stake: StakeState) {
-        let serialized = serialize(&stake).unwrap();
-        let deserialized = StakeState::try_from_slice(&serialized).unwrap();
-        assert_eq!(stake, deserialized);
-    }
-
-    #[test]
-    fn bincode_vs_borsh() {
-        check_borsh_deserialization(StakeState::Uninitialized);
-        check_borsh_deserialization(StakeState::RewardsPool);
-        check_borsh_deserialization(StakeState::Initialized(Meta {
-            rent_exempt_reserve: u64::MAX,
-            authorized: Authorized {
-                staker: Pubkey::new_unique(),
-                withdrawer: Pubkey::new_unique(),
-            },
-            lockup: Lockup::default(),
-        }));
-        check_borsh_deserialization(StakeState::Stake(
-            Meta {
-                rent_exempt_reserve: 1,
-                authorized: Authorized {
-                    staker: Pubkey::new_unique(),
-                    withdrawer: Pubkey::new_unique(),
-                },
-                lockup: Lockup::default(),
-            },
-            Stake {
-                delegation: Delegation {
-                    voter_pubkey: Pubkey::new_unique(),
-                    stake: u64::MAX,
-                    activation_epoch: Epoch::MAX,
-                    deactivation_epoch: Epoch::MAX,
-                    warmup_cooldown_rate: f64::MAX,
-                },
-                credits_observed: 1,
-            },
-        ));
-    }
-
-    #[test]
-    fn borsh_deserialization_live_data() {
-        let data = [
-            1, 0, 0, 0, 128, 213, 34, 0, 0, 0, 0, 0, 133, 0, 79, 231, 141, 29, 73, 61, 232, 35,
-            119, 124, 168, 12, 120, 216, 195, 29, 12, 166, 139, 28, 36, 182, 186, 154, 246, 149,
-            224, 109, 52, 100, 133, 0, 79, 231, 141, 29, 73, 61, 232, 35, 119, 124, 168, 12, 120,
-            216, 195, 29, 12, 166, 139, 28, 36, 182, 186, 154, 246, 149, 224, 109, 52, 100, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-        ];
-        // As long as we get the 4-byte enum and the first field right, then
-        // we're sure the rest works out
-        let deserialized = try_from_slice_unchecked::<StakeState>(&data).unwrap();
-        assert_matches!(
-            deserialized,
-            StakeState::Initialized(Meta {
-                rent_exempt_reserve: 2282880,
-                ..
-            })
-        );
     }
 }
