@@ -3284,8 +3284,10 @@ mod tests {
             let mut invoke_context = MockInvokeContext::new(&Pubkey::default(), vec![]);
             let mut data = vec![];
             bincode::serialize_into(&mut data, &src_clock).unwrap();
-            let sysvars = &[(sysvar::clock::id(), data)];
-            invoke_context.sysvars = sysvars;
+            invoke_context
+                .get_sysvars()
+                .borrow_mut()
+                .push((sysvar::clock::id(), Some(Rc::new(data))));
 
             let mut syscall = SyscallGetClockSysvar {
                 invoke_context: Rc::new(RefCell::new(&mut invoke_context)),
@@ -3328,8 +3330,10 @@ mod tests {
             let mut invoke_context = MockInvokeContext::new(&Pubkey::default(), vec![]);
             let mut data = vec![];
             bincode::serialize_into(&mut data, &src_epochschedule).unwrap();
-            let sysvars = &[(sysvar::epoch_schedule::id(), data)];
-            invoke_context.sysvars = sysvars;
+            invoke_context
+                .get_sysvars()
+                .borrow_mut()
+                .push((sysvar::epoch_schedule::id(), Some(Rc::new(data))));
 
             let mut syscall = SyscallGetEpochScheduleSysvar {
                 invoke_context: Rc::new(RefCell::new(&mut invoke_context)),
@@ -3379,8 +3383,10 @@ mod tests {
             let mut invoke_context = MockInvokeContext::new(&Pubkey::default(), vec![]);
             let mut data = vec![];
             bincode::serialize_into(&mut data, &src_fees).unwrap();
-            let sysvars = &[(sysvar::fees::id(), data)];
-            invoke_context.sysvars = sysvars;
+            invoke_context
+                .get_sysvars()
+                .borrow_mut()
+                .push((sysvar::fees::id(), Some(Rc::new(data))));
 
             let mut syscall = SyscallGetFeesSysvar {
                 invoke_context: Rc::new(RefCell::new(&mut invoke_context)),
@@ -3421,8 +3427,10 @@ mod tests {
             let mut invoke_context = MockInvokeContext::new(&Pubkey::default(), vec![]);
             let mut data = vec![];
             bincode::serialize_into(&mut data, &src_rent).unwrap();
-            let sysvars = &[(sysvar::rent::id(), data)];
-            invoke_context.sysvars = sysvars;
+            invoke_context
+                .get_sysvars()
+                .borrow_mut()
+                .push((sysvar::rent::id(), Some(Rc::new(data))));
 
             let mut syscall = SyscallGetRentSysvar {
                 invoke_context: Rc::new(RefCell::new(&mut invoke_context)),

@@ -1006,8 +1006,6 @@ pub struct Bank {
     vote_only_bank: bool,
 
     pub cost_tracker: RwLock<CostTracker>,
-
-    sysvar_cache: RwLock<Vec<(Pubkey, Vec<u8>)>>,
 }
 
 impl Default for BlockhashQueue {
@@ -1147,7 +1145,6 @@ impl Bank {
             freeze_started: AtomicBool::default(),
             vote_only_bank: false,
             cost_tracker: RwLock::<CostTracker>::default(),
-            sysvar_cache: RwLock::new(Vec::new()),
         }
     }
 
@@ -1257,7 +1254,6 @@ impl Bank {
         bank.update_rent();
         bank.update_epoch_schedule();
         bank.update_recent_blockhashes();
-        bank.fill_sysvar_cache();
         bank
     }
 
@@ -1406,7 +1402,6 @@ impl Bank {
             )),
             freeze_started: AtomicBool::new(false),
             cost_tracker: RwLock::new(CostTracker::default()),
-            sysvar_cache: RwLock::new(Vec::new()),
         };
 
         datapoint_info!(
@@ -1463,7 +1458,6 @@ impl Bank {
             new.update_stake_history(Some(parent_epoch));
             new.update_clock(Some(parent_epoch));
             new.update_fees();
-            new.fill_sysvar_cache();
 
             return new;
         }
@@ -1479,7 +1473,6 @@ impl Bank {
         new.update_stake_history(Some(parent_epoch));
         new.update_clock(Some(parent_epoch));
         new.update_fees();
-        new.fill_sysvar_cache();
         new
     }
 
@@ -1596,7 +1589,6 @@ impl Bank {
             freeze_started: AtomicBool::new(fields.hash != Hash::default()),
             vote_only_bank: false,
             cost_tracker: RwLock::new(CostTracker::default()),
-            sysvar_cache: RwLock::new(Vec::new()),
         };
         bank.finish_init(
             genesis_config,
@@ -1775,14 +1767,6 @@ impl Bank {
         }
 
         self.store_account_and_update_capitalization(pubkey, &new_account);
-
-        // Update the entry in the cache
-        let mut sysvar_cache = self.sysvar_cache.write().unwrap();
-        if let Some(position) = sysvar_cache.iter().position(|(id, _data)| id == pubkey) {
-            sysvar_cache[position].1 = new_account.data().to_vec();
-        } else {
-            sysvar_cache.push((*pubkey, new_account.data().to_vec()));
-        }
     }
 
     fn inherit_specially_retained_account_fields(
@@ -1918,17 +1902,6 @@ impl Bank {
                 self.inherit_specially_retained_account_fields(account),
             )
         });
-    }
-
-    fn fill_sysvar_cache(&mut self) {
-        let mut sysvar_cache = self.sysvar_cache.write().unwrap();
-        for id in sysvar::ALL_IDS.iter() {
-            if !sysvar_cache.iter().any(|(key, _data)| key == id) {
-                if let Some(account) = self.get_account_with_fixed_root(id) {
-                    sysvar_cache.push((*id, account.data().to_vec()));
-                }
-            }
-        }
     }
 
     pub fn get_slot_history(&self) -> SlotHistory {
@@ -3885,7 +3858,8 @@ impl Bank {
                                 compute_budget,
                                 compute_meter,
                                 &mut timings.details,
-                                &*self.sysvar_cache.read().unwrap(),
+                                self.rc.accounts.clone(),
+                                &self.ancestors,
                                 blockhash,
                                 lamports_per_signature,
                             );
