@@ -7,16 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // will eventually hold the bucket map
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct BucketMapHolder<T: IndexValue> {
     pub stats: BucketMapHolderStats,
     _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: IndexValue> Debug for BucketMapHolder<T> {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Ok(())
-    }
 }
 
 impl<T: IndexValue> BucketMapHolder<T> {
