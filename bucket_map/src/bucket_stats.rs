@@ -11,9 +11,8 @@ pub struct BucketStats {
     pub mmap_us: AtomicU64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct BucketMapStats {
     pub index: Arc<BucketStats>,
     pub data: Arc<BucketStats>,
-    pub per_bucket_count: Vec<Arc<AtomicU64>>,
 }
