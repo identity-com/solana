@@ -26,7 +26,6 @@ use {
         snapshot_config::SnapshotConfig, snapshot_package::SnapshotType, snapshot_utils,
     },
     solana_sdk::{clock::Slot, exit::Exit, genesis_config::GenesisConfig, hash::Hash},
-    solana_send_transaction_service::send_transaction_service,
     solana_streamer::socket::SocketAddrSpace,
     std::{
         fs,
@@ -238,11 +237,8 @@ fn start_client_rpc_services(
             None,
             rpc_override_health_check,
             optimistically_confirmed_bank.clone(),
-            send_transaction_service::Config {
-                retry_rate_ms: 0,
-                leader_forward_count: 0,
-                ..send_transaction_service::Config::default()
-            },
+            0,
+            0,
             max_slots,
             leader_schedule_cache.clone(),
             max_complete_transaction_status_slot,
