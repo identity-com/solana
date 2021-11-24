@@ -1,4 +1,4 @@
-//! Syscall stubs when building for programs for non-BPF targets
+//! @brief Syscall stubs when building for programs for non-BPF targets
 
 #![cfg(not(target_arch = "bpf"))]
 

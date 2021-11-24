@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that exercises error handling
+//! @brief Example Rust-based BPF program that exercises error handling
 
 extern crate solana_program;
 use num_derive::FromPrimitive;

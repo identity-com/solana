@@ -1,4 +1,4 @@
-//! Example Rust-based BPF that tests out using a custom heap
+//! @brief Example Rust-based BPF that tests out using a custom heap
 
 use solana_program::{
     account_info::AccountInfo,

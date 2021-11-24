@@ -1,4 +1,4 @@
-//! Example Rust-based BPF upgradeable program
+//! @brief Example Rust-based BPF upgradeable program
 
 extern crate solana_program;
 use solana_program::{

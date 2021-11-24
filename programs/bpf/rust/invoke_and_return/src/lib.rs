@@ -1,4 +1,4 @@
-//! Invokes an instruction and returns an error, the instruction invoked
+//! @brief Invokes an instruction and returns an error, the instruction invoked
 //! uses the instruction data provided and all the accounts
 
 use solana_program::{

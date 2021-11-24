@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that test dynamic memory allocation
+//! @brief Example Rust-based BPF program that test dynamic memory allocation
 
 #[macro_use]
 extern crate alloc;

@@ -1,4 +1,4 @@
-//! Example Rust-based BPF sanity program that prints out the parameters passed to it
+//! @brief Example Rust-based BPF sanity program that prints out the parameters passed to it
 
 #![allow(unreachable_code)]
 

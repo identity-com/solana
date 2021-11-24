@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that tests rand behavior
+//! @brief Example Rust-based BPF program that tests rand behavior
 
 #![allow(unreachable_code)]
 

@@ -1,4 +1,4 @@
-//! Test mem functions
+//! @brief Test mem functions
 
 use crate::{run_mem_tests, MemOps};
 use solana_program::{

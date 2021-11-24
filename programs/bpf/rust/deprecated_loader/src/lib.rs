@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that supports the deprecated loader
+//! @brief Example Rust-based BPF program that supports the deprecated loader
 
 #![allow(unreachable_code)]
 

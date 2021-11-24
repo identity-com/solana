@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program tests loop iteration
+//! @brief Example Rust-based BPF program tests loop iteration
 
 mod helper;
 extern crate solana_program;

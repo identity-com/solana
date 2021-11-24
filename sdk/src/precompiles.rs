@@ -1,4 +1,4 @@
-//! Solana precompiled programs
+//! @brief Solana precompiled programs
 
 #![cfg(feature = "full")]
 

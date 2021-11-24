@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that uses sol_log_data syscall
+//! @brief Example Rust-based BPF program that uses sol_log_data syscall
 
 #![cfg(feature = "program")]
 

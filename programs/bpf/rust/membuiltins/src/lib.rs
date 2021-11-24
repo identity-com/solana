@@ -1,4 +1,4 @@
-//! Test builtin mem functions
+//! @brief Test builtin mem functions
 
 #![cfg(target_arch = "bpf")]
 #![feature(rustc_private)]

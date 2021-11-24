@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program tests loop iteration
+//! @brief Example Rust-based BPF program tests loop iteration
 
 extern crate solana_program;
 use solana_bpf_rust_param_passing_dep::{Data, TestDep};

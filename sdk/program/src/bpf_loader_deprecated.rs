@@ -1,4 +1,4 @@
-//! The original and now deprecated Solana BPF loader.
+//! @brief The original and now deprecated Solana BPF loader.
 //!
 //! The BPF loader is responsible for loading, finalizing, and executing BPF
 //! programs.

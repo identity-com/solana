@@ -1,4 +1,4 @@
-//! Secp256k1Recover Syscall test
+//! @brief Secp256k1Recover Syscall test
 
 extern crate solana_program;
 use solana_program::{custom_panic_default, msg};

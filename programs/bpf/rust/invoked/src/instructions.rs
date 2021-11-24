@@ -1,4 +1,4 @@
-//! Example Rust-based BPF program that issues a cross-program-invocation
+//! @brief Example Rust-based BPF program that issues a cross-program-invocation
 
 use solana_program::{
     instruction::{AccountMeta, Instruction},

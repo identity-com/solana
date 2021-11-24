@@ -1,4 +1,4 @@
-//! Example Rust-based BPF realloc test program
+//! @brief Example Rust-based BPF realloc test program
 
 #![cfg(feature = "program")]
 

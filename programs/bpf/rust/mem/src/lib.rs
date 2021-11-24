@@ -1,4 +1,4 @@
-//! Test mem functions
+//! @brief Test mem functions
 
 #[cfg(not(feature = "no-entrypoint"))]
 pub mod entrypoint;

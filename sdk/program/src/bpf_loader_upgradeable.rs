@@ -1,4 +1,4 @@
-//! An Upgradeable Solana BPF loader.
+//! @brief An Upgradeable Solana BPF loader.
 //!
 //! The upgradeable BPF loader is responsible for deploying, upgrading, and
 //! executing BPF programs.  The upgradeable loader allows a program's authority
