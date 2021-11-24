@@ -1,9 +1,6 @@
-use crate::accounts_index::IndexValue;
-use crate::bucket_map_holder::BucketMapHolder;
-use solana_sdk::timing::{timestamp, AtomicInterval};
+use solana_sdk::timing::AtomicInterval;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Default)]
 pub struct BucketMapHolderStats {
@@ -24,8 +21,6 @@ pub struct BucketMapHolderStats {
     pub per_bucket_count: Vec<AtomicU64>,
     pub active_threads: AtomicU64,
     pub get_range_us: AtomicU64,
-    last_age: AtomicU8,
-    last_age_time: AtomicU64,
     last_time: AtomicInterval,
 }
 
@@ -53,35 +48,11 @@ impl BucketMapHolderStats {
         }
     }
 
-    pub fn get_elapsed_ms_and_reset(&self) -> u64 {
-        let now = timestamp();
-        let last = self.last_age_time.swap(now, Ordering::Relaxed);
-        now.saturating_sub(last) // could saturate to 0. That is ok.
-    }
-
-    fn ms_per_age<T: IndexValue>(&self, storage: &Arc<BucketMapHolder<T>>) -> u64 {
-        let elapsed_ms = self.get_elapsed_ms_and_reset();
-        let mut age_now = storage.current_age();
-        let last_age = self.last_age.swap(age_now, Ordering::Relaxed);
-        if last_age > age_now {
-            // age may have wrapped
-            age_now += u8::MAX;
-        }
-        let age_delta = age_now.saturating_sub(last_age) as u64;
-        if age_delta > 0 {
-            elapsed_ms / age_delta
-        } else {
-            0
-        }
-    }
-
-    pub fn report_stats<T: IndexValue>(&self, storage: &Arc<BucketMapHolder<T>>) {
+    pub fn report_stats(&self) {
         // account index stats every 10 s
         if !self.last_time.should_update(10_000) {
             return;
         }
-
-        let ms_per_age = self.ms_per_age(storage);
 
         let mut ct = 0;
         let mut min = usize::MAX;
@@ -162,7 +133,6 @@ impl BucketMapHolderStats {
             ),
             ("items", self.items.swap(0, Ordering::Relaxed), i64),
             ("keys", self.keys.swap(0, Ordering::Relaxed), i64),
-            ("ms_per_age", ms_per_age, i64),
         );
     }
 }
