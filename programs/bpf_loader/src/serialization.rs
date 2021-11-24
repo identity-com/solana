@@ -28,31 +28,23 @@ pub fn serialize_parameters(
     program_id: &Pubkey,
     keyed_accounts: &[KeyedAccount],
     data: &[u8],
-) -> Result<(AlignedMemory, Vec<usize>), InstructionError> {
+) -> Result<AlignedMemory, InstructionError> {
     if *loader_id == bpf_loader_deprecated::id() {
         serialize_parameters_unaligned(program_id, keyed_accounts, data)
     } else {
         serialize_parameters_aligned(program_id, keyed_accounts, data)
     }
-    .and_then(|buffer| {
-        let account_lengths = keyed_accounts
-            .iter()
-            .map(|keyed_account| keyed_account.data_len())
-            .collect::<Result<Vec<usize>, InstructionError>>()?;
-        Ok((buffer, account_lengths))
-    })
 }
 
 pub fn deserialize_parameters(
     loader_id: &Pubkey,
     keyed_accounts: &[KeyedAccount],
     buffer: &[u8],
-    account_lengths: &[usize],
 ) -> Result<(), InstructionError> {
     if *loader_id == bpf_loader_deprecated::id() {
-        deserialize_parameters_unaligned(keyed_accounts, buffer, account_lengths)
+        deserialize_parameters_unaligned(keyed_accounts, buffer)
     } else {
-        deserialize_parameters_aligned(keyed_accounts, buffer, account_lengths)
+        deserialize_parameters_aligned(keyed_accounts, buffer)
     }
 }
 
@@ -134,14 +126,9 @@ pub fn serialize_parameters_unaligned(
 pub fn deserialize_parameters_unaligned(
     keyed_accounts: &[KeyedAccount],
     buffer: &[u8],
-    account_lengths: &[usize],
 ) -> Result<(), InstructionError> {
     let mut start = size_of::<u64>(); // number of accounts
-    for (i, (keyed_account, _pre_len)) in keyed_accounts
-        .iter()
-        .zip(account_lengths.iter())
-        .enumerate()
-    {
+    for (i, keyed_account) in keyed_accounts.iter().enumerate() {
         let (is_dup, _) = is_dup(&keyed_accounts[..i], keyed_account);
         start += 1; // is_dup
         if !is_dup {
@@ -260,14 +247,9 @@ pub fn serialize_parameters_aligned(
 pub fn deserialize_parameters_aligned(
     keyed_accounts: &[KeyedAccount],
     buffer: &[u8],
-    account_lengths: &[usize],
 ) -> Result<(), InstructionError> {
     let mut start = size_of::<u64>(); // number of accounts
-    for (i, (keyed_account, pre_len)) in keyed_accounts
-        .iter()
-        .zip(account_lengths.iter())
-        .enumerate()
-    {
+    for (i, keyed_account) in keyed_accounts.iter().enumerate() {
         let (is_dup, _) = is_dup(&keyed_accounts[..i], keyed_account);
         start += size_of::<u8>(); // position
         if is_dup {
@@ -283,17 +265,18 @@ pub fn deserialize_parameters_aligned(
             start += size_of::<Pubkey>(); // owner
             account.set_lamports(LittleEndian::read_u64(&buffer[start..]));
             start += size_of::<u64>(); // lamports
+            let pre_len = account.data().len();
             let post_len = LittleEndian::read_u64(&buffer[start..]) as usize;
             start += size_of::<u64>(); // data length
-            let mut data_end = start + *pre_len;
-            if post_len != *pre_len
-                && (post_len.saturating_sub(*pre_len)) <= MAX_PERMITTED_DATA_INCREASE
+            let mut data_end = start + pre_len;
+            if post_len != pre_len
+                && (post_len.saturating_sub(pre_len)) <= MAX_PERMITTED_DATA_INCREASE
             {
                 data_end = start + post_len;
             }
 
             account.set_data_from_slice(&buffer[start..data_end]);
-            start += *pre_len + MAX_PERMITTED_DATA_INCREASE; // data
+            start += pre_len + MAX_PERMITTED_DATA_INCREASE; // data
             start += (start as *const u8).align_offset(align_of::<u128>());
             start += size_of::<u64>(); // rent_epoch
         }
@@ -409,7 +392,7 @@ mod tests {
 
         // check serialize_parameters_aligned
 
-        let (mut serialized, account_lengths) = serialize_parameters(
+        let mut serialized = serialize_parameters(
             &bpf_loader::id(),
             &program_id,
             &keyed_accounts,
@@ -462,13 +445,8 @@ mod tests {
                 }
             })
             .collect();
-        deserialize_parameters(
-            &bpf_loader::id(),
-            &de_keyed_accounts,
-            serialized.as_slice(),
-            &account_lengths,
-        )
-        .unwrap();
+        deserialize_parameters(&bpf_loader::id(), &de_keyed_accounts, serialized.as_slice())
+            .unwrap();
         for ((account, de_keyed_account), key) in
             accounts.iter().zip(de_keyed_accounts).zip(keys.clone())
         {
@@ -480,7 +458,7 @@ mod tests {
 
         // check serialize_parameters_unaligned
 
-        let (mut serialized, account_lengths) = serialize_parameters(
+        let mut serialized = serialize_parameters(
             &bpf_loader_deprecated::id(),
             &program_id,
             &keyed_accounts,
@@ -519,7 +497,6 @@ mod tests {
             &bpf_loader_deprecated::id(),
             &de_keyed_accounts,
             serialized.as_slice(),
-            &account_lengths,
         )
         .unwrap();
         for ((account, de_keyed_account), key) in
