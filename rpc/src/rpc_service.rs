@@ -506,7 +506,6 @@ mod tests {
             bank::Bank,
             snapshot_utils::{
                 ArchiveFormat, SnapshotVersion, DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-                DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
             },
         },
         solana_sdk::{
@@ -624,8 +623,6 @@ mod tests {
                 snapshot_version: SnapshotVersion::default(),
                 maximum_full_snapshot_archives_to_retain:
                     DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-                maximum_incremental_snapshot_archives_to_retain:
-                    DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
             }),
             bank_forks,
             RpcHealth::stub(),

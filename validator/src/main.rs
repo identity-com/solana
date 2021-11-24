@@ -53,7 +53,6 @@ use {
         snapshot_config::SnapshotConfig,
         snapshot_utils::{
             self, ArchiveFormat, SnapshotVersion, DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         },
     },
     solana_sdk::{
@@ -2692,8 +2691,6 @@ pub fn main() {
         archive_format,
         snapshot_version,
         maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain:
-            DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
     });
 
     validator_config.accounts_hash_interval_slots =
