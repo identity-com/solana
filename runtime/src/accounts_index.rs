@@ -81,7 +81,7 @@ pub struct AccountSecondaryIndexesIncludeExclude {
     pub keys: HashSet<Pubkey>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct AccountsIndexConfig {
     pub bins: Option<usize>,
 }
