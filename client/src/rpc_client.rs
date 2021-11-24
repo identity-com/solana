@@ -2966,24 +2966,10 @@ impl RpcClient {
         pubkeys: &[Pubkey],
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<Option<Account>>> {
-        self.get_multiple_accounts_with_config(
-            pubkeys,
-            RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64Zstd),
-                commitment: Some(self.maybe_map_commitment(commitment_config)?),
-                data_slice: None,
-            },
-        )
-    }
-
-    pub fn get_multiple_accounts_with_config(
-        &self,
-        pubkeys: &[Pubkey],
-        config: RpcAccountInfoConfig,
-    ) -> RpcResult<Vec<Option<Account>>> {
         let config = RpcAccountInfoConfig {
-            commitment: config.commitment.or_else(|| Some(self.commitment())),
-            ..config
+            encoding: Some(UiAccountEncoding::Base64Zstd),
+            commitment: Some(self.maybe_map_commitment(commitment_config)?),
+            data_slice: None,
         };
         let pubkeys: Vec<_> = pubkeys.iter().map(|pubkey| pubkey.to_string()).collect();
         let response = self.send(RpcRequest::GetMultipleAccounts, json!([pubkeys, config]))?;
