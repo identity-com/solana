@@ -536,7 +536,7 @@ where
         .store(next_append_vec_id, Ordering::Relaxed);
     accounts_db
         .write_version
-        .fetch_add(snapshot_version, Ordering::Release);
+        .fetch_add(snapshot_version, Ordering::Relaxed);
 
     let mut measure_notify = Measure::start("accounts_notify");
 
