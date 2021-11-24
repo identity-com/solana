@@ -2,7 +2,7 @@
 
 #![cfg(feature = "program")]
 
-use crate::instructions::*;
+use crate::instruction::*;
 use solana_program::{
     account_info::AccountInfo,
     bpf_loader, entrypoint,

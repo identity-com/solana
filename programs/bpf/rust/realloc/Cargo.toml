@@ -10,8 +10,7 @@ documentation = "https://docs.rs/solana-bpf-rust-realloc"
 edition = "2018"
 
 [features]
-default = ["program"]
-program = []
+custom-heap = []
 
 [dependencies]
 solana-program = { path = "../../../../sdk/program", version = "=1.8.0" }
