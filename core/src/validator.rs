@@ -425,11 +425,6 @@ impl Validator {
             accounts_update_notifier.is_some()
         );
 
-        let system_monitor_service = Some(SystemMonitorService::new(
-            Arc::clone(&exit),
-            !config.no_os_network_stats_reporting,
-        ));
-
         let (
             genesis_config,
             bank_forks,
@@ -471,6 +466,10 @@ impl Validator {
                 abort();
             });
         }
+        let system_monitor_service = Some(SystemMonitorService::new(
+            Arc::clone(&exit),
+            !config.no_os_network_stats_reporting,
+        ));
 
         let leader_schedule_cache = Arc::new(leader_schedule_cache);
         let bank = bank_forks.working_bank();
