@@ -22,7 +22,6 @@ use {
 pub struct SanitizedTransaction {
     message: SanitizedMessage,
     message_hash: Hash,
-    is_simple_vote_tx: bool,
     signatures: Vec<Signature>,
 }
 
@@ -42,7 +41,6 @@ impl SanitizedTransaction {
     pub fn try_create(
         tx: VersionedTransaction,
         message_hash: Hash,
-        is_simple_vote_tx: Option<bool>,
         address_mapper: impl Fn(&v0::Message) -> Result<MappedAddresses>,
     ) -> Result<Self> {
         tx.sanitize()?;
@@ -60,15 +58,9 @@ impl SanitizedTransaction {
             return Err(TransactionError::AccountLoadedTwice);
         }
 
-        let is_simple_vote_tx = is_simple_vote_tx.unwrap_or_else(|| {
-            let mut ix_iter = message.program_instructions_iter();
-            ix_iter.next().map(|(program_id, _ix)| program_id) == Some(&crate::vote::program::id())
-        });
-
         Ok(Self {
             message,
             message_hash,
-            is_simple_vote_tx,
             signatures,
         })
     }
@@ -84,7 +76,6 @@ impl SanitizedTransaction {
         Self {
             message_hash: tx.message.hash(),
             message: SanitizedMessage::Legacy(tx.message),
-            is_simple_vote_tx: false,
             signatures: tx.signatures,
         }
     }
@@ -113,11 +104,6 @@ impl SanitizedTransaction {
     /// Return the hash of the signed message
     pub fn message_hash(&self) -> &Hash {
         &self.message_hash
-    }
-
-    /// Returns true if this transaction is a simple vote
-    pub fn is_simple_vote_transaction(&self) -> bool {
-        self.is_simple_vote_tx
     }
 
     /// Convert this sanitized transaction into a versioned transaction for

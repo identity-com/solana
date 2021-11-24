@@ -489,6 +489,7 @@ pub type TransactionExecutionResult = (Result<()>, Option<NonceRollbackFull>);
 pub struct TransactionResults {
     pub fee_collection_results: Vec<Result<()>>,
     pub execution_results: Vec<TransactionExecutionResult>,
+    pub overwritten_vote_accounts: Vec<OverwrittenVoteAccount>,
     pub rent_debits: Vec<RentDebits>,
 }
 pub struct TransactionSimulationResult {
@@ -500,6 +501,11 @@ pub struct TransactionSimulationResult {
 pub struct TransactionBalancesSet {
     pub pre_balances: TransactionBalances,
     pub post_balances: TransactionBalances,
+}
+pub struct OverwrittenVoteAccount {
+    pub account: VoteAccount,
+    pub transaction_index: usize,
+    pub transaction_result_index: usize,
 }
 
 impl TransactionBalancesSet {
@@ -3267,7 +3273,7 @@ impl Bank {
             .into_iter()
             .map(|tx| {
                 let message_hash = tx.message.hash();
-                SanitizedTransaction::try_create(tx, message_hash, None, |_| {
+                SanitizedTransaction::try_create(tx, message_hash, |_| {
                     Err(TransactionError::UnsupportedVersion)
                 })
             })
@@ -4127,7 +4133,8 @@ impl Bank {
         let rent_debits = self.collect_rent(executed, loaded_txs);
 
         let mut update_stakes_cache_time = Measure::start("update_stakes_cache_time");
-        self.update_stakes_cache(sanitized_txs, executed, loaded_txs);
+        let overwritten_vote_accounts =
+            self.update_stakes_cache(sanitized_txs, executed, loaded_txs);
         update_stakes_cache_time.stop();
 
         // once committed there is no way to unroll
@@ -4148,6 +4155,7 @@ impl Bank {
         TransactionResults {
             fee_collection_results,
             execution_results: executed.to_vec(),
+            overwritten_vote_accounts,
             rent_debits,
         }
     }
@@ -5478,7 +5486,7 @@ impl Bank {
                 tx.message.hash()
             };
 
-            SanitizedTransaction::try_create(tx, message_hash, None, |_| {
+            SanitizedTransaction::try_create(tx, message_hash, |_| {
                 Err(TransactionError::UnsupportedVersion)
             })
         }?;
@@ -5713,7 +5721,8 @@ impl Bank {
         txs: &[SanitizedTransaction],
         res: &[TransactionExecutionResult],
         loaded_txs: &[TransactionLoadResult],
-    ) {
+    ) -> Vec<OverwrittenVoteAccount> {
+        let mut overwritten_vote_accounts = vec![];
         for (i, ((raccs, _load_nonce_rollback), tx)) in loaded_txs.iter().zip(txs).enumerate() {
             let (res, _res_nonce_rollback) = &res[i];
             if res.is_err() || raccs.is_err() {
@@ -5727,13 +5736,22 @@ impl Bank {
                 .zip(loaded_transaction.accounts.iter())
                 .filter(|(_i, (_pubkey, account))| (Stakes::is_stake(account)))
             {
-                self.stakes.write().unwrap().store(
+                if let Some(old_vote_account) = self.stakes.write().unwrap().store(
                     pubkey,
                     account,
                     self.stakes_remove_delegation_if_inactive_enabled(),
-                );
+                ) {
+                    // TODO: one of the indices is redundant.
+                    overwritten_vote_accounts.push(OverwrittenVoteAccount {
+                        account: old_vote_account,
+                        transaction_index: i,
+                        transaction_result_index: i,
+                    });
+                }
             }
         }
+
+        overwritten_vote_accounts
     }
 
     /// current stake delegations for this bank
