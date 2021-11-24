@@ -39,7 +39,7 @@ use crate::{
         AccountShrinkThreshold, AccountsDbConfig, ErrorCounters, SnapshotStorages,
         ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
     },
-    accounts_index::{AccountSecondaryIndexes, IndexKey, ScanConfig, ScanResult},
+    accounts_index::{AccountSecondaryIndexes, IndexKey, ScanResult},
     accounts_update_notifier_interface::AccountsUpdateNotifier,
     ancestors::{Ancestors, AncestorsForSerialization},
     blockhash_queue::BlockhashQueue,
@@ -5254,25 +5254,22 @@ impl Bank {
     pub fn get_program_accounts(
         &self,
         program_id: &Pubkey,
-        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc
             .accounts
-            .load_by_program(&self.ancestors, self.bank_id, program_id, config)
+            .load_by_program(&self.ancestors, self.bank_id, program_id)
     }
 
     pub fn get_filtered_program_accounts<F: Fn(&AccountSharedData) -> bool>(
         &self,
         program_id: &Pubkey,
         filter: F,
-        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc.accounts.load_by_program_with_filter(
             &self.ancestors,
             self.bank_id,
             program_id,
             filter,
-            config,
         )
     }
 
@@ -5280,14 +5277,12 @@ impl Bank {
         &self,
         index_key: &IndexKey,
         filter: F,
-        config: ScanConfig,
     ) -> ScanResult<Vec<(Pubkey, AccountSharedData)>> {
         self.rc.accounts.load_by_index_key_with_filter(
             &self.ancestors,
             self.bank_id,
             index_key,
             filter,
-            config,
         )
     }
 
@@ -10500,15 +10495,11 @@ pub(crate) mod tests {
         let bank1 = Arc::new(new_from_parent(&bank0));
         bank1.squash();
         assert_eq!(
-            bank0
-                .get_program_accounts(&program_id, ScanConfig::default(),)
-                .unwrap(),
+            bank0.get_program_accounts(&program_id).unwrap(),
             vec![(pubkey0, account0.clone())]
         );
         assert_eq!(
-            bank1
-                .get_program_accounts(&program_id, ScanConfig::default(),)
-                .unwrap(),
+            bank1.get_program_accounts(&program_id).unwrap(),
             vec![(pubkey0, account0)]
         );
         assert_eq!(
@@ -10527,20 +10518,8 @@ pub(crate) mod tests {
 
         let bank3 = Arc::new(new_from_parent(&bank2));
         bank3.squash();
-        assert_eq!(
-            bank1
-                .get_program_accounts(&program_id, ScanConfig::default(),)
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            bank3
-                .get_program_accounts(&program_id, ScanConfig::default(),)
-                .unwrap()
-                .len(),
-            2
-        );
+        assert_eq!(bank1.get_program_accounts(&program_id).unwrap().len(), 2);
+        assert_eq!(bank3.get_program_accounts(&program_id).unwrap().len(), 2);
     }
 
     #[test]
@@ -10561,11 +10540,7 @@ pub(crate) mod tests {
         bank.store_account(&address, &account);
 
         let indexed_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(program_id),
-                |_| true,
-                ScanConfig::default(),
-            )
+            .get_filtered_indexed_accounts(&IndexKey::ProgramId(program_id), |_| true)
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
         assert_eq!(indexed_accounts[0], (address, account));
@@ -10578,39 +10553,27 @@ pub(crate) mod tests {
         let bank = Arc::new(new_from_parent(&bank));
         bank.store_account(&address, &new_account);
         let indexed_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(program_id),
-                |_| true,
-                ScanConfig::default(),
-            )
+            .get_filtered_indexed_accounts(&IndexKey::ProgramId(program_id), |_| true)
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
         assert_eq!(indexed_accounts[0], (address, new_account.clone()));
         let indexed_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(another_program_id),
-                |_| true,
-                ScanConfig::default(),
-            )
+            .get_filtered_indexed_accounts(&IndexKey::ProgramId(another_program_id), |_| true)
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
         assert_eq!(indexed_accounts[0], (address, new_account.clone()));
 
         // Post-processing filter
         let indexed_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(program_id),
-                |account| account.owner() == &program_id,
-                ScanConfig::default(),
-            )
+            .get_filtered_indexed_accounts(&IndexKey::ProgramId(program_id), |account| {
+                account.owner() == &program_id
+            })
             .unwrap();
         assert!(indexed_accounts.is_empty());
         let indexed_accounts = bank
-            .get_filtered_indexed_accounts(
-                &IndexKey::ProgramId(another_program_id),
-                |account| account.owner() == &another_program_id,
-                ScanConfig::default(),
-            )
+            .get_filtered_indexed_accounts(&IndexKey::ProgramId(another_program_id), |account| {
+                account.owner() == &another_program_id
+            })
             .unwrap();
         assert_eq!(indexed_accounts.len(), 1);
         assert_eq!(indexed_accounts[0], (address, new_account));
@@ -13243,25 +13206,13 @@ pub(crate) mod tests {
 
         let bank2 =
             Bank::new_from_parent(&bank1, &Pubkey::default(), bank1.first_slot_in_next_epoch());
-        assert_eq!(
-            bank2
-                .get_program_accounts(&sysvar::id(), ScanConfig::default(),)
-                .unwrap()
-                .len(),
-            8
-        );
+        assert_eq!(bank2.get_program_accounts(&sysvar::id()).unwrap().len(), 8);
 
         // force rent collection for sysvars
         bank2.collect_rent_in_partition((0, 0, 1)); // all range
 
         // no sysvar should be deleted due to rent
-        assert_eq!(
-            bank2
-                .get_program_accounts(&sysvar::id(), ScanConfig::default(),)
-                .unwrap()
-                .len(),
-            8
-        );
+        assert_eq!(bank2.get_program_accounts(&sysvar::id()).unwrap().len(), 8);
     }
 
     // this test can be removed after rent_for_sysvars activation on mainnet-beta
@@ -13294,9 +13245,7 @@ pub(crate) mod tests {
         );
 
         {
-            let sysvars = bank1
-                .get_program_accounts(&sysvar::id(), ScanConfig::default())
-                .unwrap();
+            let sysvars = bank1.get_program_accounts(&sysvar::id()).unwrap();
             assert_eq!(sysvars.len(), 8);
             assert!(sysvars
                 .iter()
@@ -13331,9 +13280,7 @@ pub(crate) mod tests {
         );
 
         {
-            let sysvars = bank2
-                .get_program_accounts(&sysvar::id(), ScanConfig::default())
-                .unwrap();
+            let sysvars = bank2.get_program_accounts(&sysvar::id()).unwrap();
             assert_eq!(sysvars.len(), 8);
             assert!(sysvars
                 .iter()
@@ -13410,9 +13357,7 @@ pub(crate) mod tests {
             &feature::create_account(&Feature { activated_at: None }, feature_balance),
         );
         {
-            let sysvars = bank1
-                .get_program_accounts(&sysvar::id(), ScanConfig::default())
-                .unwrap();
+            let sysvars = bank1.get_program_accounts(&sysvar::id()).unwrap();
             assert_eq!(sysvars.len(), 9);
             assert!(sysvars
                 .iter()
@@ -13447,9 +13392,7 @@ pub(crate) mod tests {
             },
         );
         {
-            let sysvars = bank2
-                .get_program_accounts(&sysvar::id(), ScanConfig::default())
-                .unwrap();
+            let sysvars = bank2.get_program_accounts(&sysvar::id()).unwrap();
             assert_eq!(sysvars.len(), 9);
             assert!(sysvars
                 .iter()
@@ -13818,8 +13761,7 @@ pub(crate) mod tests {
                             bank_to_scan_receiver.recv_timeout(Duration::from_millis(10))
                         {
                             info!("scanning program accounts for slot {}", bank_to_scan.slot());
-                            let accounts_result = bank_to_scan
-                                .get_program_accounts(&program_id, ScanConfig::default());
+                            let accounts_result = bank_to_scan.get_program_accounts(&program_id);
                             let _ = scan_finished_sender.send(bank_to_scan.bank_id());
                             num_banks_scanned.fetch_add(1, Relaxed);
                             match (&acceptable_scan_results, accounts_result.is_err()) {

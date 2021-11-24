@@ -9,7 +9,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use solana_runtime::{
     accounts::{create_test_accounts, AccountAddressFilter, Accounts},
     accounts_db::AccountShrinkThreshold,
-    accounts_index::{AccountSecondaryIndexes, ScanConfig},
+    accounts_index::AccountSecondaryIndexes,
     ancestors::Ancestors,
     bank::*,
 };
@@ -267,7 +267,6 @@ fn bench_concurrent_scan_write(bencher: &mut Bencher) {
                     &Ancestors::default(),
                     0,
                     AccountSharedData::default().owner(),
-                    ScanConfig::default(),
                 )
                 .unwrap(),
         );
