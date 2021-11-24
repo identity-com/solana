@@ -1,7 +1,6 @@
 use crate::{
     ancestors::Ancestors,
     contains::Contains,
-    in_mem_accounts_index::InMemAccountsIndex,
     inline_spl_token_v2_0::{self, SPL_TOKEN_ACCOUNT_MINT_OFFSET, SPL_TOKEN_ACCOUNT_OWNER_OFFSET},
     pubkey_bins::PubkeyBinCalculator16,
     secondary_index::*,
@@ -15,7 +14,7 @@ use solana_sdk::{
     pubkey::{Pubkey, PUBKEY_BYTES},
 };
 use std::{
-    collections::{btree_map::BTreeMap, hash_map::Entry, HashSet},
+    collections::{btree_map::BTreeMap, hash_map::Entry, HashMap, HashSet},
     fmt::Debug,
     ops::{
         Bound,
@@ -43,7 +42,7 @@ pub type ScanResult<T> = Result<T, ScanError>;
 pub type SlotList<T> = Vec<(Slot, T)>;
 pub type SlotSlice<'s, T> = &'s [(Slot, T)];
 pub type RefCount = u64;
-pub type AccountMap<V> = InMemAccountsIndex<V>;
+pub type AccountMap<V> = HashMap<Pubkey, V>;
 
 type AccountMapEntry<T> = Arc<AccountMapEntryInner<T>>;
 
