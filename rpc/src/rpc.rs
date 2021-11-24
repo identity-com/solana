@@ -61,7 +61,7 @@ use {
         message::{Message, SanitizedMessage},
         pubkey::Pubkey,
         signature::{Keypair, Signature, Signer},
-        stake::state::{StakeActivationStatus, StakeState},
+        stake::state::StakeState,
         stake_history::StakeHistory,
         system_instruction,
         sysvar::stake_history,
@@ -1573,16 +1573,13 @@ impl JsonRpcRequestProcessor {
             solana_sdk::account::from_account::<StakeHistory, _>(&stake_history_account)
                 .ok_or_else(Error::internal_error)?;
 
-        let StakeActivationStatus {
-            effective,
-            activating,
-            deactivating,
-        } = delegation.stake_activating_and_deactivating(epoch, Some(&stake_history));
+        let (active, activating, deactivating) =
+            delegation.stake_activating_and_deactivating(epoch, Some(&stake_history));
         let stake_activation_state = if deactivating > 0 {
             StakeActivationState::Deactivating
         } else if activating > 0 {
             StakeActivationState::Activating
-        } else if effective > 0 {
+        } else if active > 0 {
             StakeActivationState::Active
         } else {
             StakeActivationState::Inactive
@@ -1590,12 +1587,12 @@ impl JsonRpcRequestProcessor {
         let inactive_stake = match stake_activation_state {
             StakeActivationState::Activating => activating,
             StakeActivationState::Active => 0,
-            StakeActivationState::Deactivating => delegation.stake.saturating_sub(effective),
+            StakeActivationState::Deactivating => delegation.stake.saturating_sub(active),
             StakeActivationState::Inactive => delegation.stake,
         };
         Ok(RpcStakeActivation {
             state: stake_activation_state,
-            active: effective,
+            active,
             inactive: inactive_stake,
         })
     }

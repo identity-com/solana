@@ -39,11 +39,13 @@ use solana_sdk::{
     stake::{
         self,
         instruction::{self as stake_instruction, LockupArgs, StakeError},
-        state::{Authorized, Lockup, Meta, StakeActivationStatus, StakeAuthorize, StakeState},
+        state::{Authorized, Lockup, Meta, StakeAuthorize, StakeState},
     },
-    stake_history::StakeHistory,
     system_instruction::SystemError,
-    sysvar::{clock, stake_history},
+    sysvar::{
+        clock,
+        stake_history::{self, StakeHistory},
+    },
     transaction::Transaction,
 };
 use solana_vote_program::vote_state::VoteState;
@@ -2011,11 +2013,7 @@ pub fn build_stake_state(
             stake,
         ) => {
             let current_epoch = clock.epoch;
-            let StakeActivationStatus {
-                effective,
-                activating,
-                deactivating,
-            } = stake
+            let (active_stake, activating_stake, deactivating_stake) = stake
                 .delegation
                 .stake_activating_and_deactivating(current_epoch, Some(stake_history));
             let lockup = if lockup.is_in_force(clock, None) {
@@ -2050,9 +2048,9 @@ pub fn build_stake_state(
                 use_lamports_unit,
                 current_epoch,
                 rent_exempt_reserve: Some(*rent_exempt_reserve),
-                active_stake: u64_some_if_not_zero(effective),
-                activating_stake: u64_some_if_not_zero(activating),
-                deactivating_stake: u64_some_if_not_zero(deactivating),
+                active_stake: u64_some_if_not_zero(active_stake),
+                activating_stake: u64_some_if_not_zero(activating_stake),
+                deactivating_stake: u64_some_if_not_zero(deactivating_stake),
                 ..CliStakeState::default()
             }
         }

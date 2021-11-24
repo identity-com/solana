@@ -10,7 +10,7 @@ use {
             self,
             state::{Delegation, StakeState},
         },
-        stake_history::StakeHistory,
+        sysvar::stake_history::StakeHistory,
     },
     solana_stake_program::stake_state,
     solana_vote_program::vote_state::VoteState,

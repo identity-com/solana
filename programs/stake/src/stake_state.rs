@@ -875,11 +875,12 @@ impl MergeKind {
             StakeState::Stake(meta, stake) => {
                 // stake must not be in a transient state. Transient here meaning
                 // activating or deactivating with non-zero effective stake.
-                let status = stake
+                match stake
                     .delegation
-                    .stake_activating_and_deactivating(clock.epoch, Some(stake_history));
-
-                match (status.effective, status.activating, status.deactivating) {
+                    .stake_activating_and_deactivating(clock.epoch, Some(stake_history))
+                {
+                    /*
+                    (e, a, d): e - effective, a - activating, d - deactivating */
                     (0, 0, 0) => Ok(Self::Inactive(meta, stake_keyed_account.lamports()?)),
                     (0, _, _) => Ok(Self::ActivationEpoch(meta, stake)),
                     (_, 0, 0) => Ok(Self::FullyActive(meta, stake)),
@@ -1191,9 +1192,20 @@ pub fn new_stake_history_entry<'a, I>(
 where
     I: Iterator<Item = &'a Delegation>,
 {
-    stakes.fold(StakeHistoryEntry::default(), |sum, stake| {
-        sum + stake.stake_activating_and_deactivating(epoch, history)
-    })
+    // whatever the stake says they  had for the epoch
+    //  and whatever the were still waiting for
+    fn add(a: (u64, u64, u64), b: (u64, u64, u64)) -> (u64, u64, u64) {
+        (a.0 + b.0, a.1 + b.1, a.2 + b.2)
+    }
+    let (effective, activating, deactivating) = stakes.fold((0, 0, 0), |sum, stake| {
+        add(sum, stake.stake_activating_and_deactivating(epoch, history))
+    });
+
+    StakeHistoryEntry {
+        effective,
+        activating,
+        deactivating,
+    }
 }
 
 // genesis investor accounts
@@ -1757,19 +1769,19 @@ mod tests {
         // assert that this stake follows step function if there's no history
         assert_eq!(
             stake.stake_activating_and_deactivating(stake.activation_epoch, Some(&stake_history),),
-            StakeActivationStatus::with_effective_and_activating(0, stake.stake),
+            (0, stake.stake, 0)
         );
         for epoch in stake.activation_epoch + 1..stake.deactivation_epoch {
             assert_eq!(
                 stake.stake_activating_and_deactivating(epoch, Some(&stake_history)),
-                StakeActivationStatus::with_effective(stake.stake),
+                (stake.stake, 0, 0)
             );
         }
         // assert that this stake is full deactivating
         assert_eq!(
             stake
                 .stake_activating_and_deactivating(stake.deactivation_epoch, Some(&stake_history),),
-            StakeActivationStatus::with_deactivating(stake.stake),
+            (stake.stake, 0, stake.stake)
         );
         // assert that this stake is fully deactivated if there's no history
         assert_eq!(
@@ -1777,20 +1789,21 @@ mod tests {
                 stake.deactivation_epoch + 1,
                 Some(&stake_history),
             ),
-            StakeActivationStatus::default(),
+            (0, 0, 0)
         );
 
         stake_history.add(
             0u64, // entry for zero doesn't have my activating amount
             StakeHistoryEntry {
                 effective: 1_000,
+                activating: 0,
                 ..StakeHistoryEntry::default()
             },
         );
         // assert that this stake is broken, because above setup is broken
         assert_eq!(
             stake.stake_activating_and_deactivating(1, Some(&stake_history)),
-            StakeActivationStatus::with_effective_and_activating(0, stake.stake),
+            (0, stake.stake, 0)
         );
 
         stake_history.add(
@@ -1805,10 +1818,7 @@ mod tests {
         // assert that this stake is broken, because above setup is broken
         assert_eq!(
             stake.stake_activating_and_deactivating(2, Some(&stake_history)),
-            StakeActivationStatus::with_effective_and_activating(
-                increment,
-                stake.stake - increment
-            ),
+            (increment, stake.stake - increment, 0)
         );
 
         // start over, test deactivation edge cases
@@ -1818,6 +1828,7 @@ mod tests {
             stake.deactivation_epoch, // entry for zero doesn't have my de-activating amount
             StakeHistoryEntry {
                 effective: 1_000,
+                activating: 0,
                 ..StakeHistoryEntry::default()
             },
         );
@@ -1827,7 +1838,7 @@ mod tests {
                 stake.deactivation_epoch + 1,
                 Some(&stake_history),
             ),
-            StakeActivationStatus::with_deactivating(stake.stake),
+            (stake.stake, 0, stake.stake) // says "I'm still waiting for deactivation"
         );
 
         // put in my initial deactivating amount, but don't put in an entry for next
@@ -1845,8 +1856,7 @@ mod tests {
                 stake.deactivation_epoch + 2,
                 Some(&stake_history),
             ),
-            // hung, should be lower
-            StakeActivationStatus::with_deactivating(stake.stake - increment),
+            (stake.stake - increment, 0, stake.stake - increment) // hung, should be lower
         );
     }
 
@@ -1858,10 +1868,7 @@ mod tests {
             Slow,
         }
 
-        fn do_test(
-            old_behavior: OldDeactivationBehavior,
-            expected_stakes: &[StakeActivationStatus],
-        ) {
+        fn do_test(old_behavior: OldDeactivationBehavior, expected_stakes: &[(u64, u64, u64)]) {
             let cluster_stake = 1_000;
             let activating_stake = 10_000;
             let some_stake = 700;
@@ -1924,13 +1931,13 @@ mod tests {
             do_test(
                 OldDeactivationBehavior::Slow,
                 &[
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
                 ],
             );
         }
@@ -1943,13 +1950,13 @@ mod tests {
             do_test(
                 OldDeactivationBehavior::Stuck,
                 &[
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
-                    StakeActivationStatus::default(),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
+                    (0, 0, 0),
                 ],
             );
         }
@@ -2042,34 +2049,37 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let adjust_staking_status = |rate: f64, status: &[StakeActivationStatus]| {
+        let adjust_staking_status = |rate: f64, status: &Vec<_>| {
             status
-                .iter()
-                .map(|entry| StakeActivationStatus {
-                    effective: (entry.effective as f64 * rate) as u64,
-                    activating: (entry.activating as f64 * rate) as u64,
-                    deactivating: (entry.deactivating as f64 * rate) as u64,
+                .clone()
+                .into_iter()
+                .map(|(a, b, c)| {
+                    (
+                        (a as f64 * rate) as u64,
+                        (b as f64 * rate) as u64,
+                        (c as f64 * rate) as u64,
+                    )
                 })
                 .collect::<Vec<_>>()
         };
 
         let expected_staking_status_transition = vec![
-            StakeActivationStatus::with_effective_and_activating(0, 700),
-            StakeActivationStatus::with_effective_and_activating(250, 450),
-            StakeActivationStatus::with_effective_and_activating(562, 138),
-            StakeActivationStatus::with_effective(700),
-            StakeActivationStatus::with_deactivating(700),
-            StakeActivationStatus::with_deactivating(275),
-            StakeActivationStatus::default(),
+            (0, 700, 0),
+            (250, 450, 0),
+            (562, 138, 0),
+            (700, 0, 0),
+            (700, 0, 700),
+            (275, 0, 275),
+            (0, 0, 0),
         ];
         let expected_staking_status_transition_base = vec![
-            StakeActivationStatus::with_effective_and_activating(0, 700),
-            StakeActivationStatus::with_effective_and_activating(250, 450),
-            StakeActivationStatus::with_effective_and_activating(562, 138 + 1), // +1 is needed for rounding
-            StakeActivationStatus::with_effective(700),
-            StakeActivationStatus::with_deactivating(700),
-            StakeActivationStatus::with_deactivating(275 + 1), // +1 is needed for rounding
-            StakeActivationStatus::default(),
+            (0, 700, 0),
+            (250, 450, 0),
+            (562, 138 + 1, 0), // +1 is needed for rounding
+            (700, 0, 0),
+            (700, 0, 700),
+            (275 + 1, 0, 275 + 1), // +1 is needed for rounding
+            (0, 0, 0),
         ];
 
         // normal stake activating and deactivating transition test, just in case
@@ -2160,11 +2170,7 @@ mod tests {
             };
             assert_eq!(
                 stake.stake_activating_and_deactivating(epoch, Some(&stake_history)),
-                StakeActivationStatus {
-                    effective: expected_stake,
-                    activating: expected_activating,
-                    deactivating: expected_deactivating,
-                },
+                (expected_stake, expected_activating, expected_deactivating)
             );
         }
     }
