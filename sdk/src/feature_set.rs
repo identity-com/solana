@@ -203,10 +203,6 @@ pub mod allow_native_ids {
     solana_sdk::declare_id!("GVnDbNkECwrzLM7aVBGWpBYo3yH1ACaXB4ottNX8pedZ");
 }
 
-pub mod check_seed_length {
-    solana_sdk::declare_id!("8HYXgkoKGreAMA3MfJkdjbKNVbfZRQP3jqFpa7iqN4v7");
-}
-
 lazy_static! {
     /// Map of feature identifiers to user-visible description
     pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
@@ -253,7 +249,6 @@ lazy_static! {
         (demote_program_write_locks::id(), "demote program write locks to readonly #19593"),
         (ed25519_program_enabled::id(), "enable builtin ed25519 signature verify program"),
         (allow_native_ids::id(), "allow native program ids in program derived addresses"),
-        (check_seed_length::id(), "Check program address seed lengths"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
