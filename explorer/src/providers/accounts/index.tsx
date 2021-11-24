@@ -25,8 +25,12 @@ import {
   UpgradeableLoaderAccount,
 } from "validators/accounts/upgradeable-program";
 import { RewardsProvider } from "./rewards";
-import { Metadata, MetadataData } from "@metaplex/js";
-import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
+import { Metadata } from "metaplex/classes";
+import {
+  EditionData,
+  getEditionData,
+  getMetadata,
+} from "./utils/metadataHelpers";
 export { useAccountHistory } from "./history";
 
 export type StakeProgramData = {
@@ -42,8 +46,8 @@ export type UpgradeableLoaderAccountData = {
 };
 
 export type NFTData = {
-  metadata: MetadataData;
-  editionInfo: EditionInfo;
+  metadata: Metadata;
+  editionData?: EditionData;
 };
 
 export type TokenProgramData = {
@@ -239,17 +243,11 @@ async function fetchAccountInfo(
 
               // Generate a PDA and check for a Metadata Account
               if (parsed.type === "mint") {
-                const metadata = await Metadata.load(
-                  connection,
-                  await Metadata.getPDA(pubkey)
-                );
+                const metadata = await getMetadata(pubkey, url);
                 if (metadata) {
                   // We have a valid Metadata account. Try and pull edition data.
-                  const editionInfo = await getEditionInfo(
-                    metadata,
-                    connection
-                  );
-                  nftData = { metadata: metadata.data, editionInfo };
+                  const editionData = await getEditionData(pubkey, url);
+                  nftData = { metadata, editionData };
                 }
               }
               data = {
