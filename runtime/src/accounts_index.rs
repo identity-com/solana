@@ -571,8 +571,6 @@ pub struct AccountsIndexRootsStats {
     pub roots_range: u64,
     pub rooted_cleaned_count: usize,
     pub unrooted_cleaned_count: usize,
-    pub clean_unref_from_storage_us: u64,
-    pub clean_dead_slot_us: u64,
 }
 
 pub struct AccountsIndexIterator<'a, T: IndexValue> {
@@ -1807,8 +1805,6 @@ impl<T: IndexValue> AccountsIndex<T> {
             roots_range,
             rooted_cleaned_count: 0,
             unrooted_cleaned_count: 0,
-            clean_unref_from_storage_us: 0,
-            clean_dead_slot_us: 0,
         })
     }
 
