@@ -1,5 +1,4 @@
 use crate::accounts_index::{AccountsIndexConfig, IndexValue};
-use crate::accounts_index_storage::AccountsIndexStorage;
 use crate::bucket_map_holder_stats::BucketMapHolderStats;
 use crate::in_mem_accounts_index::{InMemAccountsIndex, SlotT};
 use crate::waitable_condvar::WaitableCondvar;
@@ -41,8 +40,6 @@ pub struct BucketMapHolder<T: IndexValue> {
     /// and writing to disk in parallel are.
     /// Note startup is an optimization and is not required for correctness.
     startup: AtomicBool,
-
-    startup_worker_threads: Mutex<Option<AccountsIndexStorage<T>>>,
 }
 
 impl<T: IndexValue> Debug for BucketMapHolder<T> {
@@ -78,15 +75,9 @@ impl<T: IndexValue> BucketMapHolder<T> {
         self.startup.load(Ordering::Relaxed)
     }
 
-    pub fn set_startup(&self, storage: &AccountsIndexStorage<T>, value: bool) {
-        if value {
-            let num_threads = std::cmp::max(2, num_cpus::get() / 4);
-            *self.startup_worker_threads.lock().unwrap() = Some(
-                AccountsIndexStorage::add_worker_threads(storage, num_threads),
-            );
-        } else {
+    pub fn set_startup(&self, value: bool) {
+        if !value {
             self.wait_for_idle();
-            *self.startup_worker_threads.lock().unwrap() = None;
         }
         self.startup.store(value, Ordering::Relaxed)
     }
@@ -160,7 +151,6 @@ impl<T: IndexValue> BucketMapHolder<T> {
             bins,
             startup: AtomicBool::default(),
             mem_budget_mb,
-            startup_worker_threads: Mutex::default(),
             _threads: threads,
         }
     }
