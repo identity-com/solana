@@ -1,6 +1,7 @@
 use crate::accounts_index::{
     AccountMapEntry, AccountMapEntryInner, IndexValue, SlotList, WriteAccountMapEntry,
 };
+use crate::accounts_index_storage::AccountsIndexStorage;
 use crate::bucket_map_holder::BucketMapHolder;
 use crate::bucket_map_holder_stats::BucketMapHolderStats;
 use solana_measure::measure::Measure;
@@ -28,10 +29,10 @@ impl<T: IndexValue> Debug for InMemAccountsIndex<T> {
 }
 
 impl<T: IndexValue> InMemAccountsIndex<T> {
-    pub fn new(storage: &Arc<BucketMapHolder<T>>, bin: usize) -> Self {
+    pub fn new(storage: &AccountsIndexStorage<T>, bin: usize) -> Self {
         Self {
             map_internal: RwLock::default(),
-            storage: Arc::clone(storage),
+            storage: storage.storage().clone(),
             bin,
         }
     }

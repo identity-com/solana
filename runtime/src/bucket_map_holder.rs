@@ -25,6 +25,7 @@ impl<T: IndexValue> BucketMapHolder<T> {
             _phantom: std::marker::PhantomData::<T>::default(),
         }
     }
+
     // intended to execute in a bg thread
     pub fn background(&self, exit: Arc<AtomicBool>, wait: Arc<WaitableCondvar>) {
         loop {
