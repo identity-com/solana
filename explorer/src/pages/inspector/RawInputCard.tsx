@@ -113,7 +113,7 @@ export function RawInput({
         setError(undefined);
         return;
       } catch (err) {
-        if (err instanceof Error) setError(err.message);
+        setError(err.message);
       }
     } else {
       setError(undefined);

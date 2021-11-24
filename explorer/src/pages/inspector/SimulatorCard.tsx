@@ -273,9 +273,7 @@ function useSimulator(message: Message) {
       } catch (err) {
         console.error(err);
         setLogs(null);
-        if (err instanceof Error) {
-          setError(err.message);
-        }
+        setError(err.message);
       } finally {
         setSimulating(false);
       }
