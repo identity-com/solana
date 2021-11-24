@@ -94,16 +94,19 @@ fn output_slot_rewards(blockstore: &Blockstore, slot: Slot, method: &LedgerOutpu
                 for reward in rewards {
                     let sign = if reward.lamports < 0 { "-" } else { "" };
                     println!(
-                        "    {:<44}  {:^15}  {}◎{:<14.9}  ◎{:<18.9}   {}",
+                        "    {:<44}  {:^15}  {:<15}  {}   {}",
                         reward.pubkey,
                         if let Some(reward_type) = reward.reward_type {
                             format!("{}", reward_type)
                         } else {
                             "-".to_string()
                         },
-                        sign,
-                        lamports_to_sol(reward.lamports.abs() as u64),
-                        lamports_to_sol(reward.post_balance),
+                        format!(
+                            "{}◎{:<14.9}",
+                            sign,
+                            lamports_to_sol(reward.lamports.abs() as u64)
+                        ),
+                        format!("◎{:<18.9}", lamports_to_sol(reward.post_balance)),
                         reward
                             .commission
                             .map(|commission| format!("{:>9}%", commission))

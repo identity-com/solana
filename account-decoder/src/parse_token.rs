@@ -116,7 +116,6 @@ pub fn parse_token(
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "type", content = "info")]
-#[allow(clippy::large_enum_variant)]
 pub enum TokenAccountType {
     Account(UiTokenAccount),
     Mint(UiMint),

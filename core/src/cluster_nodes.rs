@@ -33,7 +33,6 @@ use {
     },
 };
 
-#[allow(clippy::large_enum_variant)]
 enum NodeId {
     // TVU node obtained through gossip (staked or not).
     ContactInfo(ContactInfo),

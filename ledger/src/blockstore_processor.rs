@@ -1355,7 +1355,6 @@ fn process_single_slot(
     Ok(())
 }
 
-#[allow(clippy::large_enum_variant)]
 pub enum TransactionStatusMessage {
     Batch(TransactionStatusBatch),
     Freeze(Slot),
