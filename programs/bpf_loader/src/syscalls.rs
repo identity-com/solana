@@ -22,8 +22,8 @@ use solana_sdk::{
         allow_native_ids, blake3_syscall_enabled, check_seed_length,
         close_upgradeable_program_accounts, demote_program_write_locks, disable_fees_sysvar,
         do_support_realloc, libsecp256k1_0_5_upgrade_enabled, mem_overlap_fix,
-        prevent_calling_precompiles_as_programs, return_data_syscall_enabled,
-        secp256k1_recover_syscall_enabled, sol_log_data_syscall_enabled,
+        return_data_syscall_enabled, secp256k1_recover_syscall_enabled,
+        sol_log_data_syscall_enabled,
     },
     hash::{Hasher, HASH_BYTES},
     ic_msg,
@@ -31,7 +31,6 @@ use solana_sdk::{
     keccak,
     message::Message,
     native_loader,
-    precompiles::is_precompile,
     process_instruction::{self, stable_log, ComputeMeter, InvokeContext, Logger},
     program::MAX_RETURN_DATA,
     pubkey::{Pubkey, PubkeyError, MAX_SEEDS, MAX_SEED_LEN},
@@ -2158,21 +2157,16 @@ fn check_account_infos(
 fn check_authorized_program(
     program_id: &Pubkey,
     instruction_data: &[u8],
-    invoke_context: &dyn InvokeContext,
+    close_upgradeable_program_accounts: bool,
 ) -> Result<(), EbpfError<BpfError>> {
-    #[allow(clippy::blocks_in_if_conditions)]
     if native_loader::check_id(program_id)
         || bpf_loader::check_id(program_id)
         || bpf_loader_deprecated::check_id(program_id)
         || (bpf_loader_upgradeable::check_id(program_id)
             && !(bpf_loader_upgradeable::is_upgrade_instruction(instruction_data)
                 || bpf_loader_upgradeable::is_set_authority_instruction(instruction_data)
-                || (invoke_context.is_feature_active(&close_upgradeable_program_accounts::id())
+                || (close_upgradeable_program_accounts
                     && bpf_loader_upgradeable::is_close_instruction(instruction_data))))
-        || (invoke_context.is_feature_active(&prevent_calling_precompiles_as_programs::id())
-            && is_precompile(program_id, |feature_id: &Pubkey| {
-                invoke_context.is_feature_active(feature_id)
-            }))
     {
         return Err(SyscallError::ProgramNotSupported(*program_id).into());
     }
@@ -2210,7 +2204,11 @@ fn call<'a>(
     let (message, caller_write_privileges, program_indices) =
         InstructionProcessor::create_message(&instruction, &signers, &invoke_context)
             .map_err(SyscallError::InstructionError)?;
-    check_authorized_program(&instruction.program_id, &instruction.data, *invoke_context)?;
+    check_authorized_program(
+        &instruction.program_id,
+        &instruction.data,
+        invoke_context.is_feature_active(&close_upgradeable_program_accounts::id()),
+    )?;
     let (account_indices, mut accounts) = syscall.translate_accounts(
         &message,
         account_infos_addr,

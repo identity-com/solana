@@ -97,7 +97,6 @@ use solana_sdk::{
     native_token::sol_to_lamports,
     nonce, nonce_account,
     packet::PACKET_DATA_SIZE,
-    precompiles::get_precompiles,
     process_instruction::{ComputeMeter, Executor, ProcessInstructionWithContext},
     program_utils::limited_deserialize,
     pubkey::Pubkey,
@@ -2501,38 +2500,38 @@ impl Bank {
 
         // Add additional native programs specified in the genesis config
         for (name, program_id) in &genesis_config.native_instruction_processors {
-            self.add_builtin_account(name, program_id, false);
+            self.add_native_program(name, program_id, false);
         }
     }
 
-    fn burn_and_purge_account(&self, program_id: &Pubkey, mut account: AccountSharedData) {
-        self.capitalization.fetch_sub(account.lamports(), Relaxed);
-        // Resetting account balance to 0 is needed to really purge from AccountsDb and
-        // flush the Stakes cache
-        account.set_lamports(0);
-        self.store_account(program_id, &account);
-    }
-
     // NOTE: must hold idempotent for the same set of arguments
-    /// Add a builtin program account
-    pub fn add_builtin_account(&self, name: &str, program_id: &Pubkey, must_replace: bool) {
+    pub fn add_native_program(&self, name: &str, program_id: &Pubkey, must_replace: bool) {
         let existing_genuine_program =
-            self.get_account_with_fixed_root(program_id)
-                .and_then(|account| {
-                    // it's very unlikely to be squatted at program_id as non-system account because of burden to
-                    // find victim's pubkey/hash. So, when account.owner is indeed native_loader's, it's
-                    // safe to assume it's a genuine program.
-                    if native_loader::check_id(account.owner()) {
-                        Some(account)
-                    } else {
-                        // malicious account is pre-occupying at program_id
-                        self.burn_and_purge_account(program_id, account);
-                        None
-                    }
-                });
+            if let Some(mut account) = self.get_account_with_fixed_root(program_id) {
+                // it's very unlikely to be squatted at program_id as non-system account because of burden to
+                // find victim's pubkey/hash. So, when account.owner is indeed native_loader's, it's
+                // safe to assume it's a genuine program.
+                if native_loader::check_id(account.owner()) {
+                    Some(account)
+                } else {
+                    // malicious account is pre-occupying at program_id
+                    // forcibly burn and purge it
+
+                    self.capitalization.fetch_sub(account.lamports(), Relaxed);
+
+                    // Resetting account balance to 0 is needed to really purge from AccountsDb and
+                    // flush the Stakes cache
+                    account.set_lamports(0);
+                    self.store_account(program_id, &account);
+                    None
+                }
+            } else {
+                None
+            };
 
         if must_replace {
             // updating native program
+
             match &existing_genuine_program {
                 None => panic!(
                     "There is no account to replace with native program ({}, {}).",
@@ -2540,16 +2539,29 @@ impl Bank {
                 ),
                 Some(account) => {
                     if *name == String::from_utf8_lossy(account.data()) {
-                        // The existing account is well formed
+                        // nop; it seems that already AccountsDb is updated.
                         return;
                     }
+                    // continue to replace account
                 }
             }
         } else {
             // introducing native program
-            if existing_genuine_program.is_some() {
-                // The existing account is sufficient
-                return;
+
+            match &existing_genuine_program {
+                None => (), // continue to add account
+                Some(_account) => {
+                    // nop; it seems that we already have account
+
+                    // before returning here to retain idempotent just make sure
+                    // the existing native program name is same with what we're
+                    // supposed to add here (but skipping) But I can't:
+                    // following assertion already catches several different names for same
+                    // program_id
+                    // depending on clusters...
+                    // assert_eq!(name.to_owned(), String::from_utf8_lossy(&account.data));
+                    return;
+                }
             }
         }
 
@@ -2567,37 +2579,8 @@ impl Bank {
             self.inherit_specially_retained_account_fields(&existing_genuine_program),
         );
         self.store_account_and_update_capitalization(program_id, &account);
-    }
 
-    /// Add a precompiled program account
-    pub fn add_precompiled_account(&self, program_id: &Pubkey) {
-        if let Some(account) = self.get_account_with_fixed_root(program_id) {
-            if account.executable() {
-                // The account is already executable, that's all we need
-                return;
-            } else {
-                // malicious account is pre-occupying at program_id
-                self.burn_and_purge_account(program_id, account);
-            }
-        };
-
-        assert!(
-            !self.freeze_started(),
-            "Can't change frozen bank by adding not-existing new precompiled program ({}). \
-                Maybe, inconsistent program activation is detected on snapshot restore?",
-            program_id
-        );
-
-        // Add a bogus executable account, which will be loaded and ignored.
-        let (lamports, rent_epoch) = self.inherit_specially_retained_account_fields(&None);
-        let account = AccountSharedData::from(Account {
-            lamports,
-            owner: solana_sdk::system_program::id(),
-            data: vec![],
-            executable: true,
-            rent_epoch,
-        });
-        self.store_account_and_update_capitalization(program_id, &account);
+        debug!("Added native program {} under {:?}", name, program_id);
     }
 
     pub fn set_rent_burn_percentage(&mut self, burn_percent: u8) {
@@ -4604,14 +4587,9 @@ impl Bank {
             for builtin in builtins.genesis_builtins {
                 self.add_builtin(
                     &builtin.name,
-                    &builtin.id,
+                    builtin.id,
                     builtin.process_instruction_with_context,
                 );
-            }
-            for precompile in get_precompiles() {
-                if precompile.feature.is_none() {
-                    self.add_precompile(&precompile.program_id);
-                }
             }
         }
         self.feature_builtins = Arc::new(builtins.feature_builtins);
@@ -5342,43 +5320,26 @@ impl Bank {
     pub fn add_builtin(
         &mut self,
         name: &str,
-        program_id: &Pubkey,
+        program_id: Pubkey,
         process_instruction_with_context: ProcessInstructionWithContext,
     ) {
         debug!("Adding program {} under {:?}", name, program_id);
-        self.add_builtin_account(name, program_id, false);
+        self.add_native_program(name, &program_id, false);
         self.message_processor
             .add_program(program_id, process_instruction_with_context);
-        debug!("Added program {} under {:?}", name, program_id);
     }
 
     /// Replace a builtin instruction processor if it already exists
     pub fn replace_builtin(
         &mut self,
         name: &str,
-        program_id: &Pubkey,
+        program_id: Pubkey,
         process_instruction_with_context: ProcessInstructionWithContext,
     ) {
         debug!("Replacing program {} under {:?}", name, program_id);
-        self.add_builtin_account(name, program_id, true);
+        self.add_native_program(name, &program_id, true);
         self.message_processor
             .add_program(program_id, process_instruction_with_context);
-        debug!("Replaced program {} under {:?}", name, program_id);
-    }
-
-    /// Remove a builtin instruction processor if it already exists
-    pub fn remove_builtin(&mut self, name: &str, program_id: &Pubkey) {
-        debug!("Removing program {} under {:?}", name, program_id);
-        // Don't remove the account since the bank expects the account state to
-        // be idempotent
-        self.message_processor.remove_program(program_id);
-        debug!("Removed program {} under {:?}", name, program_id);
-    }
-
-    pub fn add_precompile(&mut self, program_id: &Pubkey) {
-        debug!("Adding precompiled program {}", program_id);
-        self.add_precompiled_account(program_id);
-        debug!("Added precompiled program {:?}", program_id);
     }
 
     pub fn clean_accounts(
@@ -5649,26 +5610,15 @@ impl Bank {
                 match activation_type {
                     ActivationType::NewProgram => self.add_builtin(
                         &builtin.name,
-                        &builtin.id,
+                        builtin.id,
                         builtin.process_instruction_with_context,
                     ),
                     ActivationType::NewVersion => self.replace_builtin(
                         &builtin.name,
-                        &builtin.id,
+                        builtin.id,
                         builtin.process_instruction_with_context,
                     ),
-                    ActivationType::RemoveProgram => {
-                        self.remove_builtin(&builtin.name, &builtin.id)
-                    }
                 }
-            }
-        }
-        for precompile in get_precompiles() {
-            #[allow(clippy::blocks_in_if_conditions)]
-            if precompile.feature.map_or(false, |ref feature_id| {
-                self.feature_set.is_active(feature_id)
-            }) {
-                self.add_precompile(&precompile.program_id);
             }
         }
     }
@@ -6392,7 +6342,7 @@ pub(crate) mod tests {
             ) as u64,
         );
         bank.rent_collector.slots_per_year = 421_812.0;
-        bank.add_builtin("mock_program", &mock_program_id, mock_process_instruction);
+        bank.add_builtin("mock_program", mock_program_id, mock_process_instruction);
 
         bank
     }
@@ -9878,7 +9828,7 @@ pub(crate) mod tests {
         assert!(bank.get_account(&mock_vote_program_id()).is_none());
         bank.add_builtin(
             "mock_vote_program",
-            &mock_vote_program_id(),
+            mock_vote_program_id(),
             mock_vote_processor,
         );
         assert!(bank.get_account(&mock_vote_program_id()).is_some());
@@ -9951,7 +9901,7 @@ pub(crate) mod tests {
         let vote_loader_account = bank.get_account(&solana_vote_program::id()).unwrap();
         bank.add_builtin(
             "solana_vote_program",
-            &solana_vote_program::id(),
+            solana_vote_program::id(),
             mock_vote_processor,
         );
         let new_vote_loader_account = bank.get_account(&solana_vote_program::id()).unwrap();
@@ -10000,8 +9950,8 @@ pub(crate) mod tests {
         assert!(!bank.stakes.read().unwrap().stake_delegations().is_empty());
         assert_eq!(bank.calculate_capitalization(true), bank.capitalization());
 
-        bank.add_builtin("mock_program1", &vote_id, mock_ix_processor);
-        bank.add_builtin("mock_program2", &stake_id, mock_ix_processor);
+        bank.add_builtin("mock_program1", vote_id, mock_ix_processor);
+        bank.add_builtin("mock_program2", stake_id, mock_ix_processor);
         {
             let stakes = bank.stakes.read().unwrap();
             assert!(stakes.vote_accounts().as_ref().is_empty());
@@ -10020,8 +9970,8 @@ pub(crate) mod tests {
         // Re-adding builtin programs should be no-op
         bank.update_accounts_hash();
         let old_hash = bank.get_accounts_hash();
-        bank.add_builtin("mock_program1", &vote_id, mock_ix_processor);
-        bank.add_builtin("mock_program2", &stake_id, mock_ix_processor);
+        bank.add_builtin("mock_program1", vote_id, mock_ix_processor);
+        bank.add_builtin("mock_program2", stake_id, mock_ix_processor);
         bank.update_accounts_hash();
         let new_hash = bank.get_accounts_hash();
         assert_eq!(old_hash, new_hash);
@@ -10835,7 +10785,7 @@ pub(crate) mod tests {
         }
 
         let mock_program_id = Pubkey::new(&[2u8; 32]);
-        bank.add_builtin("mock_program", &mock_program_id, mock_process_instruction);
+        bank.add_builtin("mock_program", mock_program_id, mock_process_instruction);
 
         let from_pubkey = solana_sdk::pubkey::new_rand();
         let to_pubkey = solana_sdk::pubkey::new_rand();
@@ -10879,7 +10829,7 @@ pub(crate) mod tests {
         }
 
         let mock_program_id = Pubkey::new(&[2u8; 32]);
-        bank.add_builtin("mock_program", &mock_program_id, mock_process_instruction);
+        bank.add_builtin("mock_program", mock_program_id, mock_process_instruction);
 
         let from_pubkey = solana_sdk::pubkey::new_rand();
         let to_pubkey = solana_sdk::pubkey::new_rand();
@@ -10934,7 +10884,7 @@ pub(crate) mod tests {
 
         bank.add_builtin(
             "mock_vote",
-            &solana_vote_program::id(),
+            solana_vote_program::id(),
             mock_ok_vote_processor,
         );
         let result = bank.process_transaction(&tx);
@@ -10988,7 +10938,7 @@ pub(crate) mod tests {
 
         bank.add_builtin(
             "mock_vote",
-            &solana_vote_program::id(),
+            solana_vote_program::id(),
             mock_ok_vote_processor,
         );
 
@@ -11022,7 +10972,7 @@ pub(crate) mod tests {
 
         bank.add_builtin(
             "mock_vote",
-            &solana_vote_program::id(),
+            solana_vote_program::id(),
             mock_ok_vote_processor,
         );
 
@@ -11079,7 +11029,7 @@ pub(crate) mod tests {
 
         bank.add_builtin(
             "mock_vote",
-            &solana_vote_program::id(),
+            solana_vote_program::id(),
             mock_ok_vote_processor,
         );
 
@@ -11114,7 +11064,7 @@ pub(crate) mod tests {
             .map(|i| {
                 let key = solana_sdk::pubkey::new_rand();
                 let name = format!("program{:?}", i);
-                bank.add_builtin(&name, &key, mock_ok_vote_processor);
+                bank.add_builtin(&name, key, mock_ok_vote_processor);
                 (key, name.as_bytes().to_vec())
             })
             .collect();
@@ -11323,7 +11273,7 @@ pub(crate) mod tests {
 
         // Add a new program
         let program1_pubkey = solana_sdk::pubkey::new_rand();
-        bank.add_builtin("program", &program1_pubkey, nested_processor);
+        bank.add_builtin("program", program1_pubkey, nested_processor);
 
         // Add a new program owned by the first
         let program2_pubkey = solana_sdk::pubkey::new_rand();
@@ -11690,24 +11640,20 @@ pub(crate) mod tests {
         ));
         assert_eq!(bank.get_account_modified_slot(&program_id), None);
 
-        Arc::get_mut(&mut bank).unwrap().add_builtin(
-            "mock_program",
-            &program_id,
-            mock_ix_processor,
-        );
+        Arc::get_mut(&mut bank)
+            .unwrap()
+            .add_builtin("mock_program", program_id, mock_ix_processor);
         assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
 
         let mut bank = Arc::new(new_from_parent(&bank));
-        Arc::get_mut(&mut bank).unwrap().add_builtin(
-            "mock_program",
-            &program_id,
-            mock_ix_processor,
-        );
+        Arc::get_mut(&mut bank)
+            .unwrap()
+            .add_builtin("mock_program", program_id, mock_ix_processor);
         assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
 
         Arc::get_mut(&mut bank).unwrap().replace_builtin(
             "mock_program v2",
-            &program_id,
+            program_id,
             mock_ix_processor,
         );
         assert_eq!(
@@ -11741,18 +11687,18 @@ pub(crate) mod tests {
 
         Arc::get_mut(&mut bank)
             .unwrap()
-            .add_builtin("mock_program", &loader_id, mock_ix_processor);
+            .add_builtin("mock_program", loader_id, mock_ix_processor);
         assert_eq!(bank.get_account_modified_slot(&loader_id).unwrap().1, slot);
 
         let mut bank = Arc::new(new_from_parent(&bank));
         Arc::get_mut(&mut bank)
             .unwrap()
-            .add_builtin("mock_program", &loader_id, mock_ix_processor);
+            .add_builtin("mock_program", loader_id, mock_ix_processor);
         assert_eq!(bank.get_account_modified_slot(&loader_id).unwrap().1, slot);
     }
 
     #[test]
-    fn test_add_builtin_account() {
+    fn test_add_native_program() {
         let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
         activate_all_features(&mut genesis_config);
 
@@ -11768,7 +11714,7 @@ pub(crate) mod tests {
 
         assert_capitalization_diff(
             &bank,
-            || bank.add_builtin_account("mock_program", &program_id, false),
+            || bank.add_native_program("mock_program", &program_id, false),
             |old, new| {
                 assert_eq!(old + 1, new);
             },
@@ -11779,7 +11725,7 @@ pub(crate) mod tests {
         let bank = Arc::new(new_from_parent(&bank));
         assert_capitalization_diff(
             &bank,
-            || bank.add_builtin_account("mock_program", &program_id, false),
+            || bank.add_native_program("mock_program", &program_id, false),
             |old, new| assert_eq!(old, new),
         );
 
@@ -11790,7 +11736,7 @@ pub(crate) mod tests {
         // invocations.
         assert_capitalization_diff(
             &bank,
-            || bank.add_builtin_account("mock_program v2", &program_id, true),
+            || bank.add_native_program("mock_program v2", &program_id, true),
             |old, new| assert_eq!(old, new),
         );
 
@@ -11802,7 +11748,7 @@ pub(crate) mod tests {
         let bank = Arc::new(new_from_parent(&bank));
         assert_capitalization_diff(
             &bank,
-            || bank.add_builtin_account("mock_program v2", &program_id, true),
+            || bank.add_native_program("mock_program v2", &program_id, true),
             |old, new| assert_eq!(old, new),
         );
 
@@ -11814,12 +11760,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_add_builtin_account_inherited_cap_while_replacing() {
+    fn test_add_native_program_inherited_cap_while_replacing() {
         let (genesis_config, mint_keypair) = create_genesis_config(100_000);
         let bank = Bank::new_for_tests(&genesis_config);
         let program_id = solana_sdk::pubkey::new_rand();
 
-        bank.add_builtin_account("mock_program", &program_id, false);
+        bank.add_native_program("mock_program", &program_id, false);
         assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
 
         // someone mess with program_id's balance
@@ -11828,12 +11774,12 @@ pub(crate) mod tests {
         bank.deposit(&program_id, 10).unwrap();
         assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
 
-        bank.add_builtin_account("mock_program v2", &program_id, true);
+        bank.add_native_program("mock_program v2", &program_id, true);
         assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
     }
 
     #[test]
-    fn test_add_builtin_account_squatted_while_not_replacing() {
+    fn test_add_native_program_squatted_while_not_replacing() {
         let (genesis_config, mint_keypair) = create_genesis_config(100_000);
         let bank = Bank::new_for_tests(&genesis_config);
         let program_id = solana_sdk::pubkey::new_rand();
@@ -11844,7 +11790,7 @@ pub(crate) mod tests {
         bank.deposit(&program_id, 10).unwrap();
         assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
 
-        bank.add_builtin_account("mock_program", &program_id, false);
+        bank.add_native_program("mock_program", &program_id, false);
         assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
     }
 
@@ -11854,7 +11800,7 @@ pub(crate) mod tests {
                    program (mock_program, CiXgo2KHKSDmDnV1F6B69eWFgNAPiSBjjYvfB4cvRNre). \
                    Maybe, inconsistent program activation is detected on snapshot restore?"
     )]
-    fn test_add_builtin_account_after_frozen() {
+    fn test_add_native_program_after_frozen() {
         use std::str::FromStr;
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
 
@@ -11868,7 +11814,7 @@ pub(crate) mod tests {
         );
         bank.freeze();
 
-        bank.add_builtin_account("mock_program", &program_id, false);
+        bank.add_native_program("mock_program", &program_id, false);
     }
 
     #[test]
@@ -11876,7 +11822,7 @@ pub(crate) mod tests {
         expected = "There is no account to replace with native program (mock_program, \
                     CiXgo2KHKSDmDnV1F6B69eWFgNAPiSBjjYvfB4cvRNre)."
     )]
-    fn test_add_builtin_account_replace_none() {
+    fn test_add_native_program_replace_none() {
         use std::str::FromStr;
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
 
@@ -11889,100 +11835,7 @@ pub(crate) mod tests {
             slot,
         );
 
-        bank.add_builtin_account("mock_program", &program_id, true);
-    }
-
-    #[test]
-    fn test_add_precompiled_account() {
-        let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
-        activate_all_features(&mut genesis_config);
-
-        let slot = 123;
-        let program_id = solana_sdk::pubkey::new_rand();
-
-        let bank = Arc::new(Bank::new_from_parent(
-            &Arc::new(Bank::new_for_tests(&genesis_config)),
-            &Pubkey::default(),
-            slot,
-        ));
-        assert_eq!(bank.get_account_modified_slot(&program_id), None);
-
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_precompiled_account(&program_id),
-            |old, new| {
-                assert_eq!(old + 1, new);
-            },
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-
-        let bank = Arc::new(new_from_parent(&bank));
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_precompiled_account(&program_id),
-            |old, new| assert_eq!(old, new),
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-    }
-
-    #[test]
-    fn test_add_precompiled_account_inherited_cap_while_replacing() {
-        let (genesis_config, mint_keypair) = create_genesis_config(100_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let program_id = solana_sdk::pubkey::new_rand();
-
-        bank.add_precompiled_account(&program_id);
-        assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
-
-        // someone mess with program_id's balance
-        bank.withdraw(&mint_keypair.pubkey(), 10).unwrap();
-        assert_ne!(bank.capitalization(), bank.calculate_capitalization(true));
-        bank.deposit(&program_id, 10).unwrap();
-        assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
-
-        bank.add_precompiled_account(&program_id);
-        assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
-    }
-
-    #[test]
-    fn test_add_precompiled_account_squatted_while_not_replacing() {
-        let (genesis_config, mint_keypair) = create_genesis_config(100_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let program_id = solana_sdk::pubkey::new_rand();
-
-        // someone managed to squat at program_id!
-        bank.withdraw(&mint_keypair.pubkey(), 10).unwrap();
-        assert_ne!(bank.capitalization(), bank.calculate_capitalization(true));
-        bank.deposit(&program_id, 10).unwrap();
-        assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
-
-        bank.add_precompiled_account(&program_id);
-        assert_eq!(bank.capitalization(), bank.calculate_capitalization(true));
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "Can't change frozen bank by adding not-existing new precompiled \
-                   program (CiXgo2KHKSDmDnV1F6B69eWFgNAPiSBjjYvfB4cvRNre). \
-                   Maybe, inconsistent program activation is detected on snapshot restore?"
-    )]
-    fn test_add_precompiled_account_after_frozen() {
-        use std::str::FromStr;
-        let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
-
-        let slot = 123;
-        let program_id = Pubkey::from_str("CiXgo2KHKSDmDnV1F6B69eWFgNAPiSBjjYvfB4cvRNre").unwrap();
-
-        let bank = Bank::new_from_parent(
-            &Arc::new(Bank::new_for_tests(&genesis_config)),
-            &Pubkey::default(),
-            slot,
-        );
-        bank.freeze();
-
-        bank.add_precompiled_account(&program_id);
+        bank.add_native_program("mock_program", &program_id, true);
     }
 
     #[test]
@@ -14179,7 +14032,7 @@ pub(crate) mod tests {
         }
 
         let program_id = solana_sdk::pubkey::new_rand();
-        bank.add_builtin("mock_program1", &program_id, mock_ix_processor);
+        bank.add_builtin("mock_program1", program_id, mock_ix_processor);
 
         let blockhash = bank.last_blockhash();
         #[allow(deprecated)]
@@ -14391,7 +14244,7 @@ pub(crate) mod tests {
             Ok(())
         }
         let program_id = solana_sdk::pubkey::new_rand();
-        bank.add_builtin("mock_program", &program_id, mock_ix_processor);
+        bank.add_builtin("mock_program", program_id, mock_ix_processor);
 
         let message = Message::new(
             &[
@@ -14543,48 +14396,5 @@ pub(crate) mod tests {
                 bank.verify_transaction(tx.into(), false).is_ok(),
             );
         }
-    }
-
-    #[test]
-    fn test_call_precomiled_program() {
-        let GenesisConfigInfo {
-            mut genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(42, &Pubkey::new_unique(), 42);
-        activate_all_features(&mut genesis_config);
-        let bank = Bank::new_for_tests(&genesis_config);
-
-        // libsecp256k1
-        let secp_privkey = libsecp256k1::SecretKey::random(&mut rand::thread_rng());
-        let message_arr = b"hello";
-        let instruction = solana_sdk::secp256k1_instruction::new_secp256k1_instruction(
-            &secp_privkey,
-            message_arr,
-        );
-        let tx = Transaction::new_signed_with_payer(
-            &[instruction],
-            Some(&mint_keypair.pubkey()),
-            &[&mint_keypair],
-            bank.last_blockhash(),
-        );
-        // calling the program should be successful when called from the bank
-        // even if the program itself is not called
-        bank.process_transaction(&tx).unwrap();
-
-        // ed25519
-        let privkey = ed25519_dalek::Keypair::generate(&mut rand::thread_rng());
-        let message_arr = b"hello";
-        let instruction =
-            solana_sdk::ed25519_instruction::new_ed25519_instruction(&privkey, message_arr);
-        let tx = Transaction::new_signed_with_payer(
-            &[instruction],
-            Some(&mint_keypair.pubkey()),
-            &[&mint_keypair],
-            bank.last_blockhash(),
-        );
-        // calling the program should be successful when called from the bank
-        // even if the program itself is not called
-        bank.process_transaction(&tx).unwrap();
     }
 }

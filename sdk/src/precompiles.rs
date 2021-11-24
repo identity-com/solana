@@ -5,9 +5,7 @@
 use {
     crate::{
         decode_error::DecodeError,
-        feature_set::{
-            ed25519_program_enabled, prevent_calling_precompiles_as_programs, FeatureSet,
-        },
+        feature_set::{ed25519_program_enabled, FeatureSet},
         instruction::CompiledInstruction,
         pubkey::Pubkey,
     },
@@ -40,7 +38,7 @@ impl<T> DecodeError<T> for PrecompileError {
 pub type Verify = fn(&[u8], &[&[u8]], &Arc<FeatureSet>) -> std::result::Result<(), PrecompileError>;
 
 /// Information on a precompiled program
-pub struct Precompile {
+struct Precompile {
     /// Program id
     pub program_id: Pubkey,
     /// Feature to enable on, `None` indicates always enabled
@@ -58,13 +56,8 @@ impl Precompile {
         }
     }
     /// Check if a program id is this precompiled program
-    pub fn check_id<F>(&self, program_id: &Pubkey, is_enabled: F) -> bool
-    where
-        F: Fn(&Pubkey) -> bool,
-    {
-        self.feature
-            .map_or(true, |ref feature_id| is_enabled(feature_id))
-            && self.program_id == *program_id
+    pub fn check_id(&self, program_id: &Pubkey, feature_set: &Arc<FeatureSet>) -> bool {
+        self.feature.map_or(true, |f| feature_set.is_active(&f)) && self.program_id == *program_id
     }
     /// Verify this precompiled program
     pub fn verify(
@@ -82,7 +75,7 @@ lazy_static! {
     static ref PRECOMPILES: Vec<Precompile> = vec![
         Precompile::new(
             crate::secp256k1_program::id(),
-            Some(prevent_calling_precompiles_as_programs::id()),
+            None,
             crate::secp256k1_instruction::verify,
         ),
         Precompile::new(
@@ -94,17 +87,10 @@ lazy_static! {
 }
 
 /// Check if a program is a precompiled program
-pub fn is_precompile<F>(program_id: &Pubkey, is_enabled: F) -> bool
-where
-    F: Fn(&Pubkey) -> bool,
-{
+pub fn is_precompile(program_id: &Pubkey, feature_set: &Arc<FeatureSet>) -> bool {
     PRECOMPILES
         .iter()
-        .any(|precompile| precompile.check_id(program_id, |feature_id| is_enabled(feature_id)))
-}
-
-pub fn get_precompiles<'a>() -> &'a [Precompile] {
-    &PRECOMPILES
+        .any(|precompile| precompile.check_id(program_id, feature_set))
 }
 
 /// Check that a program is precompiled and if so verify it
@@ -115,7 +101,7 @@ pub fn verify_if_precompile(
     feature_set: &Arc<FeatureSet>,
 ) -> Result<(), PrecompileError> {
     for precompile in PRECOMPILES.iter() {
-        if precompile.check_id(program_id, |feature_id| feature_set.is_active(feature_id)) {
+        if precompile.check_id(program_id, feature_set) {
             let instruction_datas: Vec<_> = all_instructions
                 .iter()
                 .map(|instruction| instruction.data.as_ref())
