@@ -1,12 +1,10 @@
-use {
-    crate::parse_instruction::{
-        check_num_accounts, ParsableProgram, ParseInstructionError, ParsedInstructionEnum,
-    },
-    bincode::deserialize,
-    serde_json::json,
-    solana_sdk::{instruction::CompiledInstruction, pubkey::Pubkey},
-    solana_vote_program::vote_instruction::VoteInstruction,
+use crate::parse_instruction::{
+    check_num_accounts, ParsableProgram, ParseInstructionError, ParsedInstructionEnum,
 };
+use bincode::deserialize;
+use serde_json::json;
+use solana_sdk::{instruction::CompiledInstruction, pubkey::Pubkey};
+use solana_vote_program::vote_instruction::VoteInstruction;
 
 pub fn parse_vote(
     instruction: &CompiledInstruction,
@@ -145,13 +143,11 @@ fn check_num_vote_accounts(accounts: &[u8], num: usize) -> Result<(), ParseInstr
 
 #[cfg(test)]
 mod test {
-    use {
-        super::*,
-        solana_sdk::{hash::Hash, message::Message, pubkey::Pubkey},
-        solana_vote_program::{
-            vote_instruction,
-            vote_state::{Vote, VoteAuthorize, VoteInit},
-        },
+    use super::*;
+    use solana_sdk::{hash::Hash, message::Message, pubkey::Pubkey};
+    use solana_vote_program::{
+        vote_instruction,
+        vote_state::{Vote, VoteAuthorize, VoteInit},
     };
 
     #[test]

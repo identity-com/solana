@@ -22,7 +22,8 @@ pub fn parse_accounts(message: &Message) -> Vec<ParsedAccount> {
 
 #[cfg(test)]
 mod test {
-    use {super::*, solana_sdk::message::MessageHeader};
+    use super::*;
+    use solana_sdk::message::MessageHeader;
 
     #[test]
     fn test_parse_accounts() {
