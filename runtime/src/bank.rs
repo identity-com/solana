@@ -6376,7 +6376,6 @@ impl Bank {
                 total_accounts_stats.num_rent_exempt_accounts += 1;
             } else {
                 total_accounts_stats.num_rent_paying_accounts += 1;
-                total_accounts_stats.lamports_in_rent_paying_accounts += account.lamports();
                 if data_len == 0 {
                     total_accounts_stats.num_rent_paying_accounts_without_data += 1;
                 }
@@ -6406,8 +6405,6 @@ pub struct TotalAccountsStats {
     pub num_rent_paying_accounts: usize,
     /// Total number of rent paying accounts without data
     pub num_rent_paying_accounts_without_data: usize,
-    /// Total amount of lamports in rent paying accounts
-    pub lamports_in_rent_paying_accounts: u64,
 }
 
 impl Drop for Bank {
