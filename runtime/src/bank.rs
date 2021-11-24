@@ -3108,8 +3108,11 @@ impl Bank {
         &self.fee_rate_governor
     }
 
-    pub fn get_fee_for_message(&self, message: &SanitizedMessage) -> Option<u64> {
-        Some(message.calculate_fee(self.fee_rate_governor.lamports_per_signature))
+    pub fn get_fee_for_message(&self, hash: &Hash, message: &SanitizedMessage) -> Option<u64> {
+        let blockhash_queue = self.blockhash_queue.read().unwrap();
+        #[allow(deprecated)]
+        let fee_calculator = blockhash_queue.get_fee_calculator(hash)?;
+        Some(message.calculate_fee(fee_calculator))
     }
 
     #[deprecated(
@@ -4039,9 +4042,7 @@ impl Bank {
                     });
 
                 let fee_calculator = fee_calculator.ok_or(TransactionError::BlockhashNotFound)?;
-                let fee = tx
-                    .message()
-                    .calculate_fee(fee_calculator.lamports_per_signature);
+                let fee = tx.message().calculate_fee(&fee_calculator);
 
                 match *res {
                     Err(TransactionError::InstructionError(_, _)) => {
@@ -10919,7 +10920,10 @@ pub(crate) mod tests {
         /* Check balances */
         let mut expected_balance = 4_650_000
             - bank
-                .get_fee_for_message(&durable_tx.message.try_into().unwrap())
+                .get_fee_for_message(
+                    &bank.last_blockhash(),
+                    &durable_tx.message.try_into().unwrap(),
+                )
                 .unwrap();
         assert_eq!(bank.get_balance(&custodian_pubkey), expected_balance);
         assert_eq!(bank.get_balance(&nonce_pubkey), 250_000);
@@ -10973,7 +10977,10 @@ pub(crate) mod tests {
         );
         /* Check fee charged and nonce has advanced */
         expected_balance -= bank
-            .get_fee_for_message(&SanitizedMessage::try_from(durable_tx.message.clone()).unwrap())
+            .get_fee_for_message(
+                &bank.last_blockhash(),
+                &SanitizedMessage::try_from(durable_tx.message.clone()).unwrap(),
+            )
             .unwrap();
         assert_eq!(bank.get_balance(&custodian_pubkey), expected_balance);
         assert_ne!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());
@@ -11037,7 +11044,10 @@ pub(crate) mod tests {
             bank.get_balance(&custodian_pubkey),
             initial_custodian_balance
                 - bank
-                    .get_fee_for_message(&durable_tx.message.try_into().unwrap())
+                    .get_fee_for_message(
+                        &bank.last_blockhash(),
+                        &durable_tx.message.try_into().unwrap()
+                    )
                     .unwrap()
         );
         assert_eq!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());
@@ -11089,7 +11099,10 @@ pub(crate) mod tests {
             bank.get_balance(&nonce_pubkey),
             nonce_starting_balance
                 - bank
-                    .get_fee_for_message(&durable_tx.message.try_into().unwrap())
+                    .get_fee_for_message(
+                        &bank.last_blockhash(),
+                        &durable_tx.message.try_into().unwrap()
+                    )
                     .unwrap()
         );
         assert_ne!(nonce_hash, get_nonce_account(&bank, &nonce_pubkey).unwrap());

@@ -486,8 +486,7 @@ impl Accounts {
                                 .cloned()
                         });
                     let fee = if let Some(fee_calculator) = fee_calculator {
-                        tx.message()
-                            .calculate_fee(fee_calculator.lamports_per_signature)
+                        tx.message().calculate_fee(&fee_calculator)
                     } else {
                         return (Err(TransactionError::BlockhashNotFound), None);
                     };

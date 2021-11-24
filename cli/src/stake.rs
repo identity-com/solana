@@ -1455,6 +1455,7 @@ pub fn process_stake_authorize(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -1533,6 +1534,7 @@ pub fn process_deactivate_stake_account(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -1630,6 +1632,7 @@ pub fn process_withdraw_stake(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -1773,6 +1776,7 @@ pub fn process_split_stake(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -1878,6 +1882,7 @@ pub fn process_merge_stake(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -1972,6 +1977,7 @@ pub fn process_stake_set_lockup(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;
@@ -2413,6 +2419,7 @@ pub fn process_delegate_stake(
         check_account_for_fee_with_commitment(
             rpc_client,
             &tx.message.account_keys[0],
+            &recent_blockhash,
             &tx.message,
             config.commitment,
         )?;

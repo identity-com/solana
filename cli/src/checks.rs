@@ -4,27 +4,30 @@ use solana_client::{
     rpc_client::RpcClient,
 };
 use solana_sdk::{
-    commitment_config::CommitmentConfig, message::Message, native_token::lamports_to_sol,
-    pubkey::Pubkey,
+    commitment_config::CommitmentConfig, hash::Hash, message::Message,
+    native_token::lamports_to_sol, pubkey::Pubkey,
 };
 
 pub fn check_account_for_fee(
     rpc_client: &RpcClient,
     account_pubkey: &Pubkey,
+    blockhash: &Hash,
     message: &Message,
 ) -> Result<(), CliError> {
-    check_account_for_multiple_fees(rpc_client, account_pubkey, &[message])
+    check_account_for_multiple_fees(rpc_client, account_pubkey, blockhash, &[message])
 }
 
 pub fn check_account_for_fee_with_commitment(
     rpc_client: &RpcClient,
     account_pubkey: &Pubkey,
+    blockhash: &Hash,
     message: &Message,
     commitment: CommitmentConfig,
 ) -> Result<(), CliError> {
     check_account_for_multiple_fees_with_commitment(
         rpc_client,
         account_pubkey,
+        blockhash,
         &[message],
         commitment,
     )
@@ -33,11 +36,13 @@ pub fn check_account_for_fee_with_commitment(
 pub fn check_account_for_multiple_fees(
     rpc_client: &RpcClient,
     account_pubkey: &Pubkey,
+    blockhash: &Hash,
     messages: &[&Message],
 ) -> Result<(), CliError> {
     check_account_for_multiple_fees_with_commitment(
         rpc_client,
         account_pubkey,
+        blockhash,
         messages,
         CommitmentConfig::default(),
     )
@@ -46,6 +51,7 @@ pub fn check_account_for_multiple_fees(
 pub fn check_account_for_multiple_fees_with_commitment(
     rpc_client: &RpcClient,
     account_pubkey: &Pubkey,
+    blockhash: &Hash,
     messages: &[&Message],
     commitment: CommitmentConfig,
 ) -> Result<(), CliError> {
@@ -53,6 +59,7 @@ pub fn check_account_for_multiple_fees_with_commitment(
         rpc_client,
         account_pubkey,
         0,
+        blockhash,
         messages,
         commitment,
     )
@@ -62,10 +69,11 @@ pub fn check_account_for_spend_multiple_fees_with_commitment(
     rpc_client: &RpcClient,
     account_pubkey: &Pubkey,
     balance: u64,
+    blockhash: &Hash,
     messages: &[&Message],
     commitment: CommitmentConfig,
 ) -> Result<(), CliError> {
-    let fee = get_fee_for_message(rpc_client, messages)?;
+    let fee = get_fee_for_message(rpc_client, blockhash, messages)?;
     if !check_account_for_balance_with_commitment(
         rpc_client,
         account_pubkey,
@@ -90,10 +98,14 @@ pub fn check_account_for_spend_multiple_fees_with_commitment(
     Ok(())
 }
 
-pub fn get_fee_for_message(rpc_client: &RpcClient, messages: &[&Message]) -> Result<u64, CliError> {
+pub fn get_fee_for_message(
+    rpc_client: &RpcClient,
+    blockhash: &Hash,
+    messages: &[&Message],
+) -> Result<u64, CliError> {
     Ok(messages
         .iter()
-        .map(|message| rpc_client.get_fee_for_message(message))
+        .map(|message| rpc_client.get_fee_for_message(blockhash, message))
         .collect::<Result<Vec<_>, _>>()?
         .iter()
         .sum())
@@ -173,7 +185,9 @@ mod tests {
         let mut mocks = HashMap::new();
         mocks.insert(RpcRequest::GetBalance, account_balance_response.clone());
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
-        check_account_for_fee(&rpc_client, &pubkey, &message0).expect("unexpected result");
+        let blockhash = rpc_client.get_latest_blockhash().unwrap();
+        check_account_for_fee(&rpc_client, &pubkey, &blockhash, &message0)
+            .expect("unexpected result");
 
         let check_fee_response = json!(Response {
             context: RpcResponseContext { slot: 1 },
@@ -183,7 +197,7 @@ mod tests {
         mocks.insert(RpcRequest::GetFeeForMessage, check_fee_response);
         mocks.insert(RpcRequest::GetBalance, account_balance_response.clone());
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
-        assert!(check_account_for_fee(&rpc_client, &pubkey, &message1).is_err());
+        assert!(check_account_for_fee(&rpc_client, &pubkey, &blockhash, &message1).is_err());
 
         let check_fee_response = json!(Response {
             context: RpcResponseContext { slot: 1 },
@@ -193,9 +207,13 @@ mod tests {
         mocks.insert(RpcRequest::GetFeeForMessage, check_fee_response);
         mocks.insert(RpcRequest::GetBalance, account_balance_response);
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
-        assert!(
-            check_account_for_multiple_fees(&rpc_client, &pubkey, &[&message0, &message0]).is_err()
-        );
+        assert!(check_account_for_multiple_fees(
+            &rpc_client,
+            &pubkey,
+            &blockhash,
+            &[&message0, &message0]
+        )
+        .is_err());
 
         let account_balance = 2;
         let account_balance_response = json!(Response {
@@ -212,7 +230,7 @@ mod tests {
         mocks.insert(RpcRequest::GetBalance, account_balance_response);
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
 
-        check_account_for_multiple_fees(&rpc_client, &pubkey, &[&message0, &message0])
+        check_account_for_multiple_fees(&rpc_client, &pubkey, &blockhash, &[&message0, &message0])
             .expect("unexpected result");
     }
 
@@ -243,16 +261,23 @@ mod tests {
         let mut mocks = HashMap::new();
         mocks.insert(RpcRequest::GetFeeForMessage, check_fee_response);
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
+        let blockhash = rpc_client.get_latest_blockhash().unwrap();
 
         // No messages, no fee.
-        assert_eq!(get_fee_for_message(&rpc_client, &[]).unwrap(), 0);
+        assert_eq!(
+            get_fee_for_message(&rpc_client, &blockhash, &[]).unwrap(),
+            0
+        );
 
         // One message w/ one signature, a fee.
         let pubkey0 = Pubkey::new(&[0; 32]);
         let pubkey1 = Pubkey::new(&[1; 32]);
         let ix0 = system_instruction::transfer(&pubkey0, &pubkey1, 1);
         let message0 = Message::new(&[ix0], Some(&pubkey0));
-        assert_eq!(get_fee_for_message(&rpc_client, &[&message0]).unwrap(), 1);
+        assert_eq!(
+            get_fee_for_message(&rpc_client, &blockhash, &[&message0]).unwrap(),
+            1
+        );
 
         // No signatures, no fee.
         let check_fee_response = json!(Response {
@@ -264,7 +289,7 @@ mod tests {
         let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
         let message = Message::default();
         assert_eq!(
-            get_fee_for_message(&rpc_client, &[&message, &message]).unwrap(),
+            get_fee_for_message(&rpc_client, &blockhash, &[&message, &message]).unwrap(),
             0
         );
     }

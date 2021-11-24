@@ -367,6 +367,7 @@ pub fn process_authorize_nonce_account(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
+        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
@@ -551,6 +552,7 @@ pub fn process_new_nonce(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
+        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
@@ -626,6 +628,7 @@ pub fn process_withdraw_from_nonce_account(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
+        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
