@@ -163,11 +163,16 @@ mod tests {
         hash::Hash, message::Message, pubkey::Pubkey, signature::Keypair, signer::Signer,
         transaction::Transaction,
     };
+    use std::convert::TryInto;
+
+    fn sanitize_tx(tx: Transaction) -> SanitizedTransaction {
+        tx.try_into().unwrap()
+    }
 
     macro_rules! test {
         ( $instructions: expr, $expected_error: expr, $expected_budget: expr ) => {
             let payer_keypair = Keypair::new();
-            let tx = SanitizedTransaction::from_transaction_for_tests(Transaction::new(
+            let tx = sanitize_tx(Transaction::new(
                 &[&payer_keypair],
                 Message::new($instructions, Some(&payer_keypair.pubkey())),
                 Hash::default(),

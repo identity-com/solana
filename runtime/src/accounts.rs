@@ -1191,11 +1191,8 @@ mod tests {
         message: Message,
         recent_blockhash: Hash,
     ) -> SanitizedTransaction {
-        SanitizedTransaction::from_transaction_for_tests(Transaction::new(
-            from_keypairs,
-            message,
-            recent_blockhash,
-        ))
+        SanitizedTransaction::try_from(Transaction::new(from_keypairs, message, recent_blockhash))
+            .unwrap()
     }
 
     fn load_accounts_with_fee_and_rent(
@@ -1219,7 +1216,7 @@ mod tests {
         }
 
         let ancestors = vec![(0, 0)].into_iter().collect();
-        let sanitized_tx = SanitizedTransaction::from_transaction_for_tests(tx);
+        let sanitized_tx = SanitizedTransaction::try_from(tx).unwrap();
         accounts.load_accounts(
             &ancestors,
             &[sanitized_tx],
@@ -2463,7 +2460,7 @@ mod tests {
     }
 
     fn load_accounts_no_store(accounts: &Accounts, tx: Transaction) -> Vec<TransactionLoadResult> {
-        let tx = SanitizedTransaction::from_transaction_for_tests(tx);
+        let tx = SanitizedTransaction::try_from(tx).unwrap();
         let rent_collector = RentCollector::default();
         let mut hash_queue = BlockhashQueue::new(100);
         hash_queue.register_hash(tx.message().recent_blockhash(), 10);
