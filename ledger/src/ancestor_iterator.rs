@@ -79,8 +79,8 @@ mod tests {
     use std::{collections::HashMap, path::Path};
     use trees::tr;
 
-    fn setup_forks(ledger_path: &Path) -> Blockstore {
-        let blockstore = Blockstore::open(ledger_path).unwrap();
+    fn setup_forks(blockstore_path: &Path) -> Blockstore {
+        let blockstore = Blockstore::open(blockstore_path).unwrap();
         /*
             Build fork structure:
 
@@ -102,25 +102,28 @@ mod tests {
 
     #[test]
     fn test_ancestor_iterator() {
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = setup_forks(ledger_path.path());
+        let blockstore_path = get_tmp_ledger_path!();
+        {
+            let blockstore = setup_forks(&blockstore_path);
 
-        // Test correctness
-        assert!(AncestorIterator::new(0, &blockstore).next().is_none());
-        assert_eq!(
-            AncestorIterator::new(4, &blockstore).collect::<Vec<Slot>>(),
-            vec![1, 0]
-        );
-        assert_eq!(
-            AncestorIterator::new(3, &blockstore).collect::<Vec<Slot>>(),
-            vec![2, 1, 0]
-        );
+            // Test correctness
+            assert!(AncestorIterator::new(0, &blockstore).next().is_none());
+            assert_eq!(
+                AncestorIterator::new(4, &blockstore).collect::<Vec<Slot>>(),
+                vec![1, 0]
+            );
+            assert_eq!(
+                AncestorIterator::new(3, &blockstore).collect::<Vec<Slot>>(),
+                vec![2, 1, 0]
+            );
+        }
+        Blockstore::destroy(&blockstore_path).unwrap();
     }
 
     #[test]
     fn test_ancestor_iterator_inclusive() {
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+        let blockstore_path = get_tmp_ledger_path!();
+        let blockstore = Blockstore::open(&blockstore_path).unwrap();
 
         let (shreds, _) = make_slot_entries(0, 0, 42);
         blockstore.insert_shreds(shreds, None, false).unwrap();
@@ -148,36 +151,39 @@ mod tests {
 
     #[test]
     fn test_ancestor_iterator_with_hash() {
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = setup_forks(ledger_path.path());
+        let blockstore_path = get_tmp_ledger_path!();
+        {
+            let blockstore = setup_forks(&blockstore_path);
 
-        // Insert frozen hashes
-        let mut slot_to_bank_hash = HashMap::new();
-        for slot in 0..=4 {
-            let bank_hash = Hash::new_unique();
-            slot_to_bank_hash.insert(slot, bank_hash);
-            blockstore.insert_bank_hash(slot, bank_hash, false);
+            // Insert frozen hashes
+            let mut slot_to_bank_hash = HashMap::new();
+            for slot in 0..=4 {
+                let bank_hash = Hash::new_unique();
+                slot_to_bank_hash.insert(slot, bank_hash);
+                blockstore.insert_bank_hash(slot, bank_hash, false);
+            }
+
+            // Test correctness
+            assert!(
+                AncestorIteratorWithHash::from(AncestorIterator::new(0, &blockstore))
+                    .next()
+                    .is_none()
+            );
+            assert_eq!(
+                AncestorIteratorWithHash::from(AncestorIterator::new(4, &blockstore))
+                    .collect::<Vec<(Slot, Hash)>>(),
+                vec![(1, slot_to_bank_hash[&1]), (0, slot_to_bank_hash[&0])]
+            );
+            assert_eq!(
+                AncestorIteratorWithHash::from(AncestorIterator::new(3, &blockstore))
+                    .collect::<Vec<(Slot, Hash)>>(),
+                vec![
+                    (2, slot_to_bank_hash[&2]),
+                    (1, slot_to_bank_hash[&1]),
+                    (0, slot_to_bank_hash[&0])
+                ]
+            );
         }
-
-        // Test correctness
-        assert!(
-            AncestorIteratorWithHash::from(AncestorIterator::new(0, &blockstore))
-                .next()
-                .is_none()
-        );
-        assert_eq!(
-            AncestorIteratorWithHash::from(AncestorIterator::new(4, &blockstore))
-                .collect::<Vec<(Slot, Hash)>>(),
-            vec![(1, slot_to_bank_hash[&1]), (0, slot_to_bank_hash[&0])]
-        );
-        assert_eq!(
-            AncestorIteratorWithHash::from(AncestorIterator::new(3, &blockstore))
-                .collect::<Vec<(Slot, Hash)>>(),
-            vec![
-                (2, slot_to_bank_hash[&2]),
-                (1, slot_to_bank_hash[&1]),
-                (0, slot_to_bank_hash[&0])
-            ]
-        );
+        Blockstore::destroy(&blockstore_path).unwrap();
     }
 }
