@@ -31,11 +31,11 @@ use solana_sdk::{
     clock::Clock,
     entrypoint::{HEAP_LENGTH, SUCCESS},
     feature_set::{
-        add_missing_program_error_mappings, close_upgradeable_program_accounts, fix_write_privs,
+        add_missing_program_error_mappings, close_upgradeable_program_accounts,
         stop_verify_mul64_imm_nonzero,
     },
     ic_logger_msg, ic_msg,
-    instruction::{AccountMeta, InstructionError},
+    instruction::InstructionError,
     keyed_account::{from_keyed_account, keyed_account_at_index, KeyedAccount},
     loader_instruction::LoaderInstruction,
     loader_upgradeable_instruction::UpgradeableLoaderInstruction,
@@ -390,27 +390,13 @@ fn process_loader_upgradeable_instruction(
                 return Err(InstructionError::InvalidArgument);
             }
 
-            if invoke_context.is_feature_active(&fix_write_privs::id()) {
-                // Drain the Buffer account to payer before paying for programdata account
-                payer
-                    .try_account_ref_mut()?
-                    .checked_add_lamports(buffer.lamports()?)?;
-                buffer.try_account_ref_mut()?.set_lamports(0);
-            }
-
-            let mut instruction = system_instruction::create_account(
+            let instruction = system_instruction::create_account(
                 payer.unsigned_key(),
                 programdata.unsigned_key(),
                 1.max(rent.minimum_balance(programdata_len)),
                 programdata_len as u64,
                 program_id,
             );
-
-            // pass an extra account to avoid the overly strict UnbalancedInstruction error
-            instruction
-                .accounts
-                .push(AccountMeta::new(*buffer.unsigned_key(), false));
-
             let caller_program_id = invoke_context.get_caller()?;
             let signers = [&[new_program_id.as_ref(), &[bump_seed]]]
                 .iter()
@@ -419,7 +405,7 @@ fn process_loader_upgradeable_instruction(
             InstructionProcessor::native_invoke(
                 invoke_context,
                 instruction,
-                &[0, 1, 3, 6],
+                &[0, 1, 6],
                 signers.as_slice(),
             )?;
 
@@ -448,13 +434,11 @@ fn process_loader_upgradeable_instruction(
             })?;
             program.try_account_ref_mut()?.set_executable(true);
 
-            if !invoke_context.is_feature_active(&fix_write_privs::id()) {
-                // Drain the Buffer account back to the payer
-                payer
-                    .try_account_ref_mut()?
-                    .checked_add_lamports(buffer.lamports()?)?;
-                buffer.try_account_ref_mut()?.set_lamports(0);
-            }
+            // Drain the Buffer account back to the payer
+            payer
+                .try_account_ref_mut()?
+                .checked_add_lamports(buffer.lamports()?)?;
+            buffer.try_account_ref_mut()?.set_lamports(0);
 
             ic_logger_msg!(logger, "Deployed program {:?}", new_program_id);
         }
@@ -1003,7 +987,6 @@ mod tests {
         instruction::{AccountMeta, InstructionError},
         keyed_account::KeyedAccount,
         message::Message,
-        native_token::LAMPORTS_PER_SOL,
         process_instruction::{MockComputeMeter, MockInvokeContext},
         pubkey::Pubkey,
         rent::Rent,
@@ -1661,48 +1644,34 @@ mod tests {
         let bank = Arc::new(bank);
         let bank_client = BankClient::new_shared(&bank);
 
-        // Setup keypairs and addresses
-        let payer_keypair = Keypair::new();
+        // Setup initial accounts
         let program_keypair = Keypair::new();
-        let buffer_address = Pubkey::new_unique();
         let (programdata_address, _) = Pubkey::find_program_address(
             &[program_keypair.pubkey().as_ref()],
             &bpf_loader_upgradeable::id(),
         );
         let upgrade_authority_keypair = Keypair::new();
-
-        // Load program file
         let mut file = File::open("test_elfs/noop_aligned.so").expect("file open failed");
         let mut elf = Vec::new();
         file.read_to_end(&mut elf).unwrap();
-
-        // Compute rent exempt balances
-        let program_len = elf.len();
         let min_program_balance = bank
             .get_minimum_balance_for_rent_exemption(UpgradeableLoaderState::program_len().unwrap());
-        let min_buffer_balance = bank.get_minimum_balance_for_rent_exemption(
-            UpgradeableLoaderState::buffer_len(program_len).unwrap(),
-        );
         let min_programdata_balance = bank.get_minimum_balance_for_rent_exemption(
-            UpgradeableLoaderState::programdata_len(program_len).unwrap(),
+            UpgradeableLoaderState::programdata_len(elf.len()).unwrap(),
         );
-
-        // Setup accounts
-        let buffer_account = {
-            let mut account = AccountSharedData::new(
-                min_buffer_balance,
-                UpgradeableLoaderState::buffer_len(elf.len()).unwrap(),
-                &bpf_loader_upgradeable::id(),
-            );
-            account
-                .set_state(&UpgradeableLoaderState::Buffer {
-                    authority_address: Some(upgrade_authority_keypair.pubkey()),
-                })
-                .unwrap();
-            account.data_as_mut_slice()[UpgradeableLoaderState::buffer_data_offset().unwrap()..]
-                .copy_from_slice(&elf);
-            account
-        };
+        let buffer_address = Pubkey::new_unique();
+        let mut buffer_account = AccountSharedData::new(
+            min_programdata_balance,
+            UpgradeableLoaderState::buffer_len(elf.len()).unwrap(),
+            &bpf_loader_upgradeable::id(),
+        );
+        buffer_account
+            .set_state(&UpgradeableLoaderState::Buffer {
+                authority_address: Some(upgrade_authority_keypair.pubkey()),
+            })
+            .unwrap();
+        buffer_account.data_as_mut_slice()[UpgradeableLoaderState::buffer_data_offset().unwrap()..]
+            .copy_from_slice(&elf);
         let program_account = AccountSharedData::new(
             min_programdata_balance,
             UpgradeableLoaderState::program_len().unwrap(),
@@ -1715,27 +1684,14 @@ mod tests {
         );
 
         // Test successful deploy
-        let payer_base_balance = LAMPORTS_PER_SOL;
-        let deploy_fees = {
-            let fee_calculator = genesis_config.fee_rate_governor.create_fee_calculator();
-            3 * fee_calculator.lamports_per_signature
-        };
-        let min_payer_balance =
-            min_program_balance + min_programdata_balance - min_buffer_balance + deploy_fees;
-        bank.store_account(
-            &payer_keypair.pubkey(),
-            &AccountSharedData::new(
-                payer_base_balance + min_payer_balance,
-                0,
-                &system_program::id(),
-            ),
-        );
+        bank.clear_signatures();
         bank.store_account(&buffer_address, &buffer_account);
         bank.store_account(&program_keypair.pubkey(), &AccountSharedData::default());
         bank.store_account(&programdata_address, &AccountSharedData::default());
+        let before = bank.get_balance(&mint_keypair.pubkey());
         let message = Message::new(
             &bpf_loader_upgradeable::deploy_with_max_program_len(
-                &payer_keypair.pubkey(),
+                &mint_keypair.pubkey(),
                 &program_keypair.pubkey(),
                 &buffer_address,
                 &upgrade_authority_keypair.pubkey(),
@@ -1743,17 +1699,17 @@ mod tests {
                 elf.len(),
             )
             .unwrap(),
-            Some(&payer_keypair.pubkey()),
+            Some(&mint_keypair.pubkey()),
         );
         assert!(bank_client
             .send_and_confirm_message(
-                &[&payer_keypair, &program_keypair, &upgrade_authority_keypair],
+                &[&mint_keypair, &program_keypair, &upgrade_authority_keypair],
                 message
             )
             .is_ok());
         assert_eq!(
-            bank.get_balance(&payer_keypair.pubkey()),
-            payer_base_balance
+            bank.get_balance(&mint_keypair.pubkey()),
+            before - min_program_balance
         );
         assert_eq!(bank.get_balance(&buffer_address), 0);
         assert_eq!(None, bank.get_account(&buffer_address));
@@ -2035,12 +1991,11 @@ mod tests {
                 .unwrap()
         );
 
-        // Test Insufficient payer funds (need more funds to cover the
-        // difference between buffer lamports and programdata lamports)
+        // Test Insufficient payer funds
         bank.clear_signatures();
         bank.store_account(
             &mint_keypair.pubkey(),
-            &AccountSharedData::new(deploy_fees + min_program_balance, 0, &system_program::id()),
+            &AccountSharedData::new(min_program_balance, 0, &system_program::id()),
         );
         bank.store_account(&buffer_address, &buffer_account);
         bank.store_account(&program_keypair.pubkey(), &AccountSharedData::default());
