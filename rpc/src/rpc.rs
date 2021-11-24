@@ -1704,7 +1704,7 @@ impl JsonRpcRequestProcessor {
             // Optional filter on Mint address
             filters.push(RpcFilterType::Memcmp(Memcmp {
                 offset: 0,
-                bytes: MemcmpEncodedBytes::Bytes(mint.to_bytes().into()),
+                bytes: MemcmpEncodedBytes::Binary(mint.to_string()),
                 encoding: None,
             }));
         }
@@ -1748,13 +1748,15 @@ impl JsonRpcRequestProcessor {
             // Filter on Delegate is_some()
             RpcFilterType::Memcmp(Memcmp {
                 offset: 72,
-                bytes: MemcmpEncodedBytes::Bytes(bincode::serialize(&1u32).unwrap()),
+                bytes: MemcmpEncodedBytes::Binary(
+                    bs58::encode(bincode::serialize(&1u32).unwrap()).into_string(),
+                ),
                 encoding: None,
             }),
             // Filter on Delegate address
             RpcFilterType::Memcmp(Memcmp {
                 offset: 76,
-                bytes: MemcmpEncodedBytes::Bytes(delegate.to_bytes().into()),
+                bytes: MemcmpEncodedBytes::Binary(delegate.to_string()),
                 encoding: None,
             }),
         ];
@@ -1793,9 +1795,8 @@ impl JsonRpcRequestProcessor {
         &self,
         bank: &Arc<Bank>,
         program_id: &Pubkey,
-        mut filters: Vec<RpcFilterType>,
+        filters: Vec<RpcFilterType>,
     ) -> RpcCustomResult<Vec<(Pubkey, AccountSharedData)>> {
-        optimize_filters(&mut filters);
         let filter_closure = |account: &AccountSharedData| {
             filters.iter().all(|filter_type| match filter_type {
                 RpcFilterType::DataSize(size) => account.data().len() as u64 == *size,
@@ -1852,7 +1853,7 @@ impl JsonRpcRequestProcessor {
         // Filter on Owner address
         filters.push(RpcFilterType::Memcmp(Memcmp {
             offset: SPL_TOKEN_ACCOUNT_OWNER_OFFSET,
-            bytes: MemcmpEncodedBytes::Bytes(owner_key.to_bytes().into()),
+            bytes: MemcmpEncodedBytes::Binary(owner_key.to_string()),
             encoding: None,
         }));
 
@@ -1866,7 +1867,6 @@ impl JsonRpcRequestProcessor {
                     index_key: owner_key.to_string(),
                 });
             }
-            optimize_filters(&mut filters);
             Ok(bank
                 .get_filtered_indexed_accounts(&IndexKey::SplTokenOwner(*owner_key), |account| {
                     account.owner() == &spl_token_id_v2_0()
@@ -1902,7 +1902,7 @@ impl JsonRpcRequestProcessor {
         // Filter on Mint address
         filters.push(RpcFilterType::Memcmp(Memcmp {
             offset: SPL_TOKEN_ACCOUNT_MINT_OFFSET,
-            bytes: MemcmpEncodedBytes::Bytes(mint_key.to_bytes().into()),
+            bytes: MemcmpEncodedBytes::Binary(mint_key.to_string()),
             encoding: None,
         }));
         if self
@@ -1915,7 +1915,6 @@ impl JsonRpcRequestProcessor {
                     index_key: mint_key.to_string(),
                 });
             }
-            optimize_filters(&mut filters);
             Ok(bank
                 .get_filtered_indexed_accounts(&IndexKey::SplTokenMint(*mint_key), |account| {
                     account.owner() == &spl_token_id_v2_0()
@@ -1969,24 +1968,6 @@ impl JsonRpcRequestProcessor {
         let fee = bank.get_fee_for_message(message);
         Ok(new_response(&bank, fee))
     }
-}
-
-fn optimize_filters(filters: &mut Vec<RpcFilterType>) {
-    filters.iter_mut().for_each(|filter_type| {
-        if let RpcFilterType::Memcmp(compare) = filter_type {
-            use MemcmpEncodedBytes::*;
-            match &compare.bytes {
-                #[allow(deprecated)]
-                Binary(bytes) | Base58(bytes) => {
-                    compare.bytes = Bytes(bs58::decode(bytes).into_vec().unwrap());
-                }
-                Base64(bytes) => {
-                    compare.bytes = Bytes(base64::decode(bytes).unwrap());
-                }
-                _ => {}
-            }
-        }
-    })
 }
 
 fn verify_transaction(
@@ -2155,7 +2136,7 @@ fn get_spl_token_owner_filter(program_id: &Pubkey, filters: &[RpcFilterType]) ->
             RpcFilterType::DataSize(size) => data_size_filter = Some(*size),
             RpcFilterType::Memcmp(Memcmp {
                 offset: SPL_TOKEN_ACCOUNT_OWNER_OFFSET,
-                bytes: MemcmpEncodedBytes::Base58(bytes),
+                bytes: MemcmpEncodedBytes::Binary(bytes),
                 ..
             }) => {
                 if let Ok(key) = Pubkey::from_str(bytes) {
@@ -2183,7 +2164,7 @@ fn get_spl_token_mint_filter(program_id: &Pubkey, filters: &[RpcFilterType]) -> 
             RpcFilterType::DataSize(size) => data_size_filter = Some(*size),
             RpcFilterType::Memcmp(Memcmp {
                 offset: SPL_TOKEN_ACCOUNT_MINT_OFFSET,
-                bytes: MemcmpEncodedBytes::Base58(bytes),
+                bytes: MemcmpEncodedBytes::Binary(bytes),
                 ..
             }) => {
                 if let Ok(key) = Pubkey::from_str(bytes) {
@@ -6151,7 +6132,7 @@ pub mod tests {
     fn test_rpc_verify_filter() {
         let filter = RpcFilterType::Memcmp(Memcmp {
             offset: 0,
-            bytes: MemcmpEncodedBytes::Base58(
+            bytes: MemcmpEncodedBytes::Binary(
                 "13LeFbG6m2EP1fqCj9k66fcXsoTHMMtgr7c78AivUrYD".to_string(),
             ),
             encoding: None,
@@ -6160,7 +6141,7 @@ pub mod tests {
         // Invalid base-58
         let filter = RpcFilterType::Memcmp(Memcmp {
             offset: 0,
-            bytes: MemcmpEncodedBytes::Base58("III".to_string()),
+            bytes: MemcmpEncodedBytes::Binary("III".to_string()),
             encoding: None,
         });
         assert!(verify_filter(&filter).is_err());
@@ -7665,7 +7646,7 @@ pub mod tests {
                 &[
                     RpcFilterType::Memcmp(Memcmp {
                         offset: 32,
-                        bytes: MemcmpEncodedBytes::Base58(owner.to_string()),
+                        bytes: MemcmpEncodedBytes::Binary(owner.to_string()),
                         encoding: None
                     }),
                     RpcFilterType::DataSize(165)
@@ -7681,7 +7662,7 @@ pub mod tests {
             &[
                 RpcFilterType::Memcmp(Memcmp {
                     offset: 0,
-                    bytes: MemcmpEncodedBytes::Base58(owner.to_string()),
+                    bytes: MemcmpEncodedBytes::Binary(owner.to_string()),
                     encoding: None
                 }),
                 RpcFilterType::DataSize(165)
@@ -7695,7 +7676,7 @@ pub mod tests {
             &[
                 RpcFilterType::Memcmp(Memcmp {
                     offset: 32,
-                    bytes: MemcmpEncodedBytes::Base58(owner.to_string()),
+                    bytes: MemcmpEncodedBytes::Binary(owner.to_string()),
                     encoding: None
                 }),
                 RpcFilterType::DataSize(165)
