@@ -1,31 +1,27 @@
 import React from "react";
-import { PublicKey, Connection, StakeActivationData } from "@solana/web3.js";
-import { useCluster, Cluster } from "../cluster";
-import { HistoryProvider } from "./history";
-import { TokensProvider } from "./tokens";
-import { create } from "superstruct";
-import { ParsedInfo } from "validators";
-import { StakeAccount } from "validators/accounts/stake";
-import {
-  TokenAccount,
-  MintAccountInfo,
-  TokenAccountInfo,
-} from "validators/accounts/token";
+import {AccountInfo, Connection, PublicKey, StakeActivationData} from "@solana/web3.js";
+import {Cluster, useCluster} from "../cluster";
+import {HistoryProvider} from "./history";
+import {TokensProvider} from "./tokens";
+import {create} from "superstruct";
+import {ParsedInfo} from "validators";
+import {StakeAccount} from "validators/accounts/stake";
+import {MintAccountInfo, TokenAccount, TokenAccountInfo,} from "validators/accounts/token";
 import * as Cache from "providers/cache";
-import { ActionType, FetchStatus } from "providers/cache";
-import { reportError } from "utils/sentry";
-import { VoteAccount } from "validators/accounts/vote";
-import { NonceAccount } from "validators/accounts/nonce";
-import { SysvarAccount } from "validators/accounts/sysvar";
-import { ConfigAccount } from "validators/accounts/config";
-import { FlaggedAccountsProvider } from "./flagged-accounts";
+import {ActionType, FetchStatus} from "providers/cache";
+import {reportError} from "utils/sentry";
+import {VoteAccount} from "validators/accounts/vote";
+import {NonceAccount} from "validators/accounts/nonce";
+import {SysvarAccount} from "validators/accounts/sysvar";
+import {ConfigAccount} from "validators/accounts/config";
+import {FlaggedAccountsProvider} from "./flagged-accounts";
 import {
   ProgramDataAccount,
   ProgramDataAccountInfo,
   UpgradeableLoaderAccount,
 } from "validators/accounts/upgradeable-program";
-import { RewardsProvider } from "./rewards";
-import { Metadata, MetadataData } from "@metaplex/js";
+import {RewardsProvider} from "./rewards";
+import {Metadata, MetadataData} from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
 import {GatewayTokenAccount} from "../../validators/accounts/gateway";
 import {GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
