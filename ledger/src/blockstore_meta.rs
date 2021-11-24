@@ -46,7 +46,7 @@ pub struct ShredIndex {
     index: BTreeSet<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 /// Erasure coding information
 pub struct ErasureMeta {
     /// Which erasure set in the slot this is
@@ -217,8 +217,7 @@ impl ErasureMeta {
         ErasureMeta {
             set_index,
             config,
-            __unused_first_coding_index: 0,
-            __unused_size: 0,
+            ..Self::default()
         }
     }
 
@@ -286,7 +285,7 @@ mod test {
         use ErasureMetaStatus::*;
 
         let set_index = 0;
-        let erasure_config = ErasureConfig::new(8, 16);
+        let erasure_config = ErasureConfig::default();
 
         let e_meta = ErasureMeta::new(set_index, erasure_config);
         let mut rng = thread_rng();
