@@ -4,7 +4,6 @@ extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
 
-pub mod extract_memos;
 pub mod parse_accounts;
 pub mod parse_associated_token;
 pub mod parse_bpf_loader;
@@ -15,7 +14,6 @@ pub mod parse_token;
 pub mod parse_vote;
 pub mod token_balances;
 
-pub use crate::extract_memos::extract_and_fmt_memos;
 use crate::{
     parse_accounts::{parse_accounts, ParsedAccount},
     parse_instruction::{parse, ParsedInstruction},

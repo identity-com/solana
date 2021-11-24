@@ -12,10 +12,9 @@ use {
     },
     solana_storage_proto::convert::{generated, tx_by_addr},
     solana_transaction_status::{
-        extract_and_fmt_memos, ConfirmedBlock, ConfirmedTransaction,
-        ConfirmedTransactionStatusWithSignature, Reward, TransactionByAddrInfo,
-        TransactionConfirmationStatus, TransactionStatus, TransactionStatusMeta,
-        TransactionWithStatusMeta,
+        ConfirmedBlock, ConfirmedTransaction, ConfirmedTransactionStatusWithSignature, Reward,
+        TransactionByAddrInfo, TransactionConfirmationStatus, TransactionStatus,
+        TransactionStatusMeta, TransactionWithStatusMeta,
     },
     std::{collections::HashMap, convert::TryInto},
     thiserror::Error,
@@ -560,7 +559,6 @@ impl LedgerStorage {
             let err = meta.as_ref().and_then(|meta| meta.status.clone().err());
             let index = index as u32;
             let signature = transaction.signatures[0];
-            let memo = extract_and_fmt_memos(&transaction.message);
 
             for address in &transaction.message.account_keys {
                 if !is_sysvar_id(address) {
@@ -571,7 +569,7 @@ impl LedgerStorage {
                             signature,
                             err: err.clone(),
                             index,
-                            memo: memo.clone(),
+                            memo: None, // TODO
                             block_time: confirmed_block.block_time,
                         });
                 }
@@ -583,7 +581,7 @@ impl LedgerStorage {
                     slot,
                     index,
                     err,
-                    memo,
+                    memo: None, // TODO
                 },
             ));
         }
