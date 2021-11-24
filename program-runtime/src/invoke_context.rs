@@ -300,9 +300,8 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
                     .try_borrow_mut()
                     .map_err(|_| InstructionError::AccountBorrowOutstanding)?;
             }
-            let pre_account = &self.pre_accounts[unique_index];
             let account = self.accounts[account_index].1.borrow();
-            pre_account
+            self.pre_accounts[unique_index]
                 .verify(
                     program_id,
                     message.is_writable(account_index, demote_program_write_locks),
@@ -316,17 +315,13 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
                     ic_logger_msg!(
                         self.logger,
                         "failed to verify account {}: {}",
-                        pre_account.key(),
+                        self.pre_accounts[unique_index].key(),
                         err
                     );
                     err
                 })?;
-            pre_sum = pre_sum
-                .checked_add(u128::from(pre_account.lamports()))
-                .ok_or(InstructionError::UnbalancedInstruction)?;
-            post_sum = post_sum
-                .checked_add(u128::from(account.lamports()))
-                .ok_or(InstructionError::UnbalancedInstruction)?;
+            pre_sum += u128::from(self.pre_accounts[unique_index].lamports());
+            post_sum += u128::from(account.lamports());
             Ok(())
         };
         instruction.visit_each_account(&mut work)?;
@@ -388,12 +383,8 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
                                 ic_logger_msg!(logger, "failed to verify account {}: {}", key, err);
                                 err
                             })?;
-                        pre_sum = pre_sum
-                            .checked_add(u128::from(pre_account.lamports()))
-                            .ok_or(InstructionError::UnbalancedInstruction)?;
-                        post_sum = post_sum
-                            .checked_add(u128::from(account.lamports()))
-                            .ok_or(InstructionError::UnbalancedInstruction)?;
+                        pre_sum += u128::from(pre_account.lamports());
+                        post_sum += u128::from(account.lamports());
                         if is_writable && !pre_account.executable() {
                             pre_account.update(&account);
                         }
@@ -475,10 +466,10 @@ impl<'a> InvokeContext for ThisInvokeContext<'a> {
         execute_us: u64,
         deserialize_us: u64,
     ) {
-        self.timings.serialize_us = self.timings.serialize_us.saturating_add(serialize_us);
-        self.timings.create_vm_us = self.timings.create_vm_us.saturating_add(create_vm_us);
-        self.timings.execute_us = self.timings.execute_us.saturating_add(execute_us);
-        self.timings.deserialize_us = self.timings.deserialize_us.saturating_add(deserialize_us);
+        self.timings.serialize_us += serialize_us;
+        self.timings.create_vm_us += create_vm_us;
+        self.timings.execute_us += execute_us;
+        self.timings.deserialize_us += deserialize_us;
     }
     fn get_sysvars(&self) -> &[(Pubkey, Vec<u8>)] {
         self.sysvars
@@ -673,7 +664,6 @@ mod tests {
         ModifyReadonly,
     }
 
-    #[allow(clippy::integer_arithmetic)]
     fn mock_process_instruction(
         first_instruction_account: usize,
         data: &[u8],
