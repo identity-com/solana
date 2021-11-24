@@ -347,7 +347,7 @@ impl RpcSender for MockSender {
                 context: RpcResponseContext { slot: 1 },
                 value: RpcBlockhash {
                     blockhash: PUBKEY.to_string(),
-                    last_valid_block_height: 1234,
+                    last_valid_block_height: 0,
                 },
             })?,
             "getFeeForMessage" => serde_json::to_value(Response {
