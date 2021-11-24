@@ -6,4 +6,3 @@ pub mod invoke_context;
 pub mod log_collector;
 pub mod native_loader;
 pub mod neon_evm_program;
-pub mod stable_log;
