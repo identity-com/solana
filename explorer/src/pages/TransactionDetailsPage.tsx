@@ -105,7 +105,10 @@ export function TransactionDetailsPage({ signature: raw }: SignatureProps) {
       ) : (
         <SignatureContext.Provider value={signature}>
           <StatusCard signature={signature} autoRefresh={autoRefresh} />
-          <DetailsSection signature={signature} />
+          <AccountsCard signature={signature} autoRefresh={autoRefresh} />
+          <TokenBalancesCard signature={signature} />
+          <InstructionsSection signature={signature} />
+          <ProgramLogSection signature={signature} />
         </SignatureContext.Provider>
       )}
     </div>
@@ -304,29 +307,40 @@ function StatusCard({
   );
 }
 
-function DetailsSection({ signature }: SignatureProps) {
+function AccountsCard({
+  signature,
+  autoRefresh,
+}: SignatureProps & AutoRefreshProps) {
   const details = useTransactionDetails(signature);
   const fetchDetails = useFetchTransactionDetails();
-  const status = useTransactionStatus(signature);
+  const fetchStatus = useFetchTransactionStatus();
+  const refreshDetails = () => fetchDetails(signature);
+  const refreshStatus = () => fetchStatus(signature);
   const transaction = details?.data?.transaction?.transaction;
   const message = transaction?.message;
-  const { status: clusterStatus } = useCluster();
-  const refreshDetails = () => fetchDetails(signature);
+  const status = useTransactionStatus(signature);
 
   // Fetch details on load
   React.useEffect(() => {
-    if (
-      !details &&
-      clusterStatus === ClusterStatus.Connected &&
-      status?.status === FetchStatus.Fetched
-    ) {
+    if (status?.data?.info?.confirmations === "max" && !details) {
       fetchDetails(signature);
     }
-  }, [signature, clusterStatus, status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [signature, details, status, fetchDetails]);
 
   if (!status?.data?.info) {
     return null;
-  } else if (!details) {
+  } else if (autoRefresh === AutoRefresh.BailedOut) {
+    return (
+      <ErrorCard
+        text="Details are not available until the transaction reaches MAX confirmations"
+        retry={refreshStatus}
+      />
+    );
+  } else if (autoRefresh === AutoRefresh.Active) {
+    return (
+      <ErrorCard text="Details are not available until the transaction reaches MAX confirmations" />
+    );
+  } else if (!details || details.status === FetchStatus.Fetching) {
     return <LoadingCard />;
   } else if (details.status === FetchStatus.FetchFailed) {
     return <ErrorCard retry={refreshDetails} text="Failed to fetch details" />;
@@ -334,26 +348,7 @@ function DetailsSection({ signature }: SignatureProps) {
     return <ErrorCard text="Details are not available" />;
   }
 
-  return (
-    <>
-      <AccountsCard signature={signature} />
-      <TokenBalancesCard signature={signature} />
-      <InstructionsSection signature={signature} />
-      <ProgramLogSection signature={signature} />
-    </>
-  );
-}
-
-function AccountsCard({ signature }: SignatureProps) {
-  const details = useTransactionDetails(signature);
-
-  if (!details?.data?.transaction) {
-    return null;
-  }
-
-  const { meta, transaction } = details.data.transaction;
-  const { message } = transaction;
-
+  const { meta } = details.data.transaction;
   if (!meta) {
     return <ErrorCard text="Transaction metadata is missing" />;
   }
