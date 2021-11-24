@@ -1,23 +1,20 @@
 //! The `metrics` module enables sending measurements to an `InfluxDB` instance
 
-use {
-    crate::{counter::CounterPoint, datapoint::DataPoint},
-    gethostname::gethostname,
-    lazy_static::lazy_static,
-    log::*,
-    solana_sdk::hash::hash,
-    std::{
-        cmp,
-        collections::HashMap,
-        convert::Into,
-        env,
-        sync::{
-            mpsc::{channel, Receiver, RecvTimeoutError, Sender},
-            Arc, Barrier, Mutex, Once, RwLock,
-        },
-        thread,
-        time::{Duration, Instant, UNIX_EPOCH},
+use crate::{counter::CounterPoint, datapoint::DataPoint};
+use gethostname::gethostname;
+use lazy_static::lazy_static;
+use log::*;
+use solana_sdk::hash::hash;
+use std::{
+    collections::HashMap,
+    convert::Into,
+    sync::{
+        mpsc::{channel, Receiver, RecvTimeoutError, Sender},
+        Arc, Barrier, Mutex, Once, RwLock,
     },
+    thread,
+    time::{Duration, Instant},
+    {cmp, env},
 };
 
 type CounterMap = HashMap<(&'static str, u64), CounterPoint>;
@@ -71,7 +68,7 @@ impl InfluxDbMetricsWriter {
         );
 
         let write_url = format!(
-            "{}/write?db={}&u={}&p={}&precision=n",
+            "{}/write?db={}&u={}&p={}&precision=ms",
             &config.host, &config.db, &config.username, &config.password
         );
 
@@ -100,9 +97,8 @@ impl MetricsWriter for InfluxDbMetricsWriter {
                     ));
                     first = false;
                 }
-                let timestamp = point.timestamp.duration_since(UNIX_EPOCH);
-                let nanos = timestamp.unwrap().as_nanos();
-                line.push_str(&format!(" {}\n", nanos));
+
+                line.push_str(&format!(" {}\n", &point.timestamp));
             }
 
             let client = reqwest::blocking::Client::builder()
@@ -541,7 +537,7 @@ mod test {
                 CounterPoint {
                     name: "counter",
                     count: 10,
-                    timestamp: UNIX_EPOCH,
+                    timestamp: 0,
                 },
                 Level::Info,
                 0, // use the same bucket
