@@ -7716,7 +7716,7 @@ pub mod tests {
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
         let mut pending_optimistically_confirmed_banks = HashSet::new();
 
-        let subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
+        let subscriptions = Arc::new(RpcSubscriptions::new(
             &exit,
             bank_forks.clone(),
             block_commitment_cache.clone(),

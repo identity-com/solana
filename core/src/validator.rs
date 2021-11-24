@@ -471,12 +471,12 @@ impl Validator {
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
 
-        let rpc_subscriptions = Arc::new(RpcSubscriptions::new_with_config(
+        let rpc_subscriptions = Arc::new(RpcSubscriptions::new_with_vote_subscription(
             &exit,
             bank_forks.clone(),
             block_commitment_cache.clone(),
             optimistically_confirmed_bank.clone(),
-            &config.pubsub_config,
+            config.pubsub_config.enable_vote_subscription,
         ));
 
         let max_slots = Arc::new(MaxSlots::default());
@@ -577,18 +577,12 @@ impl Validator {
                 if config.rpc_config.minimal_api {
                     None
                 } else {
-                    let (trigger, pubsub_service) = PubSubService::new(
+                    Some(PubSubService::new(
                         config.pubsub_config.clone(),
                         &rpc_subscriptions,
                         rpc_pubsub_addr,
-                    );
-                    config
-                        .validator_exit
-                        .write()
-                        .unwrap()
-                        .register_exit(Box::new(move || trigger.cancel()));
-
-                    Some(pubsub_service)
+                        &exit,
+                    ))
                 },
                 Some(OptimisticallyConfirmedBankTracker::new(
                     bank_notification_receiver,

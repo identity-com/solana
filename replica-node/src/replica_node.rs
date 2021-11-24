@@ -208,17 +208,6 @@ fn start_client_rpc_services(
         ));
     }
 
-    let (trigger, pubsub_service) = PubSubService::new(
-        replica_config.pubsub_config.clone(),
-        &subscriptions,
-        replica_config.rpc_pubsub_addr,
-    );
-    replica_config
-        .replica_exit
-        .write()
-        .unwrap()
-        .register_exit(Box::new(move || trigger.cancel()));
-
     let (_bank_notification_sender, bank_notification_receiver) = unbounded();
     (
         Some(JsonRpcService::new(
@@ -242,13 +231,18 @@ fn start_client_rpc_services(
             leader_schedule_cache.clone(),
             max_complete_transaction_status_slot,
         )),
-        Some(pubsub_service),
+        Some(PubSubService::new(
+            replica_config.pubsub_config.clone(),
+            &subscriptions,
+            replica_config.rpc_pubsub_addr,
+            &exit,
+        )),
         Some(OptimisticallyConfirmedBankTracker::new(
             bank_notification_receiver,
             &exit,
             bank_forks.clone(),
             optimistically_confirmed_bank.clone(),
-            subscriptions,
+            subscriptions.clone(),
             None,
         )),
     )
