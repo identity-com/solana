@@ -1176,7 +1176,12 @@ impl<T: IndexValue> AccountsIndex<T> {
         let read_lock = self.account_maps[self.bin_calculator.bin_from_pubkey(pubkey)]
             .read()
             .unwrap();
-        read_lock.slot_list_mut(pubkey, user)
+        let get = read_lock.get(pubkey);
+        get.map(|entry| {
+            let result = user(&mut entry.slot_list.write().unwrap());
+            entry.set_dirty(true);
+            result
+        })
     }
 
     pub fn handle_dead_keys(
