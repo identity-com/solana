@@ -26,65 +26,13 @@ pub(crate) struct AccountsUpdateNotifierImpl {
 impl AccountsUpdateNotifierInterface for AccountsUpdateNotifierImpl {
     fn notify_account_update(&self, slot: Slot, pubkey: &Pubkey, account: &AccountSharedData) {
         if let Some(account_info) = self.accountinfo_from_shared_account_data(pubkey, account) {
-            self.notify_plugins_of_account_update(account_info, slot, false);
+            self.notify_plugins_of_account_update(account_info, slot);
         }
     }
 
     fn notify_account_restore_from_snapshot(&self, slot: Slot, account: &StoredAccountMeta) {
-        let mut measure_all = Measure::start("accountsdb-plugin-notify-account-restore-all");
-        let mut measure_copy = Measure::start("accountsdb-plugin-copy-stored-account-info");
-
-        let account = self.accountinfo_from_stored_account_meta(account);
-        measure_copy.stop();
-
-        inc_new_counter_debug!(
-            "accountsdb-plugin-copy-stored-account-info-us",
-            measure_copy.as_us() as usize,
-            100000,
-            100000
-        );
-
-        if let Some(account_info) = account {
-            self.notify_plugins_of_account_update(account_info, slot, true);
-        }
-        measure_all.stop();
-
-        inc_new_counter_debug!(
-            "accountsdb-plugin-notify-account-restore-all-us",
-            measure_all.as_us() as usize,
-            100000,
-            100000
-        );
-    }
-
-    fn notify_end_of_restore_from_snapshot(&self) {
-        let mut plugin_manager = self.plugin_manager.write().unwrap();
-        if plugin_manager.plugins.is_empty() {
-            return;
-        }
-
-        for plugin in plugin_manager.plugins.iter_mut() {
-            let mut measure = Measure::start("accountsdb-plugin-end-of-restore-from-snapshot");
-            match plugin.notify_end_of_startup() {
-                Err(err) => {
-                    error!(
-                        "Failed to notify the end of restore from snapshot, error: {} to plugin {}",
-                        err,
-                        plugin.name()
-                    )
-                }
-                Ok(_) => {
-                    trace!(
-                        "Successfully notified the end of restore from snapshot to plugin {}",
-                        plugin.name()
-                    );
-                }
-            }
-            measure.stop();
-            inc_new_counter_debug!(
-                "accountsdb-plugin-end-of-restore-from-snapshot",
-                measure.as_us() as usize
-            );
+        if let Some(account_info) = self.accountinfo_from_stored_account_meta(account) {
+            self.notify_plugins_of_account_update(account_info, slot);
         }
     }
 
@@ -135,13 +83,7 @@ impl AccountsUpdateNotifierImpl {
         })
     }
 
-    fn notify_plugins_of_account_update(
-        &self,
-        account: ReplicaAccountInfo,
-        slot: Slot,
-        is_startup: bool,
-    ) {
-        let mut measure2 = Measure::start("accountsdb-plugin-notify_plugins_of_account_update");
+    fn notify_plugins_of_account_update(&self, account: ReplicaAccountInfo, slot: Slot) {
         let mut plugin_manager = self.plugin_manager.write().unwrap();
 
         if plugin_manager.plugins.is_empty() {
@@ -149,11 +91,7 @@ impl AccountsUpdateNotifierImpl {
         }
         for plugin in plugin_manager.plugins.iter_mut() {
             let mut measure = Measure::start("accountsdb-plugin-update-account");
-            match plugin.update_account(
-                ReplicaAccountInfoVersions::V0_0_1(&account),
-                slot,
-                is_startup,
-            ) {
+            match plugin.update_account(ReplicaAccountInfoVersions::V0_0_1(&account), slot) {
                 Err(err) => {
                     error!(
                         "Failed to update account {} at slot {}, error: {} to plugin {}",
@@ -173,20 +111,13 @@ impl AccountsUpdateNotifierImpl {
                 }
             }
             measure.stop();
-            inc_new_counter_debug!(
-                "accountsdb-plugin-update-account-us",
-                measure.as_us() as usize,
+            inc_new_counter_info!(
+                "accountsdb-plugin-update-account-ms",
+                measure.as_ms() as usize,
                 100000,
                 100000
             );
         }
-        measure2.stop();
-        inc_new_counter_debug!(
-            "accountsdb-plugin-notify_plugins_of_account_update-us",
-            measure2.as_us() as usize,
-            100000,
-            100000
-        );
     }
 
     pub fn notify_slot_status(&self, slot: Slot, parent: Option<Slot>, slot_status: SlotStatus) {
@@ -215,9 +146,9 @@ impl AccountsUpdateNotifierImpl {
                 }
             }
             measure.stop();
-            inc_new_counter_debug!(
-                "accountsdb-plugin-update-slot-us",
-                measure.as_us() as usize,
+            inc_new_counter_info!(
+                "accountsdb-plugin-update-slot-ms",
+                measure.as_ms() as usize,
                 1000,
                 1000
             );
