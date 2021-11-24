@@ -78,9 +78,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 = --authorized-voter ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 = --authorized-withdrawer ]]; then
-      authorized_withdrawer_pubkey=$2
-      shift 2
     elif [[ $1 = --vote-account ]]; then
       vote_account=$2
       args+=("$1" "$2")
@@ -206,9 +203,6 @@ if [[ -n $REQUIRE_KEYPAIRS ]]; then
   if [[ -z $vote_account ]]; then
     usage "Error: --vote-account not specified"
   fi
-  if [[ -z $authorized_withdrawer_pubkey ]]; then
-    usage "Error: --authorized_withdrawer not specified"
-  fi
 fi
 
 if [[ -z "$ledger_dir" ]]; then
@@ -306,7 +300,7 @@ setup_validator_accounts() {
     fi
 
     echo "Creating validator vote account"
-    wallet create-vote-account "$vote_account" "$identity" "$authorized_withdrawer" || return $?
+    wallet create-vote-account "$vote_account" "$identity" || return $?
   fi
   echo "Validator vote account configured"
 
@@ -321,13 +315,6 @@ rpc_url=$($solana_gossip $maybe_allow_private_addr rpc-url --timeout 180 --entry
 
 [[ -r "$identity" ]] || $solana_keygen new --no-passphrase -so "$identity"
 [[ -r "$vote_account" ]] || $solana_keygen new --no-passphrase -so "$vote_account"
-if [ -z "$authorized_withdrawer_pubkey" ]; then
-    authorized_withdrawer_file=$ledger_dir/authorized-withdrawer.json
-    [[ -r "$authorized_withdrawer_file" ]] || $solana_keygen new --no-passphrase -so "$authorized_withdrawer_file";
-    authorized_withdrawer=$authorized_withdrawer_file
-else
-    authorized_withdrawer=$authorized_withdrawer_pubkey
-fi
 
 setup_validator_accounts "$node_sol"
 
