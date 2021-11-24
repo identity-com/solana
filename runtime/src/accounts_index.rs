@@ -30,19 +30,17 @@ use thiserror::Error;
 
 pub const ITER_BATCH_SIZE: usize = 1000;
 pub const BINS_DEFAULT: usize = 8192;
-pub const BINS_FOR_TESTING: usize = BINS_DEFAULT;
-pub const BINS_FOR_BENCHMARKS: usize = BINS_DEFAULT;
 pub const ACCOUNTS_INDEX_CONFIG_FOR_TESTING: AccountsIndexConfig = AccountsIndexConfig {
-    bins: Some(BINS_FOR_TESTING),
+    bins: Some(BINS_DEFAULT),
 };
 pub const ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS: AccountsIndexConfig = AccountsIndexConfig {
-    bins: Some(BINS_FOR_BENCHMARKS),
+    bins: Some(BINS_DEFAULT),
 };
 pub type ScanResult<T> = Result<T, ScanError>;
 pub type SlotList<T> = Vec<(Slot, T)>;
 pub type SlotSlice<'s, T> = &'s [(Slot, T)];
 pub type RefCount = u64;
-pub type AccountMap<V> = HashMap<Pubkey, V>;
+pub type AccountMap<K, V> = HashMap<K, V>;
 
 type AccountMapEntry<T> = Arc<AccountMapEntryInner<T>>;
 
@@ -119,21 +117,21 @@ impl<T> AccountMapEntryInner<T> {
     }
 }
 
-pub enum AccountIndexGetResult<'a, T: IsCached> {
+pub enum AccountIndexGetResult<'a, T: 'static> {
     Found(ReadAccountMapEntry<T>, usize),
     NotFoundOnFork,
     Missing(AccountMapsReadLock<'a, T>),
 }
 
 #[self_referencing]
-pub struct ReadAccountMapEntry<T: IsCached> {
+pub struct ReadAccountMapEntry<T: 'static> {
     owned_entry: AccountMapEntry<T>,
     #[borrows(owned_entry)]
     #[covariant]
     slot_list_guard: RwLockReadGuard<'this, SlotList<T>>,
 }
 
-impl<T: IsCached> ReadAccountMapEntry<T> {
+impl<T: Clone> ReadAccountMapEntry<T> {
     pub fn from_account_map_entry(account_map_entry: AccountMapEntry<T>) -> Self {
         ReadAccountMapEntryBuilder {
             owned_entry: account_map_entry,
@@ -164,7 +162,7 @@ impl<T: IsCached> ReadAccountMapEntry<T> {
 }
 
 #[self_referencing]
-pub struct WriteAccountMapEntry<T: IsCached> {
+pub struct WriteAccountMapEntry<T: 'static> {
     owned_entry: AccountMapEntry<T>,
     #[borrows(owned_entry)]
     #[covariant]
@@ -711,7 +709,7 @@ impl<'a, T> AccountsIndexIterator<'a, T> {
     }
 }
 
-impl<'a, T: IsCached> Iterator for AccountsIndexIterator<'a, T> {
+impl<'a, T: 'static + Clone> Iterator for AccountsIndexIterator<'a, T> {
     type Item = Vec<(Pubkey, AccountMapEntry<T>)>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.is_finished {
@@ -749,7 +747,7 @@ pub trait ZeroLamport {
     fn is_zero_lamport(&self) -> bool;
 }
 
-type MapType<T> = AccountMap<AccountMapEntry<T>>;
+type MapType<T> = AccountMap<Pubkey, AccountMapEntry<T>>;
 type LockMapType<T> = Vec<RwLock<MapType<T>>>;
 type LockMapTypeSlice<T> = [RwLock<MapType<T>>];
 type AccountMapsWriteLock<'a, T> = RwLockWriteGuard<'a, MapType<T>>;
@@ -1955,7 +1953,7 @@ pub mod tests {
         }
     }
 
-    impl<'a, T: IsCached> AccountIndexGetResult<'a, T> {
+    impl<'a, T: 'static> AccountIndexGetResult<'a, T> {
         pub fn unwrap(self) -> (ReadAccountMapEntry<T>, usize) {
             match self {
                 AccountIndexGetResult::Found(lock, size) => (lock, size),
