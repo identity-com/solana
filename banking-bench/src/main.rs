@@ -166,7 +166,6 @@ fn main() {
 
     let (verified_sender, verified_receiver) = unbounded();
     let (vote_sender, vote_receiver) = unbounded();
-    let (tpu_vote_sender, tpu_vote_receiver) = unbounded();
     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
     let bank0 = Bank::new_for_benches(&genesis_config);
     let mut bank_forks = BankForks::new(bank0);
@@ -228,7 +227,6 @@ fn main() {
             &cluster_info,
             &poh_recorder,
             verified_receiver,
-            tpu_vote_receiver,
             vote_receiver,
             None,
             replay_vote_sender,
@@ -386,7 +384,6 @@ fn main() {
         );
 
         drop(verified_sender);
-        drop(tpu_vote_sender);
         drop(vote_sender);
         exit.store(true, Ordering::Relaxed);
         banking_stage.join().unwrap();
