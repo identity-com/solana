@@ -52,7 +52,6 @@ members = [
     "rust/deprecated_loader",
     "rust/dup_accounts",
     "rust/error_handling",
-    "rust/log_data",
     "rust/external_spend",
     "rust/finalize",
     "rust/instruction_introspection",
