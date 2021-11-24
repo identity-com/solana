@@ -148,7 +148,14 @@ fn bench_shredder_decoding(bencher: &mut Bencher) {
         true, // is_last_in_slot
     );
     bencher.iter(|| {
-        Shredder::try_recovery(coding_shreds[..].to_vec()).unwrap();
+        Shredder::try_recovery(
+            coding_shreds[..].to_vec(),
+            symbol_count,
+            symbol_count,
+            0, // first index
+            1, // slot
+        )
+        .unwrap();
     })
 }
 
