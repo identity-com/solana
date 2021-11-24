@@ -51,15 +51,19 @@ impl<'a> InvokeContextStackFrame<'a> {
 /// Invocation context passed to loaders
 pub trait InvokeContext {
     /// Push a stack frame onto the invocation stack
+    ///
+    /// Used in MessageProcessor::process_cross_program_instruction
     fn push(
         &mut self,
         key: &Pubkey,
         message: &Message,
         instruction: &CompiledInstruction,
         program_indices: &[usize],
-        account_indices: &[usize],
+        instruction_accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
     ) -> Result<(), InstructionError>;
     /// Pop a stack frame from the invocation stack
+    ///
+    /// Used in MessageProcessor::process_cross_program_instruction
     fn pop(&mut self);
     /// Current depth of the invocation stake
     fn invoke_depth(&self) -> usize;
@@ -67,7 +71,7 @@ pub trait InvokeContext {
     fn verify_and_update(
         &mut self,
         instruction: &CompiledInstruction,
-        account_indices: &[usize],
+        accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
         write_privileges: &[bool],
     ) -> Result<(), InstructionError>;
     /// Get the program ID of the currently executing program
@@ -474,7 +478,7 @@ impl<'a> InvokeContext for MockInvokeContext<'a> {
         _message: &Message,
         _instruction: &CompiledInstruction,
         _program_indices: &[usize],
-        _account_indices: &[usize],
+        _instruction_accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
     ) -> Result<(), InstructionError> {
         self.invoke_stack.push(InvokeContextStackFrame::new(
             *_key,
@@ -491,7 +495,7 @@ impl<'a> InvokeContext for MockInvokeContext<'a> {
     fn verify_and_update(
         &mut self,
         _instruction: &CompiledInstruction,
-        _account_indices: &[usize],
+        _accounts: &[(Pubkey, Rc<RefCell<AccountSharedData>>)],
         _write_pivileges: &[bool],
     ) -> Result<(), InstructionError> {
         Ok(())
