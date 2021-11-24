@@ -18,7 +18,7 @@ use {
     solana_ledger::{
         blockstore::{self, Blockstore, BlockstoreInsertionMetrics, MAX_DATA_SHREDS_PER_SLOT},
         leader_schedule_cache::LeaderScheduleCache,
-        shred::{Nonce, Shred, ShredType},
+        shred::{Nonce, Shred},
     },
     solana_measure::measure::Measure,
     solana_metrics::{inc_new_counter_debug, inc_new_counter_error},
@@ -162,11 +162,12 @@ impl ReceiveWindowStats {
 }
 
 fn verify_shred_slot(shred: &Shred, root: u64) -> bool {
-    match shred.shred_type() {
+    if shred.is_data() {
         // Only data shreds have parent information
-        ShredType::Data => blockstore::verify_shred_slots(shred.slot(), shred.parent(), root),
+        blockstore::verify_shred_slots(shred.slot(), shred.parent(), root)
+    } else {
         // Filter out outdated coding shreds
-        ShredType::Code => shred.slot() >= root,
+        shred.slot() >= root
     }
 }
 
