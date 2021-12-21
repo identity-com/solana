@@ -1,6 +1,6 @@
 import React from "react";
 import { pubkeyToString } from "utils";
-import { PublicKey, Connection, StakeActivationData } from "@solana/web3.js";
+import { AccountInfo, PublicKey, Connection, StakeActivationData } from "@solana/web3.js";
 import { useCluster, Cluster } from "../cluster";
 import { HistoryProvider } from "./history";
 import { TokensProvider } from "./tokens";
@@ -28,6 +28,8 @@ import {
 import { RewardsProvider } from "./rewards";
 import { programs, MetadataJson } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
+import { GatewayTokenAccount } from "../../validators/accounts/gateway";
+import { GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
 export { useAccountHistory } from "./history";
 
 const Metadata = programs.metadata.Metadata;
