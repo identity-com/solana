@@ -8,8 +8,7 @@ use {
         program_utils::limited_deserialize, pubkey::Pubkey, stake, transaction::Transaction,
     },
     solana_transaction_status::UiTransactionStatusMeta,
-    spl_memo::id as spl_memo_id,
-    spl_memo::v1::id as spl_memo_v1_id,
+    spl_memo::{id as spl_memo_id, v1::id as spl_memo_v1_id},
     std::{collections::HashMap, fmt, io},
 };
 
@@ -338,7 +337,7 @@ pub fn write_transaction<W: io::Write>(
                     let sign = if reward.lamports < 0 { "-" } else { "" };
                     writeln!(
                         w,
-                        "{}  {:<44}  {:^15}  {:<15}  {}",
+                        "{}  {:<44}  {:^15}  {}◎{:<14.9}  ◎{:<18.9}",
                         prefix,
                         reward.pubkey,
                         if let Some(reward_type) = reward.reward_type {
@@ -346,12 +345,9 @@ pub fn write_transaction<W: io::Write>(
                         } else {
                             "-".to_string()
                         },
-                        format!(
-                            "{}◎{:<14.9}",
-                            sign,
-                            lamports_to_sol(reward.lamports.abs() as u64)
-                        ),
-                        format!("◎{:<18.9}", lamports_to_sol(reward.post_balance),)
+                        sign,
+                        lamports_to_sol(reward.lamports.abs() as u64),
+                        lamports_to_sol(reward.post_balance)
                     )?;
                 }
             }
@@ -431,8 +427,7 @@ pub fn unix_timestamp_to_string(unix_timestamp: UnixTimestamp) -> String {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use solana_sdk::pubkey::Pubkey;
+    use {super::*, solana_sdk::pubkey::Pubkey};
 
     #[test]
     fn test_format_labeled_address() {

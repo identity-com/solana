@@ -1,7 +1,10 @@
-use rand::{thread_rng, Rng};
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use {
+    rand::{thread_rng, Rng},
+    std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, Weak,
+    },
+};
 
 // A temporary burst in the workload can cause a large number of allocations,
 // after which they will be recycled and still reside in memory. If the number
@@ -18,7 +21,6 @@ const RECYCLER_SHRINK_WINDOW: usize = 16384;
 #[derive(Debug, Default)]
 struct RecyclerStats {
     total: AtomicUsize,
-    freed: AtomicUsize,
     reuse: AtomicUsize,
     max_gc: AtomicUsize,
 }
@@ -180,9 +182,7 @@ impl<T: Default + Reset> RecyclerX<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::packet::PacketsRecycler;
-    use std::iter::repeat_with;
+    use {super::*, crate::packet::PacketBatchRecycler, std::iter::repeat_with};
 
     impl Reset for u64 {
         fn reset(&mut self) {
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_recycler_shrink() {
         let mut rng = rand::thread_rng();
-        let recycler = PacketsRecycler::default();
+        let recycler = PacketBatchRecycler::default();
         // Allocate a burst of packets.
         const NUM_PACKETS: usize = RECYCLER_SHRINK_SIZE * 2;
         {

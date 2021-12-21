@@ -1,31 +1,33 @@
-use crate::{
-    cli::{CliCommand, CliCommandInfo, CliConfig, CliError, ProcessResult},
-    spend_utils::{resolve_spend_tx_and_check_account_balance, SpendAmount},
+use {
+    crate::{
+        cli::{CliCommand, CliCommandInfo, CliConfig, CliError, ProcessResult},
+        spend_utils::{resolve_spend_tx_and_check_account_balance, SpendAmount},
+    },
+    bincode::deserialize,
+    clap::{App, AppSettings, Arg, ArgMatches, SubCommand},
+    reqwest::blocking::Client,
+    serde_json::{Map, Value},
+    solana_account_decoder::validator_info::{
+        self, ValidatorInfo, MAX_LONG_FIELD_LENGTH, MAX_SHORT_FIELD_LENGTH,
+    },
+    solana_clap_utils::{
+        input_parsers::pubkey_of,
+        input_validators::{is_pubkey, is_url},
+        keypair::DefaultSigner,
+    },
+    solana_cli_output::{CliValidatorInfo, CliValidatorInfoVec},
+    solana_client::rpc_client::RpcClient,
+    solana_config_program::{config_instruction, get_config_data, ConfigKeys, ConfigState},
+    solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    solana_sdk::{
+        account::Account,
+        message::Message,
+        pubkey::Pubkey,
+        signature::{Keypair, Signer},
+        transaction::Transaction,
+    },
+    std::{error, sync::Arc},
 };
-use bincode::deserialize;
-use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
-use reqwest::blocking::Client;
-use serde_json::{Map, Value};
-use solana_account_decoder::validator_info::{
-    self, ValidatorInfo, MAX_LONG_FIELD_LENGTH, MAX_SHORT_FIELD_LENGTH,
-};
-use solana_clap_utils::{
-    input_parsers::pubkey_of,
-    input_validators::{is_pubkey, is_url},
-    keypair::DefaultSigner,
-};
-use solana_cli_output::{CliValidatorInfo, CliValidatorInfoVec};
-use solana_client::rpc_client::RpcClient;
-use solana_config_program::{config_instruction, get_config_data, ConfigKeys, ConfigState};
-use solana_remote_wallet::remote_wallet::RemoteWalletManager;
-use solana_sdk::{
-    account::Account,
-    message::Message,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
-};
-use std::{error, sync::Arc};
 
 // Return an error if a validator details are longer than the max length.
 pub fn check_details_length(string: String) -> Result<(), String> {
@@ -407,10 +409,29 @@ pub fn process_get_validator_info(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::clap_app::get_clap_app;
-    use bincode::{serialize, serialized_size};
-    use serde_json::json;
+    use {
+        super::*,
+        crate::clap_app::get_clap_app,
+        bincode::{serialize, serialized_size},
+        serde_json::json,
+    };
+
+    #[test]
+    fn test_check_details_length() {
+        let short_details = (0..MAX_LONG_FIELD_LENGTH).map(|_| "X").collect::<String>();
+        assert_eq!(check_details_length(short_details), Ok(()));
+
+        let long_details = (0..MAX_LONG_FIELD_LENGTH + 1)
+            .map(|_| "X")
+            .collect::<String>();
+        assert_eq!(
+            check_details_length(long_details),
+            Err(format!(
+                "validator details longer than {:?}-byte limit",
+                MAX_LONG_FIELD_LENGTH
+            ))
+        );
+    }
 
     #[test]
     fn test_check_url() {
@@ -428,6 +449,17 @@ mod tests {
         assert_eq!(is_short_field(name.to_string()), Ok(()));
         let long_name = "Alice 7cLvFwLCbyHuXQ1RGzhCMobAWYPMSZ3VbUml1qWi1nkc3FD7zj9hzTZzMvYJt6rY9";
         assert!(is_short_field(long_name.to_string()).is_err());
+    }
+
+    #[test]
+    fn test_verify_keybase_username_not_string() {
+        let pubkey = solana_sdk::pubkey::new_rand();
+        let value = Value::Bool(true);
+
+        assert_eq!(
+            verify_keybase(&pubkey, &value).unwrap_err().to_string(),
+            "keybase_username could not be parsed as String: true".to_string()
+        )
     }
 
     #[test]
@@ -505,6 +537,41 @@ mod tests {
             .unwrap(),
             (pubkey, info)
         );
+    }
+
+    #[test]
+    fn test_parse_validator_info_not_validator_info_account() {
+        assert!(parse_validator_info(
+            &Pubkey::default(),
+            &Account {
+                owner: solana_sdk::pubkey::new_rand(),
+                ..Account::default()
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("is not a validator info account"));
+    }
+
+    #[test]
+    fn test_parse_validator_info_empty_key_list() {
+        let config = ConfigKeys { keys: vec![] };
+        let validator_info = ValidatorInfo {
+            info: String::new(),
+        };
+        let data = serialize(&(config, validator_info)).unwrap();
+
+        assert!(parse_validator_info(
+            &Pubkey::default(),
+            &Account {
+                owner: solana_config_program::id(),
+                data,
+                ..Account::default()
+            },
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("could not be parsed as a validator info account"));
     }
 
     #[test]

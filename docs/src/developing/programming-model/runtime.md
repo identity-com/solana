@@ -41,7 +41,7 @@ The policy is as follows:
   - And if the account is writable.
   - And if the account is not executable.
 - Executable is one-way (false->true) and only the account owner may set it.
-- No one modification to the rent_epoch associated with this account.
+- No one can make modifications to the rent_epoch associated with this account.
 
 ## Compute Budget
 
@@ -98,8 +98,8 @@ At runtime a program may log how much of the compute budget remains. See
 [debugging](developing/on-chain-programs/debugging.md#monitoring-compute-budget-consumption)
 for more information.
 
-The budget values are conditional on feature enablement, take a look the compute
-budget's
+The budget values are conditional on feature enablement, take a look at the
+compute budget's
 [new](https://github.com/solana-labs/solana/blob/d3a3a7548c857f26ec2cb10e270da72d373020ec/sdk/src/process_instruction.rs#L97)
 function to find out how the budget is constructed. An understanding of how
 [features](runtime.md#features) work and what features are enabled on the

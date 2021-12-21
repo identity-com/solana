@@ -99,7 +99,7 @@ impl OutputFormat {
 pub struct CliAccount {
     #[serde(flatten)]
     pub keyed_account: RpcKeyedAccount,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub use_lamports_unit: bool,
 }
 
@@ -316,10 +316,10 @@ impl fmt::Display for CliEpochInfo {
             "Epoch Completed Time:",
             &format!(
                 "{}{}/{} ({} remaining)",
-                humantime::format_duration(time_elapsed).to_string(),
+                humantime::format_duration(time_elapsed),
                 if annotation.is_some() { "*" } else { "" },
-                humantime::format_duration(time_elapsed + time_remaining).to_string(),
-                humantime::format_duration(time_remaining).to_string(),
+                humantime::format_duration(time_elapsed + time_remaining),
+                humantime::format_duration(time_remaining),
             ),
         )?;
         if let Some(annotation) = annotation {
@@ -576,7 +576,7 @@ impl fmt::Display for CliValidators {
         for (version, info) in self.stake_by_version.iter() {
             writeln!(
                 f,
-                "{:<8} - {:3} current validators ({:>5.2}%){}",
+                "{:<8} - {:4} current validators ({:>5.2}%){}",
                 version,
                 info.current_validators,
                 100. * info.current_active_stake as f64 / self.total_active_stake as f64,
@@ -2525,14 +2525,16 @@ impl VerboseDisplay for CliGossipNodes {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use clap::{App, Arg};
-    use solana_sdk::{
-        message::Message,
-        pubkey::Pubkey,
-        signature::{keypair_from_seed, NullSigner, Signature, Signer, SignerError},
-        system_instruction,
-        transaction::Transaction,
+    use {
+        super::*,
+        clap::{App, Arg},
+        solana_sdk::{
+            message::Message,
+            pubkey::Pubkey,
+            signature::{keypair_from_seed, NullSigner, Signature, Signer, SignerError},
+            system_instruction,
+            transaction::Transaction,
+        },
     };
 
     #[test]
@@ -2593,11 +2595,7 @@ mod tests {
             CliSignOnlyData {
                 blockhash: blockhash.to_string(),
                 message: None,
-                signers: vec![format!(
-                    "{}={}",
-                    present.pubkey().to_string(),
-                    tx.signatures[1]
-                )],
+                signers: vec![format!("{}={}", present.pubkey(), tx.signatures[1])],
                 absent: vec![absent.pubkey().to_string()],
                 bad_sig: vec![bad.pubkey().to_string()],
             }
@@ -2627,11 +2625,7 @@ mod tests {
             CliSignOnlyData {
                 blockhash: blockhash.to_string(),
                 message: Some(expected_msg),
-                signers: vec![format!(
-                    "{}={}",
-                    present.pubkey().to_string(),
-                    tx.signatures[1]
-                )],
+                signers: vec![format!("{}={}", present.pubkey(), tx.signatures[1])],
                 absent: vec![absent.pubkey().to_string()],
                 bad_sig: vec![bad.pubkey().to_string()],
             }

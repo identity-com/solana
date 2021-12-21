@@ -1,12 +1,14 @@
-use crate::{
-    account::{from_account, AccountSharedData, ReadableAccount},
-    account_utils::{State, StateMut},
-};
-use solana_program::{clock::Epoch, instruction::InstructionError, pubkey::Pubkey, sysvar::Sysvar};
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    iter::FromIterator,
-    rc::Rc,
+use {
+    crate::{
+        account::{from_account, AccountSharedData, ReadableAccount},
+        account_utils::{State, StateMut},
+    },
+    solana_program::{clock::Epoch, instruction::InstructionError, pubkey::Pubkey, sysvar::Sysvar},
+    std::{
+        cell::{Ref, RefCell, RefMut},
+        iter::FromIterator,
+        rc::Rc,
+    },
 };
 
 #[repr(C)]
@@ -217,6 +219,8 @@ pub fn next_keyed_account<'a, 'b, I: Iterator<Item = &'a KeyedAccount<'b>>>(
 }
 
 /// Return the KeyedAccount at the specified index or a NotEnoughAccountKeys error
+///
+/// Index zero starts at the chain of program accounts, followed by the instruction accounts.
 pub fn keyed_account_at_index<'a>(
     keyed_accounts: &'a [KeyedAccount],
     index: usize,
@@ -256,12 +260,14 @@ pub fn from_keyed_account<S: Sysvar>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        account::{create_account_for_test, to_account},
-        pubkey::Pubkey,
+    use {
+        super::*,
+        crate::{
+            account::{create_account_for_test, to_account},
+            pubkey::Pubkey,
+        },
+        std::cell::RefCell,
     };
-    use std::cell::RefCell;
 
     #[repr(C)]
     #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]

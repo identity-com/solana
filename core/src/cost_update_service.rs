@@ -3,19 +3,23 @@
 //! packing transactions into block; it also triggers persisting cost
 //! table to blockstore.
 
-use crate::cost_model::CostModel;
-use solana_ledger::blockstore::Blockstore;
-use solana_measure::measure::Measure;
-use solana_runtime::bank::ExecuteTimings;
-use solana_sdk::timing::timestamp;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::Receiver,
-        Arc, RwLock,
+use {
+    solana_ledger::blockstore::Blockstore,
+    solana_measure::measure::Measure,
+    solana_runtime::{
+        bank::{Bank, ExecuteTimings},
+        cost_model::CostModel,
     },
-    thread::{self, Builder, JoinHandle},
-    time::Duration,
+    solana_sdk::timing::timestamp,
+    std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::Receiver,
+            Arc, RwLock,
+        },
+        thread::{self, Builder, JoinHandle},
+        time::Duration,
+    },
 };
 
 #[derive(Default)]
@@ -41,7 +45,7 @@ impl CostUpdateServiceTiming {
         let elapsed_ms = now - self.last_print;
         if elapsed_ms > 1000 {
             datapoint_info!(
-                "replay-service-timing-stats",
+                "cost-update-service-stats",
                 ("total_elapsed_us", elapsed_ms * 1000, i64),
                 (
                     "update_cost_model_count",
@@ -66,7 +70,12 @@ impl CostUpdateServiceTiming {
     }
 }
 
-pub type CostUpdateReceiver = Receiver<ExecuteTimings>;
+pub enum CostUpdate {
+    FrozenBank { bank: Arc<Bank> },
+    ExecuteTiming { execute_timings: ExecuteTimings },
+}
+
+pub type CostUpdateReceiver = Receiver<CostUpdate>;
 
 pub struct CostUpdateService {
     thread_hdl: JoinHandle<()>,
@@ -101,7 +110,8 @@ impl CostUpdateService {
         cost_update_receiver: CostUpdateReceiver,
     ) {
         let mut cost_update_service_timing = CostUpdateServiceTiming::default();
-        let mut dirty = false;
+        let mut dirty: bool;
+        let mut update_count: u64;
         let wait_timer = Duration::from_millis(100);
 
         loop {
@@ -109,11 +119,19 @@ impl CostUpdateService {
                 break;
             }
 
-            let mut update_count = 0_u64;
+            dirty = false;
+            update_count = 0_u64;
             let mut update_cost_model_time = Measure::start("update_cost_model_time");
             for cost_update in cost_update_receiver.try_iter() {
-                dirty |= Self::update_cost_model(&cost_model, &cost_update);
-                update_count += 1;
+                match cost_update {
+                    CostUpdate::FrozenBank { bank } => {
+                        bank.read_cost_tracker().unwrap().report_stats(bank.slot());
+                    }
+                    CostUpdate::ExecuteTiming { execute_timings } => {
+                        dirty |= Self::update_cost_model(&cost_model, &execute_timings);
+                        update_count += 1;
+                    }
+                }
             }
             update_cost_model_time.stop();
 
@@ -190,9 +208,7 @@ impl CostUpdateService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_program_runtime::ProgramTiming;
-    use solana_sdk::pubkey::Pubkey;
+    use {super::*, solana_program_runtime::timings::ProgramTiming, solana_sdk::pubkey::Pubkey};
 
     #[test]
     fn test_update_cost_model_with_empty_execute_timings() {

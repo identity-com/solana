@@ -40,7 +40,9 @@ import { BpfUpgradeableLoaderDetailsCard } from "components/instruction/bpf-upgr
 import { VoteDetailsCard } from "components/instruction/vote/VoteDetailsCard";
 import { isWormholeInstruction } from "components/instruction/wormhole/types";
 import { AssociatedTokenDetailsCard } from "components/instruction/AssociatedTokenDetailsCard";
-import {isGatewayInstruction} from "../instruction/gateway/types";
+import { isGatewayInstruction } from "../instruction/gateway/types";
+import { isMangoInstruction } from "components/instruction/mango/types";
+import { MangoDetailsCard } from "components/instruction/MangoDetails";
 
 export type InstructionDetailsProps = {
   tx: ParsedTransaction;
@@ -91,7 +93,7 @@ export function InstructionsSection({ signature }: SignatureProps) {
   const instructionDetails = transaction.message.instructions.map(
     (instruction, index) => {
       let innerCards: JSX.Element[] = [];
-      
+
       if (index in innerInstructions) {
         innerInstructions[index].forEach((ix, childIndex) => {
           console.log(ix);
@@ -155,7 +157,7 @@ function renderInstructionCard({
   childIndex?: number;
 }) {
   const key = `${index}-${childIndex}`;
-  
+
   console.log("ix");
   console.log(ix);
 
@@ -214,6 +216,8 @@ function renderInstructionCard({
 
   if (isBonfidaBotInstruction(transactionIx)) {
     return <BonfidaBotDetailsCard key={key} {...props} />;
+  } else if (isMangoInstruction(transactionIx)) {
+    return <MangoDetailsCard key={key} {...props} />;
   } else if (isSerumInstruction(transactionIx)) {
     return <SerumDetailsCard key={key} {...props} />;
   } else if (isTokenSwapInstruction(transactionIx)) {

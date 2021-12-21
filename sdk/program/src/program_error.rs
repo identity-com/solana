@@ -1,9 +1,11 @@
 #![allow(clippy::integer_arithmetic)]
-use crate::{decode_error::DecodeError, instruction::InstructionError, msg, pubkey::PubkeyError};
-use borsh::maybestd::io::Error as BorshIoError;
-use num_traits::{FromPrimitive, ToPrimitive};
-use std::convert::TryFrom;
-use thiserror::Error;
+use {
+    crate::{decode_error::DecodeError, instruction::InstructionError, msg, pubkey::PubkeyError},
+    borsh::maybestd::io::Error as BorshIoError,
+    num_traits::{FromPrimitive, ToPrimitive},
+    std::convert::TryFrom,
+    thiserror::Error,
+};
 
 /// Reasons the program may fail
 #[derive(Clone, Debug, Deserialize, Eq, Error, PartialEq, Serialize)]
@@ -169,7 +171,7 @@ impl From<u64> for ProgramError {
             ACCOUNT_BORROW_FAILED => Self::AccountBorrowFailed,
             MAX_SEED_LENGTH_EXCEEDED => Self::MaxSeedLengthExceeded,
             INVALID_SEEDS => Self::InvalidSeeds,
-            BORSH_IO_ERROR => Self::BorshIoError("Unkown".to_string()),
+            BORSH_IO_ERROR => Self::BorshIoError("Unknown".to_string()),
             ACCOUNT_NOT_RENT_EXEMPT => Self::AccountNotRentExempt,
             UNSUPPORTED_SYSVAR => Self::UnsupportedSysvar,
             ILLEGAL_OWNER => Self::IllegalOwner,
@@ -227,7 +229,7 @@ where
             ACCOUNT_BORROW_FAILED => Self::AccountBorrowFailed,
             MAX_SEED_LENGTH_EXCEEDED => Self::MaxSeedLengthExceeded,
             INVALID_SEEDS => Self::InvalidSeeds,
-            BORSH_IO_ERROR => Self::BorshIoError("Unkown".to_string()),
+            BORSH_IO_ERROR => Self::BorshIoError("Unknown".to_string()),
             ACCOUNT_NOT_RENT_EXEMPT => Self::AccountNotRentExempt,
             UNSUPPORTED_SYSVAR => Self::UnsupportedSysvar,
             ILLEGAL_OWNER => Self::IllegalOwner,

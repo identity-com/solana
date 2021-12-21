@@ -3,22 +3,23 @@
 
 extern crate test;
 
-use log::*;
-use solana_runtime::{bank::*, bank_client::BankClient, loader_utils::create_invoke_instruction};
-use solana_sdk::{
-    client::AsyncClient,
-    client::SyncClient,
-    clock::MAX_RECENT_BLOCKHASHES,
-    genesis_config::create_genesis_config,
-    instruction::InstructionError,
-    message::Message,
-    process_instruction::InvokeContext,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
+use {
+    log::*,
+    solana_program_runtime::invoke_context::InvokeContext,
+    solana_runtime::{bank::*, bank_client::BankClient, loader_utils::create_invoke_instruction},
+    solana_sdk::{
+        client::{AsyncClient, SyncClient},
+        clock::MAX_RECENT_BLOCKHASHES,
+        genesis_config::create_genesis_config,
+        instruction::InstructionError,
+        message::Message,
+        pubkey::Pubkey,
+        signature::{Keypair, Signer},
+        transaction::Transaction,
+    },
+    std::{sync::Arc, thread::sleep, time::Duration},
+    test::Bencher,
 };
-use std::{sync::Arc, thread::sleep, time::Duration};
-use test::Bencher;
 
 const BUILTIN_PROGRAM_ID: [u8; 32] = [
     98, 117, 105, 108, 116, 105, 110, 95, 112, 114, 111, 103, 114, 97, 109, 95, 105, 100, 0, 0, 0,
@@ -32,9 +33,9 @@ const NOOP_PROGRAM_ID: [u8; 32] = [
 
 #[allow(clippy::unnecessary_wraps)]
 fn process_instruction(
-    _program_id: &Pubkey,
+    _first_instruction_account: usize,
     _data: &[u8],
-    _invoke_context: &mut dyn InvokeContext,
+    _invoke_context: &mut InvokeContext,
 ) -> Result<(), InstructionError> {
     Ok(())
 }
@@ -127,10 +128,10 @@ fn do_bench_transactions(
     let mut bank = Bank::new_for_benches(&genesis_config);
     bank.add_builtin(
         "builtin_program",
-        Pubkey::new(&BUILTIN_PROGRAM_ID),
+        &Pubkey::new(&BUILTIN_PROGRAM_ID),
         process_instruction,
     );
-    bank.add_native_program("solana_noop_program", &Pubkey::new(&NOOP_PROGRAM_ID), false);
+    bank.add_builtin_account("solana_noop_program", &Pubkey::new(&NOOP_PROGRAM_ID), false);
     let bank = Arc::new(bank);
     let bank_client = BankClient::new_shared(&bank);
     let transactions = create_transactions(&bank_client, &mint_keypair);

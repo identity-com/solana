@@ -13,8 +13,7 @@ use {
         fs::{self, File},
         io::{prelude::*, BufReader, BufWriter},
         path::{Path, PathBuf},
-        process::exit,
-        process::{Command, Stdio},
+        process::{exit, Command, Stdio},
         str::FromStr,
     },
     tar::Archive,
@@ -118,39 +117,54 @@ fn install_if_missing(
     package: &str,
     version: &str,
     url: &str,
-    file: &Path,
+    download_file_name: &str,
+    target_path: &Path,
 ) -> Result<(), String> {
+    // Check whether the target path is an empty directory. This can
+    // happen if package download failed on previous run of
+    // cargo-build-bpf.  Remove the target_path directory in this
+    // case.
+    if target_path.is_dir()
+        && target_path
+            .read_dir()
+            .map_err(|err| err.to_string())?
+            .next()
+            .is_none()
+    {
+        fs::remove_dir(&target_path).map_err(|err| err.to_string())?;
+    }
+
     // Check whether the package is already in ~/.cache/solana.
-    // Donwload it and place in the proper location if not found.
-    let home_dir = PathBuf::from(env::var("HOME").unwrap_or_else(|err| {
-        eprintln!("Can't get home directory path: {}", err);
-        exit(1);
-    }));
-    let target_path = home_dir
-        .join(".cache")
-        .join("solana")
-        .join(version)
-        .join(package);
-    if !target_path.is_dir() {
+    // Download it and place in the proper location if not found.
+    if !target_path.is_dir()
+        && !target_path
+            .symlink_metadata()
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+    {
         if target_path.exists() {
             fs::remove_file(&target_path).map_err(|err| err.to_string())?;
         }
+        fs::create_dir_all(&target_path).map_err(|err| err.to_string())?;
         let mut url = String::from(url);
         url.push('/');
         url.push_str(version);
         url.push('/');
-        url.push_str(file.to_str().unwrap());
-        download_file(url.as_str(), file, true, &mut None)?;
-        fs::create_dir_all(&target_path).map_err(|err| err.to_string())?;
-        let zip = File::open(&file).map_err(|err| err.to_string())?;
+        url.push_str(download_file_name);
+        let download_file_path = target_path.join(download_file_name);
+        if download_file_path.exists() {
+            fs::remove_file(&download_file_path).map_err(|err| err.to_string())?;
+        }
+        download_file(url.as_str(), &download_file_path, true, &mut None)?;
+        let zip = File::open(&download_file_path).map_err(|err| err.to_string())?;
         let tar = BzDecoder::new(BufReader::new(zip));
         let mut archive = Archive::new(tar);
         archive
             .unpack(&target_path)
             .map_err(|err| err.to_string())?;
-        fs::remove_file(file).map_err(|err| err.to_string())?;
+        fs::remove_file(download_file_path).map_err(|err| err.to_string())?;
     }
-    // Make a symbolyc link source_path -> target_path in the
+    // Make a symbolic link source_path -> target_path in the
     // sdk/bpf/dependencies directory if no valid link found.
     let source_base = config.bpf_sdk.join("dependencies");
     if !source_base.exists() {
@@ -159,7 +173,7 @@ fn install_if_missing(
     let source_path = source_base.join(package);
     // Check whether the correct symbolic link exists.
     let invalid_link = if let Ok(link_target) = source_path.read_link() {
-        if link_target != target_path {
+        if link_target.ne(target_path) {
             fs::remove_file(&source_path).map_err(|err| err.to_string())?;
             true
         } else {
@@ -448,19 +462,46 @@ fn build_bpf_package(config: &Config, target_directory: &Path, package: &cargo_m
     if legacy_program_feature_present {
         println!("Legacy program feature detected");
     }
-    let bpf_tools_filename = if cfg!(target_os = "macos") {
+    let bpf_tools_download_file_name = if cfg!(target_os = "macos") {
         "solana-bpf-tools-osx.tar.bz2"
     } else {
         "solana-bpf-tools-linux.tar.bz2"
     };
+
+    let home_dir = PathBuf::from(env::var("HOME").unwrap_or_else(|err| {
+        eprintln!("Can't get home directory path: {}", err);
+        exit(1);
+    }));
+    let version = "v1.20";
+    let package = "bpf-tools";
+    let target_path = home_dir
+        .join(".cache")
+        .join("solana")
+        .join(version)
+        .join(package);
     install_if_missing(
         config,
-        "bpf-tools",
-        "v1.15",
+        package,
+        version,
         "https://github.com/solana-labs/bpf-tools/releases/download",
-        &PathBuf::from(bpf_tools_filename),
+        bpf_tools_download_file_name,
+        &target_path,
     )
-    .expect("Failed to install bpf-tools");
+    .unwrap_or_else(|err| {
+        // The package version directory doesn't contain a valid
+        // installation, and it should be removed.
+        let target_path_parent = target_path.parent().expect("Invalid package path");
+        fs::remove_dir_all(&target_path_parent).unwrap_or_else(|err| {
+            eprintln!(
+                "Failed to remove {} while recovering from installation failure: {}",
+                target_path_parent.to_string_lossy(),
+                err,
+            );
+            exit(1);
+        });
+        eprintln!("Failed to install bpf-tools: {}", err);
+        exit(1);
+    });
     link_bpf_toolchain(config);
 
     let llvm_bin = config
@@ -659,6 +700,7 @@ fn main() {
         .version(crate_version!())
         .arg(
             Arg::with_name("bpf_out_dir")
+                .env("BPF_OUT_PATH")
                 .long("bpf-out-dir")
                 .value_name("DIRECTORY")
                 .takes_value(true)
@@ -666,6 +708,7 @@ fn main() {
         )
         .arg(
             Arg::with_name("bpf_sdk")
+                .env("BPF_SDK_PATH")
                 .long("bpf-sdk")
                 .value_name("PATH")
                 .takes_value(true)

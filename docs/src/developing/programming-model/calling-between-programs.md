@@ -20,7 +20,7 @@ let message = Message::new(vec![
 client.send_and_confirm_message(&[&alice_keypair, &bob_keypair], &message);
 ```
 
-A client may to instead allow the `acme` program to conveniently invoke `token`
+A client may instead allow the `acme` program to conveniently invoke `token`
 instructions on the client's behalf:
 
 ```rust,ignore
@@ -59,7 +59,7 @@ field.
 Note that `invoke` requires the caller to pass all the accounts required by the
 instruction being invoked. This means that both the executable account (the
 ones that matches the instruction's program id) and the accounts passed to the
-instruction procesor.
+instruction processor.
 
 Before invoking `pay()`, the runtime must ensure that `acme` didn't modify any
 accounts owned by `token`. It does this by applying the runtime's policy to the
@@ -84,8 +84,10 @@ signers and writable accounts. For example, if the instruction the caller is
 processing contains a signer or writable account, then the caller can invoke an
 instruction that also contains that signer and/or writable account.
 
-This privilege extension relies on the fact that programs are immutable. In the
-case of the `acme` program, the runtime can safely treat the transaction's
+This privilege extension relies on the fact that programs are immutable, except
+during the special case of program upgrades.
+
+In the case of the `acme` program, the runtime can safely treat the transaction's
 signature as a signature of a `token` instruction. When the runtime sees the
 `token` instruction references `alice_pubkey`, it looks up the key in the `acme`
 instruction to see if that key corresponds to a signed account. In this case, it
@@ -124,7 +126,7 @@ point that it gets called back.
 
 ## Program Derived Addresses
 
-Program derived addresses allow programmaticly generated signature to be used
+Program derived addresses allow programmatically generated signatures to be used
 when [calling between programs](#cross-program-invocations).
 
 Using a program derived address, a program may be given the authority over an

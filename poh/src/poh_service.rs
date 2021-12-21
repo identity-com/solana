@@ -12,7 +12,7 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc, Mutex,
         },
-        thread::{self, sleep, Builder, JoinHandle},
+        thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };
@@ -160,14 +160,20 @@ impl PohService {
         poh_exit: &AtomicBool,
         record_receiver: Receiver<Record>,
     ) {
+        let mut last_tick = Instant::now();
         while !poh_exit.load(Ordering::Relaxed) {
+            let remaining_tick_time = poh_config
+                .target_tick_duration
+                .saturating_sub(last_tick.elapsed());
             Self::read_record_receiver_and_process(
                 &poh_recorder,
                 &record_receiver,
-                Duration::from_millis(0),
+                remaining_tick_time,
             );
-            sleep(poh_config.target_tick_duration);
-            poh_recorder.lock().unwrap().tick();
+            if remaining_tick_time.is_zero() {
+                last_tick = Instant::now();
+                poh_recorder.lock().unwrap().tick();
+            }
         }
     }
 
@@ -199,14 +205,23 @@ impl PohService {
         record_receiver: Receiver<Record>,
     ) {
         let mut warned = false;
-        for _ in 0..poh_config.target_tick_count.unwrap() {
+        let mut elapsed_ticks = 0;
+        let mut last_tick = Instant::now();
+        let num_ticks = poh_config.target_tick_count.unwrap();
+        while elapsed_ticks < num_ticks {
+            let remaining_tick_time = poh_config
+                .target_tick_duration
+                .saturating_sub(last_tick.elapsed());
             Self::read_record_receiver_and_process(
                 &poh_recorder,
                 &record_receiver,
                 Duration::from_millis(0),
             );
-            sleep(poh_config.target_tick_duration);
-            poh_recorder.lock().unwrap().tick();
+            if remaining_tick_time.is_zero() {
+                last_tick = Instant::now();
+                poh_recorder.lock().unwrap().tick();
+                elapsed_ticks += 1;
+            }
             if poh_exit.load(Ordering::Relaxed) && !warned {
                 warned = true;
                 warn!("exit signal is ignored because PohService is scheduled to exit soon");
@@ -357,7 +372,6 @@ impl PohService {
 mod tests {
     use {
         super::*,
-        crate::poh_recorder::WorkingBank,
         rand::{thread_rng, Rng},
         solana_ledger::{
             blockstore::Blockstore,
@@ -371,7 +385,7 @@ mod tests {
         solana_sdk::{
             clock, hash::hash, pubkey::Pubkey, timing, transaction::VersionedTransaction,
         },
-        std::time::Duration,
+        std::{thread::sleep, time::Duration},
     };
 
     #[test]
@@ -396,27 +410,24 @@ mod tests {
             });
             let exit = Arc::new(AtomicBool::new(false));
 
+            let ticks_per_slot = bank.ticks_per_slot();
+            let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+            let blockstore = Arc::new(blockstore);
             let (poh_recorder, entry_receiver, record_receiver) = PohRecorder::new(
                 bank.tick_height(),
                 prev_hash,
-                bank.slot(),
+                bank.clone(),
                 Some((4, 4)),
-                bank.ticks_per_slot(),
+                ticks_per_slot,
                 &Pubkey::default(),
-                &Arc::new(blockstore),
-                &Arc::new(LeaderScheduleCache::new_from_bank(&bank)),
+                &blockstore,
+                &leader_schedule_cache,
                 &poh_config,
                 exit.clone(),
             );
             let poh_recorder = Arc::new(Mutex::new(poh_recorder));
-            let start = Arc::new(Instant::now());
-            let working_bank = WorkingBank {
-                bank: bank.clone(),
-                start,
-                min_tick_height: bank.tick_height(),
-                max_tick_height: std::u64::MAX,
-            };
             let ticks_per_slot = bank.ticks_per_slot();
+            let bank_slot = bank.slot();
 
             // specify RUN_TIME to run in a benchmark-like mode
             // to calibrate batch size
@@ -441,7 +452,7 @@ mod tests {
                             // send some data
                             let mut time = Measure::start("record");
                             let _ = poh_recorder.lock().unwrap().record(
-                                bank.slot(),
+                                bank_slot,
                                 h1,
                                 vec![tx.clone()],
                             );
@@ -478,7 +489,7 @@ mod tests {
                 hashes_per_batch,
                 record_receiver,
             );
-            poh_recorder.lock().unwrap().set_working_bank(working_bank);
+            poh_recorder.lock().unwrap().set_bank(&bank);
 
             // get some events
             let mut hashes = 0;

@@ -43,18 +43,18 @@ pub enum RpcRequest {
     GetEpochInfo,
     GetEpochSchedule,
     #[deprecated(
-        since = "1.8.0",
+        since = "1.9.0",
         note = "Please use RpcRequest::GetFeeForMessage instead"
     )]
     GetFeeCalculatorForBlockhash,
     GetFeeForMessage,
     #[deprecated(
-        since = "1.8.0",
+        since = "1.9.0",
         note = "Please do not use, will no longer be available in the future"
     )]
     GetFeeRateGovernor,
     #[deprecated(
-        since = "1.8.0",
+        since = "1.9.0",
         note = "Please use RpcRequest::GetFeeForMessage instead"
     )]
     GetFees,
@@ -74,11 +74,16 @@ pub enum RpcRequest {
     GetMultipleAccounts,
     GetProgramAccounts,
     #[deprecated(
-        since = "1.8.0",
+        since = "1.9.0",
         note = "Please use RpcRequest::GetLatestBlockhash instead"
     )]
     GetRecentBlockhash,
     GetRecentPerformanceSamples,
+    GetHighestSnapshotSlot,
+    #[deprecated(
+        since = "1.9.0",
+        note = "Please use RpcRequest::GetHighestSnapshotSlot instead"
+    )]
     GetSnapshotSlot,
     GetSignaturesForAddress,
     GetSignatureStatuses,
@@ -151,6 +156,7 @@ impl fmt::Display for RpcRequest {
             RpcRequest::GetProgramAccounts => "getProgramAccounts",
             RpcRequest::GetRecentBlockhash => "getRecentBlockhash",
             RpcRequest::GetRecentPerformanceSamples => "getRecentPerformanceSamples",
+            RpcRequest::GetHighestSnapshotSlot => "getHighestSnapshotSlot",
             RpcRequest::GetSnapshotSlot => "getSnapshotSlot",
             RpcRequest::GetSignaturesForAddress => "getSignaturesForAddress",
             RpcRequest::GetSignatureStatuses => "getSignatureStatuses",
@@ -261,9 +267,11 @@ pub enum TokenAccountsFilter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rpc_config::RpcTokenAccountsFilter;
-    use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
+    use {
+        super::*,
+        crate::rpc_config::RpcTokenAccountsFilter,
+        solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel},
+    };
 
     #[test]
     fn test_build_request_json() {

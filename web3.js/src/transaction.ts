@@ -106,7 +106,7 @@ export type SignaturePubkeyPair = {
  * List of Transaction object fields that may be initialized at construction
  *
  */
-type TransactionCtorFields = {
+export type TransactionCtorFields = {
   /** A recent blockhash */
   recentBlockhash?: Blockhash | null;
   /** Optional nonce information used for offline nonce'd transactions */
@@ -120,7 +120,7 @@ type TransactionCtorFields = {
 /**
  * Nonce information to be used to build an offline Transaction.
  */
-type NonceInformation = {
+export type NonceInformation = {
   /** The current blockhash stored in the nonce */
   nonce: Blockhash;
   /** AdvanceNonceAccount Instruction */
@@ -666,7 +666,10 @@ export class Transaction {
   /**
    * Populate Transaction object from message and signatures
    */
-  static populate(message: Message, signatures: Array<string>): Transaction {
+  static populate(
+    message: Message,
+    signatures: Array<string> = [],
+  ): Transaction {
     const transaction = new Transaction();
     transaction.recentBlockhash = message.recentBlockhash;
     if (message.header.numRequiredSignatures > 0) {
@@ -688,9 +691,10 @@ export class Transaction {
         const pubkey = message.accountKeys[account];
         return {
           pubkey,
-          isSigner: transaction.signatures.some(
-            keyObj => keyObj.publicKey.toString() === pubkey.toString(),
-          ),
+          isSigner:
+            transaction.signatures.some(
+              keyObj => keyObj.publicKey.toString() === pubkey.toString(),
+            ) || message.isAccountSigner(account),
           isWritable: message.isAccountWritable(account),
         };
       });

@@ -1,35 +1,39 @@
-use solana_cli::{
-    cli::{process_command, request_and_confirm_airdrop, CliCommand, CliConfig},
-    spend_utils::SpendAmount,
-    stake::StakeAuthorizationIndexed,
-    test_utils::{check_ready, check_recent_balance},
-};
-use solana_cli_output::{parse_sign_only_reply_string, OutputFormat};
-use solana_client::{
-    blockhash_query::{self, BlockhashQuery},
-    nonce_utils,
-    rpc_client::RpcClient,
-};
-use solana_core::test_validator::TestValidator;
-use solana_faucet::faucet::run_local_faucet;
-use solana_sdk::{
-    account_utils::StateMut,
-    commitment_config::CommitmentConfig,
-    nonce::State as NonceState,
-    pubkey::Pubkey,
-    signature::{keypair_from_seed, Keypair, Signer},
-    stake::{
-        self,
-        instruction::LockupArgs,
-        state::{Lockup, StakeAuthorize, StakeState},
+#![allow(clippy::redundant_closure)]
+use {
+    solana_cli::{
+        cli::{process_command, request_and_confirm_airdrop, CliCommand, CliConfig},
+        spend_utils::SpendAmount,
+        stake::StakeAuthorizationIndexed,
+        test_utils::{check_ready, check_recent_balance},
     },
+    solana_cli_output::{parse_sign_only_reply_string, OutputFormat},
+    solana_client::{
+        blockhash_query::{self, BlockhashQuery},
+        nonce_utils,
+        rpc_client::RpcClient,
+    },
+    solana_faucet::faucet::run_local_faucet,
+    solana_sdk::{
+        account_utils::StateMut,
+        commitment_config::CommitmentConfig,
+        nonce::State as NonceState,
+        pubkey::Pubkey,
+        signature::{keypair_from_seed, Keypair, Signer},
+        stake::{
+            self,
+            instruction::LockupArgs,
+            state::{Lockup, StakeAuthorize, StakeState},
+        },
+    },
+    solana_streamer::socket::SocketAddrSpace,
+    solana_test_validator::TestValidator,
 };
-use solana_streamer::socket::SocketAddrSpace;
 
 #[test]
 fn test_stake_delegation_force() {
     let mint_keypair = Keypair::new();
     let mint_pubkey = mint_keypair.pubkey();
+    let authorized_withdrawer = Keypair::new().pubkey();
     let faucet_addr = run_local_faucet(mint_keypair, None);
     let test_validator =
         TestValidator::with_no_fees(mint_pubkey, Some(faucet_addr), SocketAddrSpace::Unspecified);
@@ -53,9 +57,15 @@ fn test_stake_delegation_force() {
         seed: None,
         identity_account: 0,
         authorized_voter: None,
-        authorized_withdrawer: None,
+        authorized_withdrawer,
         commission: 0,
+        sign_only: false,
+        dump_transaction_message: false,
+        blockhash_query: BlockhashQuery::All(blockhash_query::Source::Cluster),
+        nonce_account: None,
+        nonce_authority: 0,
         memo: None,
+        fee_payer: 0,
     };
     process_command(&config).unwrap();
 

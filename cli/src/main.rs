@@ -1,19 +1,21 @@
-use clap::{crate_description, crate_name, value_t_or_exit, ArgMatches};
-use console::style;
-use solana_clap_utils::{
-    input_validators::normalize_to_url_if_moniker,
-    keypair::{CliSigners, DefaultSigner},
-    DisplayError,
+use {
+    clap::{crate_description, crate_name, value_t_or_exit, ArgMatches},
+    console::style,
+    solana_clap_utils::{
+        input_validators::normalize_to_url_if_moniker,
+        keypair::{CliSigners, DefaultSigner},
+        DisplayError,
+    },
+    solana_cli::{
+        clap_app::get_clap_app,
+        cli::{parse_command, process_command, CliCommandInfo, CliConfig, SettingType},
+    },
+    solana_cli_config::Config,
+    solana_cli_output::{display::println_name_value, OutputFormat},
+    solana_client::rpc_config::RpcSendTransactionConfig,
+    solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    std::{collections::HashMap, error, path::PathBuf, sync::Arc, time::Duration},
 };
-use solana_cli::{
-    clap_app::get_clap_app,
-    cli::{parse_command, process_command, CliCommandInfo, CliConfig, SettingType},
-};
-use solana_cli_config::Config;
-use solana_cli_output::{display::println_name_value, OutputFormat};
-use solana_client::rpc_config::RpcSendTransactionConfig;
-use solana_remote_wallet::remote_wallet::RemoteWalletManager;
-use std::{collections::HashMap, error, path::PathBuf, sync::Arc, time::Duration};
 
 pub fn println_name_value_or(name: &str, value: &str, setting_type: SettingType) {
     let description = match setting_type {
@@ -149,7 +151,7 @@ fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error
 
 pub fn parse_args<'a>(
     matches: &ArgMatches<'_>,
-    mut wallet_manager: &mut Option<Arc<RemoteWalletManager>>,
+    wallet_manager: &mut Option<Arc<RemoteWalletManager>>,
 ) -> Result<(CliConfig<'a>, CliSigners), Box<dyn error::Error>> {
     let config = if let Some(config_file) = matches.value_of("config_file") {
         Config::load(config_file).unwrap_or_default()
@@ -186,11 +188,11 @@ pub fn parse_args<'a>(
     let CliCommandInfo {
         command,
         mut signers,
-    } = parse_command(matches, &default_signer, &mut wallet_manager)?;
+    } = parse_command(matches, &default_signer, wallet_manager)?;
 
     if signers.is_empty() {
         if let Ok(signer_info) =
-            default_signer.generate_unique_signers(vec![None], matches, &mut wallet_manager)
+            default_signer.generate_unique_signers(vec![None], matches, wallet_manager)
         {
             signers.extend(signer_info.signers);
         }

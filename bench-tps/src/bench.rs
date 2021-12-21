@@ -1,34 +1,36 @@
-use crate::cli::Config;
-use log::*;
-use rayon::prelude::*;
-use solana_client::perf_utils::{sample_txs, SampleStats};
-use solana_core::gen_keys::GenKeys;
-use solana_faucet::faucet::request_airdrop_transaction;
-use solana_measure::measure::Measure;
-use solana_metrics::{self, datapoint_info};
-use solana_sdk::{
-    client::Client,
-    clock::{DEFAULT_S_PER_SLOT, MAX_PROCESSING_AGE},
-    commitment_config::CommitmentConfig,
-    hash::Hash,
-    instruction::{AccountMeta, Instruction},
-    message::Message,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    system_instruction, system_transaction,
-    timing::{duration_as_ms, duration_as_s, duration_as_us, timestamp},
-    transaction::Transaction,
-};
-use std::{
-    collections::{HashSet, VecDeque},
-    net::SocketAddr,
-    process::exit,
-    sync::{
-        atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
-        Arc, Mutex, RwLock,
+use {
+    crate::cli::Config,
+    log::*,
+    rayon::prelude::*,
+    solana_client::perf_utils::{sample_txs, SampleStats},
+    solana_core::gen_keys::GenKeys,
+    solana_faucet::faucet::request_airdrop_transaction,
+    solana_measure::measure::Measure,
+    solana_metrics::{self, datapoint_info},
+    solana_sdk::{
+        client::Client,
+        clock::{DEFAULT_MS_PER_SLOT, DEFAULT_S_PER_SLOT, MAX_PROCESSING_AGE},
+        commitment_config::CommitmentConfig,
+        hash::Hash,
+        instruction::{AccountMeta, Instruction},
+        message::Message,
+        pubkey::Pubkey,
+        signature::{Keypair, Signer},
+        system_instruction, system_transaction,
+        timing::{duration_as_ms, duration_as_s, duration_as_us, timestamp},
+        transaction::Transaction,
     },
-    thread::{sleep, Builder, JoinHandle},
-    time::{Duration, Instant},
+    std::{
+        collections::{HashSet, VecDeque},
+        net::SocketAddr,
+        process::exit,
+        sync::{
+            atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering},
+            Arc, Mutex, RwLock,
+        },
+        thread::{sleep, Builder, JoinHandle},
+        time::{Duration, Instant},
+    },
 };
 
 // The point at which transactions become "too old", in seconds.
@@ -389,6 +391,22 @@ fn generate_txs(
     }
 }
 
+fn get_new_latest_blockhash<T: Client>(client: &Arc<T>, blockhash: &Hash) -> Option<Hash> {
+    let start = Instant::now();
+    while start.elapsed().as_secs() < 5 {
+        if let Ok(new_blockhash) = client.get_latest_blockhash() {
+            if new_blockhash != *blockhash {
+                return Some(new_blockhash);
+            }
+        }
+        debug!("Got same blockhash ({:?}), will retry...", blockhash);
+
+        // Retry ~twice during a slot
+        sleep(Duration::from_millis(DEFAULT_MS_PER_SLOT / 2));
+    }
+    None
+}
+
 fn poll_blockhash<T: Client>(
     exit_signal: &Arc<AtomicBool>,
     blockhash: &Arc<RwLock<Hash>>,
@@ -400,7 +418,7 @@ fn poll_blockhash<T: Client>(
     loop {
         let blockhash_updated = {
             let old_blockhash = *blockhash.read().unwrap();
-            if let Ok(new_blockhash) = client.get_new_latest_blockhash(&old_blockhash) {
+            if let Some(new_blockhash) = get_new_latest_blockhash(client, &old_blockhash) {
                 *blockhash.write().unwrap() = new_blockhash;
                 blockhash_last_updated = Instant::now();
                 true
@@ -888,18 +906,16 @@ pub fn generate_and_fund_keypairs<T: 'static + Client + Send + Sync>(
     //   pay for the transaction fees in a new run.
     let enough_lamports = 8 * lamports_per_account / 10;
     if first_keypair_balance < enough_lamports || last_keypair_balance < enough_lamports {
-        let single_sig_message = Message::new(
+        let single_sig_message = Message::new_with_blockhash(
             &[Instruction::new_with_bytes(
                 Pubkey::new_unique(),
                 &[],
                 vec![AccountMeta::new(Pubkey::new_unique(), true)],
             )],
             None,
+            &client.get_latest_blockhash().unwrap(),
         );
-        let blockhash = client.get_latest_blockhash().unwrap();
-        let max_fee = client
-            .get_fee_for_message(&blockhash, &single_sig_message)
-            .unwrap();
+        let max_fee = client.get_fee_for_message(&single_sig_message).unwrap();
         let extra_fees = extra * max_fee;
         let total_keypairs = keypairs.len() as u64 + 1; // Add one for funding keypair
         let total = lamports_per_account * total_keypairs + extra_fees;
@@ -932,12 +948,14 @@ pub fn generate_and_fund_keypairs<T: 'static + Client + Send + Sync>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_runtime::bank::Bank;
-    use solana_runtime::bank_client::BankClient;
-    use solana_sdk::client::SyncClient;
-    use solana_sdk::fee_calculator::FeeRateGovernor;
-    use solana_sdk::genesis_config::create_genesis_config;
+    use {
+        super::*,
+        solana_runtime::{bank::Bank, bank_client::BankClient},
+        solana_sdk::{
+            client::SyncClient, fee_calculator::FeeRateGovernor,
+            genesis_config::create_genesis_config,
+        },
+    };
 
     #[test]
     fn test_bench_tps_bank_client() {

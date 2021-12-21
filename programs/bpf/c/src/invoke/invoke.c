@@ -8,6 +8,7 @@
 #include <sol/log.h>
 #include <sol/assert.h>
 #include <sol/deserialize.h>
+#include <sol/return_data.h>
 
 static const uint8_t TEST_SUCCESS = 1;
 static const uint8_t TEST_PRIVILEGE_ESCALATION_SIGNER = 2;
@@ -25,7 +26,9 @@ static const uint8_t TEST_PRIVILEGE_DEESCALATION_ESCALATION_WRITABLE = 13;
 static const uint8_t TEST_WRITABLE_DEESCALATION_WRITABLE = 14;
 static const uint8_t TEST_NESTED_INVOKE_TOO_DEEP = 15;
 static const uint8_t TEST_EXECUTABLE_LAMPORTS = 16;
-static const uint8_t ADD_LAMPORTS = 17;
+static const uint8_t TEST_CALL_PRECOMPILE = 17;
+static const uint8_t ADD_LAMPORTS = 18;
+static const uint8_t TEST_RETURN_DATA_TOO_LARGE = 19;
 
 static const int MINT_INDEX = 0;
 static const int ARGUMENT_INDEX = 1;
@@ -38,6 +41,8 @@ static const int DERIVED_KEY2_INDEX = 7;
 static const int DERIVED_KEY3_INDEX = 8;
 static const int SYSTEM_PROGRAM_INDEX = 9;
 static const int FROM_INDEX = 10;
+static const int ED25519_PROGRAM_INDEX = 11;
+static const int INVOKE_PROGRAM_INDEX = 12;
 
 uint64_t do_nested_invokes(uint64_t num_nested_invokes,
                            SolAccountInfo *accounts, uint64_t num_accounts) {
@@ -71,7 +76,7 @@ uint64_t do_nested_invokes(uint64_t num_nested_invokes,
 extern uint64_t entrypoint(const uint8_t *input) {
   sol_log("Invoke C program");
 
-  SolAccountInfo accounts[12];
+  SolAccountInfo accounts[13];
   SolParameters params = (SolParameters){.ka = accounts};
 
   if (!sol_deserialize(input, &params, SOL_ARRAY_SIZE(accounts))) {
@@ -172,6 +177,32 @@ extern uint64_t entrypoint(const uint8_t *input) {
 
       sol_assert(SUCCESS ==
                  sol_invoke(&instruction, accounts, SOL_ARRAY_SIZE(accounts)));
+    }
+
+    sol_log("Test return data");
+    {
+      SolAccountMeta arguments[] = {{accounts[ARGUMENT_INDEX].key, true, true}};
+      uint8_t data[] = { SET_RETURN_DATA };
+      uint8_t buf[100];
+
+      const SolInstruction instruction = {accounts[INVOKED_PROGRAM_INDEX].key,
+                                          arguments, SOL_ARRAY_SIZE(arguments),
+                                          data, SOL_ARRAY_SIZE(data)};
+
+      // set some return data, so that the callee can check it is cleared
+      sol_set_return_data((uint8_t[]){1, 2, 3, 4}, 4);
+
+      sol_assert(SUCCESS ==
+                 sol_invoke(&instruction, accounts, SOL_ARRAY_SIZE(accounts)));
+
+      SolPubkey setter;
+
+      uint64_t ret = sol_get_return_data(data, sizeof(data), &setter);
+
+      sol_assert(ret == sizeof(RETURN_DATA_VAL));
+
+      sol_assert(sol_memcmp(data, RETURN_DATA_VAL, sizeof(RETURN_DATA_VAL)));
+      sol_assert(SolPubkey_same(&setter, accounts[INVOKED_PROGRAM_INDEX].key));
     }
 
     sol_log("Test create_program_address");
@@ -542,27 +573,43 @@ extern uint64_t entrypoint(const uint8_t *input) {
     break;
   }
   case TEST_EXECUTABLE_LAMPORTS: {
-      sol_log("Test executable lamports");
-      accounts[ARGUMENT_INDEX].executable = true;
-      *accounts[ARGUMENT_INDEX].lamports -= 1;
-      *accounts[DERIVED_KEY1_INDEX].lamports +=1;
-      SolAccountMeta arguments[] = {
-          {accounts[ARGUMENT_INDEX].key, true, false},
-          {accounts[DERIVED_KEY1_INDEX].key, true, false},
-      };
-      uint8_t data[] = {ADD_LAMPORTS, 0, 0, 0};
-      SolPubkey program_id;
-      sol_memcpy(&program_id, params.program_id, sizeof(SolPubkey));
-      const SolInstruction instruction = {&program_id,
-                                          arguments, SOL_ARRAY_SIZE(arguments),
-                                          data, SOL_ARRAY_SIZE(data)};
-      sol_invoke(&instruction, accounts, SOL_ARRAY_SIZE(accounts));
-      *accounts[ARGUMENT_INDEX].lamports += 1;
-      break;
+    sol_log("Test executable lamports");
+    accounts[ARGUMENT_INDEX].executable = true;
+    *accounts[ARGUMENT_INDEX].lamports -= 1;
+    *accounts[DERIVED_KEY1_INDEX].lamports +=1;
+    SolAccountMeta arguments[] = {
+      {accounts[ARGUMENT_INDEX].key, true, false},
+      {accounts[DERIVED_KEY1_INDEX].key, true, false},
+    };
+    uint8_t data[] = {ADD_LAMPORTS, 0, 0, 0};
+    SolPubkey program_id;
+    sol_memcpy(&program_id, params.program_id, sizeof(SolPubkey));
+    const SolInstruction instruction = {&program_id,
+					arguments, SOL_ARRAY_SIZE(arguments),
+					data, SOL_ARRAY_SIZE(data)};
+    sol_invoke(&instruction, accounts, SOL_ARRAY_SIZE(accounts));
+    *accounts[ARGUMENT_INDEX].lamports += 1;
+    break;
+  }
+  case TEST_CALL_PRECOMPILE: {
+    sol_log("Test calling precompile from cpi");
+    SolAccountMeta arguments[] = {};
+    uint8_t data[] = {};
+    const SolInstruction instruction = {accounts[ED25519_PROGRAM_INDEX].key,
+					arguments, SOL_ARRAY_SIZE(arguments),
+					data, SOL_ARRAY_SIZE(data)};
+    sol_invoke(&instruction, accounts, SOL_ARRAY_SIZE(accounts));
+    break;
   }
   case ADD_LAMPORTS: {
-      *accounts[0].lamports += 1;
-      break;
+    *accounts[0].lamports += 1;
+     break;
+  }
+  case TEST_RETURN_DATA_TOO_LARGE: {
+    sol_log("Test setting return data too long");
+    // The actual buffer doesn't matter, just pass null
+    sol_set_return_data(NULL, 1027);
+    break;
   }
 
   default:

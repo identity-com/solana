@@ -1,13 +1,17 @@
 #![feature(test)]
 
 extern crate test;
-use bincode::{deserialize, serialize};
-use solana_sdk::instruction::{AccountMeta, Instruction};
-use solana_sdk::message::{Message, SanitizedMessage};
-use solana_sdk::pubkey::{self, Pubkey};
-use solana_sdk::sysvar::instructions;
-use std::convert::TryFrom;
-use test::Bencher;
+use {
+    bincode::{deserialize, serialize},
+    solana_sdk::{
+        instruction::{AccountMeta, Instruction},
+        message::{Message, SanitizedMessage},
+        pubkey::{self, Pubkey},
+        sysvar::instructions,
+    },
+    std::convert::TryFrom,
+    test::Bencher,
+};
 
 fn make_instructions() -> Vec<Instruction> {
     let meta = AccountMeta::new(pubkey::new_rand(), false);
@@ -52,6 +56,7 @@ fn bench_manual_instruction_deserialize(b: &mut Bencher) {
     let serialized = message.serialize_instructions();
     b.iter(|| {
         for i in 0..instructions.len() {
+            #[allow(deprecated)]
             test::black_box(instructions::load_instruction_at(i, &serialized).unwrap());
         }
     });
@@ -65,6 +70,7 @@ fn bench_manual_instruction_deserialize_single(b: &mut Bencher) {
             .unwrap();
     let serialized = message.serialize_instructions();
     b.iter(|| {
+        #[allow(deprecated)]
         test::black_box(instructions::load_instruction_at(3, &serialized).unwrap());
     });
 }
