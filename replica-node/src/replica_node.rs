@@ -1,13 +1,15 @@
 use {
+    crate::accountsdb_repl_service::AccountsDbReplService,
     crossbeam_channel::unbounded,
     log::*,
-    solana_download_utils::download_snapshot,
+    solana_download_utils::download_snapshot_archive,
     solana_genesis_utils::download_then_check_genesis_hash,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_ledger::{
         blockstore::Blockstore, blockstore_db::AccessType, blockstore_processor,
         leader_schedule_cache::LeaderScheduleCache,
     },
+    solana_replica_lib::accountsdb_repl_client::AccountsDbReplClientServiceConfig,
     solana_rpc::{
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::{
@@ -19,14 +21,12 @@ use {
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
-        accounts_index::AccountSecondaryIndexes,
-        bank_forks::BankForks,
-        commitment::BlockCommitmentCache,
-        hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-        snapshot_config::{LastFullSnapshotSlot, SnapshotConfig},
-        snapshot_utils::{self, ArchiveFormat},
+        accounts_index::AccountSecondaryIndexes, bank_forks::BankForks,
+        commitment::BlockCommitmentCache, hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+        snapshot_config::SnapshotConfig, snapshot_package::SnapshotType, snapshot_utils,
     },
     solana_sdk::{clock::Slot, exit::Exit, genesis_config::GenesisConfig, hash::Hash},
+    solana_send_transaction_service::send_transaction_service,
     solana_streamer::socket::SocketAddrSpace,
     std::{
         fs,
@@ -40,7 +40,8 @@ use {
 };
 
 pub struct ReplicaNodeConfig {
-    pub rpc_source_addr: SocketAddr,
+    pub rpc_peer_addr: SocketAddr,
+    pub accountsdb_repl_peer_addr: Option<SocketAddr>,
     pub rpc_addr: SocketAddr,
     pub rpc_pubsub_addr: SocketAddr,
     pub ledger_path: PathBuf,
@@ -62,6 +63,7 @@ pub struct ReplicaNode {
     json_rpc_service: Option<JsonRpcService>,
     pubsub_service: Option<PubSubService>,
     optimistically_confirmed_bank_tracker: Option<OptimisticallyConfirmedBankTracker>,
+    accountsdb_repl_service: Option<AccountsDbReplService>,
 }
 
 // Struct maintaining information about banks
@@ -85,12 +87,14 @@ fn initialize_from_snapshot(
         replica_config.snapshot_archives_dir
     );
 
-    download_snapshot(
-        &replica_config.rpc_source_addr,
+    download_snapshot_archive(
+        &replica_config.rpc_peer_addr,
         &replica_config.snapshot_archives_dir,
         replica_config.snapshot_info,
+        SnapshotType::FullSnapshot,
+        snapshot_config.maximum_full_snapshot_archives_to_retain,
+        snapshot_config.maximum_incremental_snapshot_archives_to_retain,
         false,
-        snapshot_config.maximum_snapshots_to_retain,
         &mut None,
     )
     .unwrap();
@@ -115,7 +119,6 @@ fn initialize_from_snapshot(
     );
     let (bank0, _) = snapshot_utils::bank_from_snapshot_archives(
         &replica_config.account_paths,
-        &[],
         &snapshot_config.bank_snapshots_dir,
         &archive_info,
         None,
@@ -129,7 +132,8 @@ fn initialize_from_snapshot(
         process_options.accounts_db_test_hash_calculation,
         false,
         process_options.verify_index,
-        process_options.accounts_index_config,
+        process_options.accounts_db_config,
+        None,
     )
     .unwrap();
 
@@ -187,6 +191,8 @@ fn start_client_rpc_services(
 
     let subscriptions = Arc::new(RpcSubscriptions::new(
         &exit,
+        max_complete_transaction_status_slot.clone(),
+        blockstore.clone(),
         bank_forks.clone(),
         block_commitment_cache.clone(),
         optimistically_confirmed_bank.clone(),
@@ -205,6 +211,17 @@ fn start_client_rpc_services(
         ));
     }
 
+    let (trigger, pubsub_service) = PubSubService::new(
+        replica_config.pubsub_config.clone(),
+        &subscriptions,
+        replica_config.rpc_pubsub_addr,
+    );
+    replica_config
+        .replica_exit
+        .write()
+        .unwrap()
+        .register_exit(Box::new(move || trigger.cancel()));
+
     let (_bank_notification_sender, bank_notification_receiver) = unbounded();
     (
         Some(JsonRpcService::new(
@@ -222,24 +239,23 @@ fn start_client_rpc_services(
             None,
             rpc_override_health_check,
             optimistically_confirmed_bank.clone(),
-            0,
-            0,
+            send_transaction_service::Config {
+                retry_rate_ms: 0,
+                leader_forward_count: 0,
+                ..send_transaction_service::Config::default()
+            },
             max_slots,
             leader_schedule_cache.clone(),
             max_complete_transaction_status_slot,
         )),
-        Some(PubSubService::new(
-            replica_config.pubsub_config.clone(),
-            &subscriptions,
-            replica_config.rpc_pubsub_addr,
-            &exit,
-        )),
+        Some(pubsub_service),
         Some(OptimisticallyConfirmedBankTracker::new(
             bank_notification_receiver,
             &exit,
             bank_forks.clone(),
             optimistically_confirmed_bank.clone(),
-            subscriptions.clone(),
+            subscriptions,
+            None,
         )),
     )
 }
@@ -247,7 +263,7 @@ fn start_client_rpc_services(
 impl ReplicaNode {
     pub fn new(replica_config: ReplicaNodeConfig) -> Self {
         let genesis_config = download_then_check_genesis_hash(
-            &replica_config.rpc_source_addr,
+            &replica_config.rpc_peer_addr,
             &replica_config.ledger_path,
             None,
             MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
@@ -257,15 +273,11 @@ impl ReplicaNode {
         .unwrap();
 
         let snapshot_config = SnapshotConfig {
-            full_snapshot_archive_interval_slots: std::u64::MAX,
-            incremental_snapshot_archive_interval_slots: std::u64::MAX,
+            full_snapshot_archive_interval_slots: Slot::MAX,
+            incremental_snapshot_archive_interval_slots: Slot::MAX,
             snapshot_archives_dir: replica_config.snapshot_archives_dir.clone(),
             bank_snapshots_dir: replica_config.bank_snapshots_dir.clone(),
-            archive_format: ArchiveFormat::TarBzip2,
-            snapshot_version: snapshot_utils::SnapshotVersion::default(),
-            maximum_snapshots_to_retain:
-                snapshot_utils::DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            last_full_snapshot_slot: LastFullSnapshotSlot::default(),
+            ..SnapshotConfig::default()
         };
 
         let bank_info =
@@ -280,10 +292,31 @@ impl ReplicaNode {
                 &replica_config.socket_addr_space,
             );
 
+        let accountsdb_repl_client_config = AccountsDbReplClientServiceConfig {
+            worker_threads: 1,
+            replica_server_addr: replica_config.accountsdb_repl_peer_addr.unwrap(),
+        };
+
+        let last_replicated_slot = bank_info.bank_forks.read().unwrap().root_bank().slot();
+        info!(
+            "Starting AccountsDbReplService from slot {:?}",
+            last_replicated_slot
+        );
+        let accountsdb_repl_service = Some(
+            AccountsDbReplService::new(last_replicated_slot, accountsdb_repl_client_config)
+                .expect("Failed to start AccountsDb replication service"),
+        );
+
+        info!(
+            "Started AccountsDbReplService from slot {:?}",
+            last_replicated_slot
+        );
+
         ReplicaNode {
             json_rpc_service,
             pubsub_service,
             optimistically_confirmed_bank_tracker,
+            accountsdb_repl_service,
         }
     }
 
@@ -302,6 +335,11 @@ impl ReplicaNode {
             optimistically_confirmed_bank_tracker
                 .join()
                 .expect("optimistically_confirmed_bank_tracker");
+        }
+        if let Some(accountsdb_repl_service) = self.accountsdb_repl_service {
+            accountsdb_repl_service
+                .join()
+                .expect("accountsdb_repl_service");
         }
     }
 }

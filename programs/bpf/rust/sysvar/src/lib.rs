@@ -1,4 +1,4 @@
-//! @brief Example Rust-based BPF program that tests sysvar use
+//! Example Rust-based BPF program that tests sysvar use
 
 extern crate solana_program;
 #[allow(deprecated)]
@@ -7,6 +7,7 @@ use solana_program::{
     account_info::AccountInfo,
     entrypoint,
     entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
     msg,
     program_error::ProgramError,
     pubkey::Pubkey,
@@ -19,7 +20,7 @@ use solana_program::{
 entrypoint!(process_instruction);
 #[allow(clippy::unnecessary_wraps)]
 pub fn process_instruction(
-    _program_id: &Pubkey,
+    program_id: &Pubkey,
     accounts: &[AccountInfo],
     _instruction_data: &[u8],
 ) -> ProgramResult {
@@ -47,8 +48,28 @@ pub fn process_instruction(
     msg!("Instructions identifier:");
     sysvar::instructions::id().log();
     assert_eq!(*accounts[4].owner, sysvar::id());
-    let index = instructions::load_current_index(&accounts[4].try_borrow_data()?);
+    let index = instructions::load_current_index_checked(&accounts[4])?;
+    let instruction = instructions::load_instruction_at_checked(index as usize, &accounts[4])?;
     assert_eq!(0, index);
+    assert_eq!(
+        instruction,
+        Instruction::new_with_bytes(
+            *program_id,
+            &[] as &[u8],
+            vec![
+                AccountMeta::new(*accounts[0].key, true),
+                AccountMeta::new(*accounts[1].key, false),
+                AccountMeta::new_readonly(*accounts[2].key, false),
+                AccountMeta::new_readonly(*accounts[3].key, false),
+                AccountMeta::new_readonly(*accounts[4].key, false),
+                AccountMeta::new_readonly(*accounts[5].key, false),
+                AccountMeta::new_readonly(*accounts[6].key, false),
+                AccountMeta::new_readonly(*accounts[7].key, false),
+                AccountMeta::new_readonly(*accounts[8].key, false),
+                AccountMeta::new_readonly(*accounts[9].key, false),
+            ],
+        )
+    );
 
     // Recent Blockhashes
     #[allow(deprecated)]

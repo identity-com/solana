@@ -4,13 +4,13 @@
 extern crate solana_bpf_loader_program;
 
 pub mod bank_forks_utils;
+pub mod bigtable_delete;
 pub mod bigtable_upload;
 pub mod bigtable_upload_service;
 pub mod block_error;
 #[macro_use]
 pub mod blockstore;
 pub mod ancestor_iterator;
-pub mod block_cost_limits;
 pub mod blockstore_db;
 pub mod blockstore_meta;
 pub mod blockstore_processor;

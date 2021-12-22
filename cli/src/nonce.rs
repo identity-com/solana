@@ -1,41 +1,43 @@
-use crate::{
-    checks::{check_account_for_fee_with_commitment, check_unique_pubkeys},
-    cli::{
-        log_instruction_custom_error, log_instruction_custom_error_ex, CliCommand, CliCommandInfo,
-        CliConfig, CliError, ProcessResult,
+use {
+    crate::{
+        checks::{check_account_for_fee_with_commitment, check_unique_pubkeys},
+        cli::{
+            log_instruction_custom_error, log_instruction_custom_error_ex, CliCommand,
+            CliCommandInfo, CliConfig, CliError, ProcessResult,
+        },
+        feature::get_feature_is_active,
+        memo::WithMemo,
+        spend_utils::{resolve_spend_tx_and_check_account_balance, SpendAmount},
     },
-    feature::get_feature_is_active,
-    memo::WithMemo,
-    spend_utils::{resolve_spend_tx_and_check_account_balance, SpendAmount},
-};
-use clap::{App, Arg, ArgMatches, SubCommand};
-use solana_clap_utils::{
-    input_parsers::*,
-    input_validators::*,
-    keypair::{DefaultSigner, SignerIndex},
-    memo::{memo_arg, MEMO_ARG},
-    nonce::*,
-};
-use solana_cli_output::CliNonceAccount;
-use solana_client::{nonce_utils::*, rpc_client::RpcClient};
-use solana_remote_wallet::remote_wallet::RemoteWalletManager;
-use solana_sdk::{
-    account::Account,
-    feature_set::merge_nonce_error_into_system_error,
-    hash::Hash,
-    instruction::InstructionError,
-    message::Message,
-    nonce::{self, State},
-    pubkey::Pubkey,
-    system_instruction::{
-        advance_nonce_account, authorize_nonce_account, create_nonce_account,
-        create_nonce_account_with_seed, instruction_to_nonce_error, withdraw_nonce_account,
-        NonceError, SystemError,
+    clap::{App, Arg, ArgMatches, SubCommand},
+    solana_clap_utils::{
+        input_parsers::*,
+        input_validators::*,
+        keypair::{DefaultSigner, SignerIndex},
+        memo::{memo_arg, MEMO_ARG},
+        nonce::*,
     },
-    system_program,
-    transaction::{Transaction, TransactionError},
+    solana_cli_output::CliNonceAccount,
+    solana_client::{nonce_utils::*, rpc_client::RpcClient},
+    solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    solana_sdk::{
+        account::Account,
+        feature_set::merge_nonce_error_into_system_error,
+        hash::Hash,
+        instruction::InstructionError,
+        message::Message,
+        nonce::{self, State},
+        pubkey::Pubkey,
+        system_instruction::{
+            advance_nonce_account, authorize_nonce_account, create_nonce_account,
+            create_nonce_account_with_seed, instruction_to_nonce_error, withdraw_nonce_account,
+            NonceError, SystemError,
+        },
+        system_program,
+        transaction::{Transaction, TransactionError},
+    },
+    std::sync::Arc,
 };
-use std::sync::Arc;
 
 pub trait NonceSubCommands {
     fn nonce_subcommands(self) -> Self;
@@ -367,7 +369,6 @@ pub fn process_authorize_nonce_account(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
-        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
@@ -510,6 +511,7 @@ pub fn process_get_nonce(
     config: &CliConfig,
     nonce_account_pubkey: &Pubkey,
 ) -> ProcessResult {
+    #[allow(clippy::redundant_closure)]
     match get_account_with_commitment(rpc_client, nonce_account_pubkey, config.commitment)
         .and_then(|ref a| state_from_account(a))?
     {
@@ -551,7 +553,6 @@ pub fn process_new_nonce(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
-        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
@@ -627,7 +628,6 @@ pub fn process_withdraw_from_nonce_account(
     check_account_for_fee_with_commitment(
         rpc_client,
         &config.signers[0].pubkey(),
-        &latest_blockhash,
         &tx.message,
         config.commitment,
     )?;
@@ -650,19 +650,20 @@ pub fn process_withdraw_from_nonce_account(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{clap_app::get_clap_app, cli::parse_command};
-    use solana_sdk::{
-        account::Account,
-        account_utils::StateMut,
-        fee_calculator::FeeCalculator,
-        hash::hash,
-        nonce::{self, state::Versions, State},
-        nonce_account,
-        signature::{read_keypair_file, write_keypair, Keypair, Signer},
-        system_program,
+    use {
+        super::*,
+        crate::{clap_app::get_clap_app, cli::parse_command},
+        solana_sdk::{
+            account::Account,
+            account_utils::StateMut,
+            hash::hash,
+            nonce::{self, state::Versions, State},
+            nonce_account,
+            signature::{read_keypair_file, write_keypair, Keypair, Signer},
+            system_program,
+        },
+        tempfile::NamedTempFile,
     };
-    use tempfile::NamedTempFile;
 
     fn make_tmp_file() -> (String, NamedTempFile) {
         let tmp_file = NamedTempFile::new().unwrap();
@@ -918,11 +919,11 @@ mod tests {
     fn test_check_nonce_account() {
         let blockhash = Hash::default();
         let nonce_pubkey = solana_sdk::pubkey::new_rand();
-        let data = Versions::new_current(State::Initialized(nonce::state::Data {
-            authority: nonce_pubkey,
+        let data = Versions::new_current(State::Initialized(nonce::state::Data::new(
+            nonce_pubkey,
             blockhash,
-            fee_calculator: FeeCalculator::default(),
-        }));
+            0,
+        )));
         let valid = Account::new_data(1, &data, &system_program::ID);
         assert!(check_nonce_account(&valid.unwrap(), &nonce_pubkey, &blockhash).is_ok());
 
@@ -940,11 +941,11 @@ mod tests {
             assert_eq!(err, Error::InvalidAccountData,);
         }
 
-        let data = Versions::new_current(State::Initialized(nonce::state::Data {
-            authority: nonce_pubkey,
-            blockhash: hash(b"invalid"),
-            fee_calculator: FeeCalculator::default(),
-        }));
+        let data = Versions::new_current(State::Initialized(nonce::state::Data::new(
+            nonce_pubkey,
+            hash(b"invalid"),
+            0,
+        )));
         let invalid_hash = Account::new_data(1, &data, &system_program::ID);
         if let CliError::InvalidNonce(err) =
             check_nonce_account(&invalid_hash.unwrap(), &nonce_pubkey, &blockhash).unwrap_err()
@@ -952,11 +953,11 @@ mod tests {
             assert_eq!(err, Error::InvalidHash,);
         }
 
-        let data = Versions::new_current(State::Initialized(nonce::state::Data {
-            authority: solana_sdk::pubkey::new_rand(),
+        let data = Versions::new_current(State::Initialized(nonce::state::Data::new(
+            solana_sdk::pubkey::new_rand(),
             blockhash,
-            fee_calculator: FeeCalculator::default(),
-        }));
+            0,
+        )));
         let invalid_authority = Account::new_data(1, &data, &system_program::ID);
         if let CliError::InvalidNonce(err) =
             check_nonce_account(&invalid_authority.unwrap(), &nonce_pubkey, &blockhash).unwrap_err()
@@ -997,11 +998,7 @@ mod tests {
         let mut nonce_account = nonce_account::create_account(1).into_inner();
         assert_eq!(state_from_account(&nonce_account), Ok(State::Uninitialized));
 
-        let data = nonce::state::Data {
-            authority: Pubkey::new(&[1u8; 32]),
-            blockhash: Hash::new(&[42u8; 32]),
-            fee_calculator: FeeCalculator::new(42),
-        };
+        let data = nonce::state::Data::new(Pubkey::new(&[1u8; 32]), Hash::new(&[42u8; 32]), 42);
         nonce_account
             .set_state(&Versions::new_current(State::Initialized(data.clone())))
             .unwrap();
@@ -1030,11 +1027,7 @@ mod tests {
             Err(Error::InvalidStateForOperation)
         );
 
-        let data = nonce::state::Data {
-            authority: Pubkey::new(&[1u8; 32]),
-            blockhash: Hash::new(&[42u8; 32]),
-            fee_calculator: FeeCalculator::new(42),
-        };
+        let data = nonce::state::Data::new(Pubkey::new(&[1u8; 32]), Hash::new(&[42u8; 32]), 42);
         nonce_account
             .set_state(&Versions::new_current(State::Initialized(data.clone())))
             .unwrap();

@@ -26,16 +26,6 @@ solana transaction-count
 View the [metrics dashboard](https://metrics.solana.com:3000/d/monitor/cluster-telemetry) for more
 detail on cluster activity.
 
-## Confirm your Installation
-
-Try running following command to join the gossip network and view all the other
-nodes in the cluster:
-
-```bash
-solana-gossip spy --entrypoint entrypoint.devnet.solana.com:8001
-# Press ^C to exit
-```
-
 ## Enabling CUDA
 
 If your machine has a GPU with CUDA installed \(Linux-only currently\), include
@@ -239,6 +229,23 @@ solana balance --lamports
 
 Read more about the [difference between SOL and lamports here](../introduction.md#what-are-sols).
 
+## Create Authorized Withdrawer Account
+
+If you haven't already done so, create an authorized-withdrawer keypair to be used
+as the ultimate authority over your validator.  This keypair will have the
+authority to withdraw from your vote account, and will have the additional
+authority to change all other aspects of your vote account.  Needless to say,
+this is a very important keypair as anyone who possesses it can make any
+changes to your vote account, including taking ownership of it permanently.
+So it is very important to keep your authorized-withdrawer keypair in a safe
+location.  It does not need to be stored on your validator, and should not be
+stored anywhere from where it could be accessed by unauthorized parties.  To
+create your authorized-withdrawer keypair:
+
+```bash
+solana-keygen new -o ~/authorized-withdrawer-keypair.json
+```
+
 ## Create Vote Account
 
 If you haven’t already done so, create a vote-account keypair and create the
@@ -253,8 +260,10 @@ The following command can be used to create your vote account on the blockchain
 with all the default options:
 
 ```bash
-solana create-vote-account ~/vote-account-keypair.json ~/validator-keypair.json
+solana create-vote-account ~/vote-account-keypair.json ~/validator-keypair.json ~/authorized-withdrawer-keypair.json
 ```
+
+Remember to move your authorized withdrawer keypair into a very secure location after running the above command.
 
 Read more about [creating and managing a vote account](vote-accounts.md).
 
@@ -299,11 +308,11 @@ The ledger will be placed in the `ledger/` directory by default, use the
 > `solana-validator --identity ASK ... --authorized-voter ASK ...`
 > and you will be prompted to enter your seed phrases and optional passphrase.
 
-Confirm your validator connected to the network by opening a new terminal and
+Confirm your validator is connected to the network by opening a new terminal and
 running:
 
 ```bash
-solana-gossip spy --entrypoint entrypoint.devnet.solana.com:8001
+solana gossip
 ```
 
 If your validator is connected, its public key and IP address will appear in the list.

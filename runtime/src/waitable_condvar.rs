@@ -15,6 +15,9 @@ impl WaitableCondvar {
     pub fn notify_all(&self) {
         self.event.notify_all();
     }
+    pub fn notify_one(&self) {
+        self.event.notify_one();
+    }
     pub fn wait_timeout(&self, timeout: Duration) -> bool {
         let lock = self.mutex.lock().unwrap();
         let res = self.event.wait_timeout(lock, timeout).unwrap();
@@ -27,13 +30,15 @@ impl WaitableCondvar {
 
 #[cfg(test)]
 pub mod tests {
-    use super::*;
-    use std::{
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
+    use {
+        super::*,
+        std::{
+            sync::{
+                atomic::{AtomicBool, Ordering},
+                Arc,
+            },
+            thread::Builder,
         },
-        thread::Builder,
     };
     #[ignore]
     #[test]

@@ -3,8 +3,8 @@ use {
     crate::cluster_nodes::ClusterNodesCache,
     itertools::Itertools,
     solana_entry::entry::Entry,
+    solana_gossip::cluster_info::DATA_PLANE_FANOUT,
     solana_ledger::shred::Shredder,
-    solana_runtime::blockhash_queue::BlockhashQueue,
     solana_sdk::{
         hash::Hash,
         signature::{Keypair, Signature, Signer},
@@ -26,20 +26,16 @@ pub struct BroadcastDuplicatesConfig {
 #[derive(Clone)]
 pub(super) struct BroadcastDuplicatesRun {
     config: BroadcastDuplicatesConfig,
-    // Local queue for broadcast to track which duplicate blockhashes we've sent
-    duplicate_queue: BlockhashQueue,
-    // Buffer for duplicate entries
-    duplicate_entries_buffer: Vec<Entry>,
-    last_duplicate_entry_hash: Hash,
     current_slot: Slot,
     next_shred_index: u32,
+    next_code_index: u32,
     shred_version: u16,
     recent_blockhash: Option<Hash>,
     prev_entry_hash: Option<Hash>,
     num_slots_broadcasted: usize,
     cluster_nodes_cache: Arc<ClusterNodesCache<BroadcastStage>>,
-    original_last_data_shreds: HashSet<Signature>,
-    partition_last_data_shreds: HashSet<Signature>,
+    original_last_data_shreds: Arc<Mutex<HashSet<Signature>>>,
+    partition_last_data_shreds: Arc<Mutex<HashSet<Signature>>>,
 }
 
 impl BroadcastDuplicatesRun {
@@ -50,18 +46,16 @@ impl BroadcastDuplicatesRun {
         ));
         Self {
             config,
-            duplicate_queue: BlockhashQueue::default(),
-            duplicate_entries_buffer: vec![],
             next_shred_index: u32::MAX,
-            last_duplicate_entry_hash: Hash::default(),
+            next_code_index: 0,
             shred_version,
             current_slot: 0,
             recent_blockhash: None,
             prev_entry_hash: None,
             num_slots_broadcasted: 0,
             cluster_nodes_cache,
-            original_last_data_shreds: HashSet::default(),
-            partition_last_data_shreds: HashSet::default(),
+            original_last_data_shreds: Arc::<Mutex<HashSet<Signature>>>::default(),
+            partition_last_data_shreds: Arc::<Mutex<HashSet<Signature>>>::default(),
         }
     }
 }
@@ -82,6 +76,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
 
         if bank.slot() != self.current_slot {
             self.next_shred_index = 0;
+            self.next_code_index = 0;
             self.current_slot = bank.slot();
             self.prev_entry_hash = None;
             self.num_slots_broadcasted += 1;
@@ -162,22 +157,26 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         )
         .expect("Expected to create a new shredder");
 
-        let (data_shreds, _, _) = shredder.entries_to_shreds(
+        let (data_shreds, coding_shreds) = shredder.entries_to_shreds(
             keypair,
             &receive_results.entries,
             last_tick_height == bank.max_tick_height() && last_entries.is_none(),
             self.next_shred_index,
+            self.next_code_index,
         );
 
         self.next_shred_index += data_shreds.len() as u32;
+        if let Some(index) = coding_shreds.iter().map(Shred::index).max() {
+            self.next_code_index = index + 1;
+        }
         let last_shreds = last_entries.map(|(original_last_entry, duplicate_extra_last_entries)| {
-            let (original_last_data_shred, _, _) =
-                shredder.entries_to_shreds(keypair, &[original_last_entry], true, self.next_shred_index);
+            let (original_last_data_shred, _) =
+                shredder.entries_to_shreds(keypair, &[original_last_entry], true, self.next_shred_index, self.next_code_index);
 
-            let (partition_last_data_shred, _, _) =
+            let (partition_last_data_shred, _) =
                 // Don't mark the last shred as last so that validators won't know that
                 // they've gotten all the shreds, and will continue trying to repair
-                shredder.entries_to_shreds(keypair, &duplicate_extra_last_entries, true, self.next_shred_index);
+                shredder.entries_to_shreds(keypair, &duplicate_extra_last_entries, true, self.next_shred_index, self.next_code_index);
 
                 let sigs: Vec<_> = partition_last_data_shred.iter().map(|s| (s.signature(), s.index())).collect();
                 info!(
@@ -205,16 +204,19 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         // Special handling of last shred to cause partition
         if let Some((original_last_data_shred, partition_last_data_shred)) = last_shreds {
             let pubkey = keypair.pubkey();
-            self.original_last_data_shreds
-                .extend(original_last_data_shred.iter().map(|shred| {
+            self.original_last_data_shreds.lock().unwrap().extend(
+                original_last_data_shred.iter().map(|shred| {
                     assert!(shred.verify(&pubkey));
                     shred.signature()
-                }));
-            self.partition_last_data_shreds
-                .extend(partition_last_data_shred.iter().map(|shred| {
+                }),
+            );
+            self.partition_last_data_shreds.lock().unwrap().extend(
+                partition_last_data_shred.iter().map(|shred| {
+                    info!("adding {} to partition set", shred.signature());
                     assert!(shred.verify(&pubkey));
                     shred.signature()
-                }));
+                }),
+            );
             let original_last_data_shred = Arc::new(original_last_data_shred);
             let partition_last_data_shred = Arc::new(partition_last_data_shred);
 
@@ -252,6 +254,12 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             (bank_forks.root_bank(), bank_forks.working_bank())
         };
         let self_pubkey = cluster_info.id();
+        let nodes: Vec<_> = cluster_info
+            .all_peers()
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect();
+
         // Creat cluster partition.
         let cluster_partition: HashSet<Pubkey> = {
             let mut cumilative_stake = 0;
@@ -269,6 +277,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                 .map(|(pubkey, _)| *pubkey)
                 .collect()
         };
+
         // Broadcast data
         let cluster_nodes =
             self.cluster_nodes_cache
@@ -277,13 +286,20 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         let packets: Vec<_> = shreds
             .iter()
             .filter_map(|shred| {
-                let seed = shred.seed(Some(self_pubkey), &root_bank);
-                let node = cluster_nodes.get_broadcast_peer(seed)?;
+                let addr = cluster_nodes
+                    .get_broadcast_addrs(shred, &root_bank, DATA_PLANE_FANOUT, socket_addr_space)
+                    .first()
+                    .copied()?;
+                let node = nodes.iter().find(|node| node.tvu == addr)?;
                 if !socket_addr_space.check(&node.tvu) {
                     return None;
                 }
-                if self.original_last_data_shreds.contains(&shred.signature()) {
-                    // If the node is within the partitin skip the shred.
+                if self
+                    .original_last_data_shreds
+                    .lock()
+                    .unwrap()
+                    .remove(&shred.signature())
+                {
                     if cluster_partition.contains(&node.id) {
                         info!(
                             "skipping node {} for original shred index {}, slot {}",
@@ -293,22 +309,33 @@ impl BroadcastRun for BroadcastDuplicatesRun {
                         );
                         return None;
                     }
+                } else if self
+                    .partition_last_data_shreds
+                    .lock()
+                    .unwrap()
+                    .remove(&shred.signature())
+                {
+                    // If the shred is part of the partition, broadcast it directly to the
+                    // partition node. This is to account for cases when the partition stake
+                    // is small such as in `test_duplicate_shreds_broadcast_leader()`, then
+                    // the partition node is never selected by get_broadcast_peer()
+                    return Some(
+                        cluster_partition
+                            .iter()
+                            .filter_map(|pubkey| {
+                                let tvu = cluster_info
+                                    .lookup_contact_info(pubkey, |contact_info| contact_info.tvu)?;
+                                Some((&shred.payload, tvu))
+                            })
+                            .collect(),
+                    );
                 }
-                if self.partition_last_data_shreds.contains(&shred.signature()) {
-                    // If the node is not within the partitin skip the shred.
-                    if !cluster_partition.contains(&node.id) {
-                        info!(
-                            "skipping node {} for partition shred index {}, slot {}",
-                            node.id,
-                            shred.index(),
-                            shred.slot()
-                        );
-                        return None;
-                    }
-                }
-                Some((&shred.payload, node.tvu))
+
+                Some(vec![(&shred.payload, node.tvu)])
             })
+            .flatten()
             .collect();
+
         if let Err(SendPktsError::IoError(ioerr, _)) = batch_send(sock, &packets) {
             return Err(Error::Io(ioerr));
         }

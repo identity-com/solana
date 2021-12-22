@@ -32,7 +32,6 @@ pub struct StandardBroadcastRun {
     last_datapoint_submit: Arc<AtomicInterval>,
     num_batches: usize,
     cluster_nodes_cache: Arc<ClusterNodesCache<BroadcastStage>>,
-    last_peer_update: Arc<AtomicInterval>,
 }
 
 impl StandardBroadcastRun {
@@ -52,7 +51,6 @@ impl StandardBroadcastRun {
             last_datapoint_submit: Arc::default(),
             num_batches: 0,
             cluster_nodes_cache,
-            last_peer_update: Arc::new(AtomicInterval::default()),
         }
     }
 
@@ -94,7 +92,7 @@ impl StandardBroadcastRun {
                     stats,
                 );
                 shreds.insert(0, shred);
-                self.report_and_reset_stats();
+                self.report_and_reset_stats(true);
                 self.unfinished_slot = None;
                 shreds
             }
@@ -121,17 +119,16 @@ impl StandardBroadcastRun {
                 None => (0, 0),
             },
         };
-        let (data_shreds, next_shred_index) =
-            Shredder::new(slot, parent_slot, reference_tick, self.shred_version)
-                .unwrap()
-                .entries_to_data_shreds(
-                    keypair,
-                    entries,
-                    is_slot_end,
-                    next_shred_index,
-                    fec_set_offset,
-                    process_stats,
-                );
+        let data_shreds = Shredder::new(slot, parent_slot, reference_tick, self.shred_version)
+            .unwrap()
+            .entries_to_data_shreds(
+                keypair,
+                entries,
+                is_slot_end,
+                next_shred_index,
+                fec_set_offset,
+                process_stats,
+            );
         let mut data_shreds_buffer = match &mut self.unfinished_slot {
             Some(state) => {
                 assert_eq!(state.slot, slot);
@@ -140,8 +137,17 @@ impl StandardBroadcastRun {
             None => Vec::default(),
         };
         data_shreds_buffer.extend(data_shreds.clone());
+        let next_shred_index = match data_shreds.iter().map(Shred::index).max() {
+            Some(index) => index + 1,
+            None => next_shred_index,
+        };
+        let next_code_index = match &self.unfinished_slot {
+            Some(state) => state.next_code_index,
+            None => 0,
+        };
         self.unfinished_slot = Some(UnfinishedSlotInfo {
             next_shred_index,
+            next_code_index,
             slot,
             parent: parent_slot,
             data_shreds_buffer,
@@ -242,6 +248,7 @@ impl StandardBroadcastRun {
                     "Old broadcast start time for previous slot must exist if the previous slot
                  was interrupted",
                 ),
+                was_interrupted: true,
             });
             let shreds = Arc::new(prev_slot_shreds);
             debug_assert!(shreds.iter().all(|shred| shred.slot() == slot));
@@ -264,6 +271,7 @@ impl StandardBroadcastRun {
             slot_start_ts: self
                 .slot_broadcast_start
                 .expect("Start timestamp must exist for a slot if we're broadcasting the slot"),
+            was_interrupted: false,
         });
         get_leader_schedule_time.stop();
 
@@ -299,7 +307,7 @@ impl StandardBroadcastRun {
         self.process_shreds_stats.update(&process_stats);
 
         if last_tick_height == bank.max_tick_height() {
-            self.report_and_reset_stats();
+            self.report_and_reset_stats(false);
             self.unfinished_slot = None;
         }
 
@@ -382,35 +390,59 @@ impl StandardBroadcastRun {
         transmit_shreds_stats.update(new_transmit_shreds_stats, broadcast_shred_batch_info);
     }
 
-    fn report_and_reset_stats(&mut self) {
+    fn report_and_reset_stats(&mut self, was_interrupted: bool) {
         let stats = &self.process_shreds_stats;
         let unfinished_slot = self.unfinished_slot.as_ref().unwrap();
-        datapoint_info!(
-            "broadcast-process-shreds-stats",
-            ("slot", unfinished_slot.slot as i64, i64),
-            ("shredding_time", stats.shredding_elapsed, i64),
-            ("receive_time", stats.receive_elapsed, i64),
-            (
-                "num_data_shreds",
-                unfinished_slot.next_shred_index as i64,
-                i64
-            ),
-            (
-                "slot_broadcast_time",
-                self.slot_broadcast_start.unwrap().elapsed().as_micros() as i64,
-                i64
-            ),
-            (
-                "get_leader_schedule_time",
-                stats.get_leader_schedule_elapsed,
-                i64
-            ),
-            ("serialize_shreds_time", stats.serialize_elapsed, i64),
-            ("gen_data_time", stats.gen_data_elapsed, i64),
-            ("gen_coding_time", stats.gen_coding_elapsed, i64),
-            ("sign_coding_time", stats.sign_coding_elapsed, i64),
-            ("coding_send_time", stats.coding_send_elapsed, i64),
-        );
+        if was_interrupted {
+            datapoint_info!(
+                "broadcast-process-shreds-interrupted-stats",
+                ("slot", unfinished_slot.slot as i64, i64),
+                ("shredding_time", stats.shredding_elapsed, i64),
+                ("receive_time", stats.receive_elapsed, i64),
+                (
+                    "num_data_shreds",
+                    unfinished_slot.next_shred_index as i64,
+                    i64
+                ),
+                (
+                    "get_leader_schedule_time",
+                    stats.get_leader_schedule_elapsed,
+                    i64
+                ),
+                ("serialize_shreds_time", stats.serialize_elapsed, i64),
+                ("gen_data_time", stats.gen_data_elapsed, i64),
+                ("gen_coding_time", stats.gen_coding_elapsed, i64),
+                ("sign_coding_time", stats.sign_coding_elapsed, i64),
+                ("coding_send_time", stats.coding_send_elapsed, i64),
+            );
+        } else {
+            datapoint_info!(
+                "broadcast-process-shreds-stats",
+                ("slot", unfinished_slot.slot as i64, i64),
+                ("shredding_time", stats.shredding_elapsed, i64),
+                ("receive_time", stats.receive_elapsed, i64),
+                (
+                    "num_data_shreds",
+                    unfinished_slot.next_shred_index as i64,
+                    i64
+                ),
+                (
+                    "slot_broadcast_time",
+                    self.slot_broadcast_start.unwrap().elapsed().as_micros() as i64,
+                    i64
+                ),
+                (
+                    "get_leader_schedule_time",
+                    stats.get_leader_schedule_elapsed,
+                    i64
+                ),
+                ("serialize_shreds_time", stats.serialize_elapsed, i64),
+                ("gen_data_time", stats.gen_data_elapsed, i64),
+                ("gen_coding_time", stats.gen_coding_elapsed, i64),
+                ("sign_coding_time", stats.sign_coding_elapsed, i64),
+                ("coding_send_time", stats.coding_send_elapsed, i64),
+            );
+        }
         self.process_shreds_stats.reset();
     }
 }
@@ -422,23 +454,40 @@ fn make_coding_shreds(
     is_slot_end: bool,
     stats: &mut ProcessShredsStats,
 ) -> Vec<Shred> {
-    let data_shreds = match unfinished_slot {
-        None => Vec::default(),
-        Some(unfinished_slot) => {
-            let size = unfinished_slot.data_shreds_buffer.len();
-            // Consume a multiple of 32, unless this is the slot end.
-            let offset = if is_slot_end {
-                0
-            } else {
-                size % MAX_DATA_SHREDS_PER_FEC_BLOCK as usize
-            };
-            unfinished_slot
-                .data_shreds_buffer
-                .drain(0..size - offset)
-                .collect()
-        }
+    let unfinished_slot = match unfinished_slot {
+        None => return Vec::default(),
+        Some(state) => state,
     };
-    Shredder::data_shreds_to_coding_shreds(keypair, &data_shreds, is_slot_end, stats).unwrap()
+    let data_shreds: Vec<_> = {
+        let size = unfinished_slot.data_shreds_buffer.len();
+        // Consume a multiple of 32, unless this is the slot end.
+        let offset = if is_slot_end {
+            0
+        } else {
+            size % MAX_DATA_SHREDS_PER_FEC_BLOCK as usize
+        };
+        unfinished_slot
+            .data_shreds_buffer
+            .drain(0..size - offset)
+            .collect()
+    };
+    let shreds = Shredder::data_shreds_to_coding_shreds(
+        keypair,
+        &data_shreds,
+        is_slot_end,
+        unfinished_slot.next_code_index,
+        stats,
+    )
+    .unwrap();
+    if let Some(index) = shreds
+        .iter()
+        .filter(|shred| shred.is_code())
+        .map(Shred::index)
+        .max()
+    {
+        unfinished_slot.next_code_index = unfinished_slot.next_code_index.max(index + 1);
+    }
+    shreds
 }
 
 impl BroadcastRun for StandardBroadcastRun {
@@ -484,22 +533,22 @@ impl BroadcastRun for StandardBroadcastRun {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use solana_entry::entry::create_ticks;
-    use solana_gossip::cluster_info::{ClusterInfo, Node};
-    use solana_ledger::genesis_utils::create_genesis_config;
-    use solana_ledger::{
-        blockstore::Blockstore, get_tmp_ledger_path, shred::max_ticks_per_n_shreds,
+    use {
+        super::*,
+        solana_entry::entry::create_ticks,
+        solana_gossip::cluster_info::{ClusterInfo, Node},
+        solana_ledger::{
+            blockstore::Blockstore, genesis_utils::create_genesis_config, get_tmp_ledger_path,
+            shred::max_ticks_per_n_shreds,
+        },
+        solana_runtime::bank::Bank,
+        solana_sdk::{
+            genesis_config::GenesisConfig,
+            signature::{Keypair, Signer},
+        },
+        solana_streamer::socket::SocketAddrSpace,
+        std::{ops::Deref, sync::Arc, time::Duration},
     };
-    use solana_runtime::bank::Bank;
-    use solana_sdk::{
-        genesis_config::GenesisConfig,
-        signature::{Keypair, Signer},
-    };
-    use solana_streamer::socket::SocketAddrSpace;
-    use std::ops::Deref;
-    use std::sync::Arc;
-    use std::time::Duration;
 
     #[allow(clippy::type_complexity)]
     fn setup(
@@ -555,6 +604,7 @@ mod test {
         let parent = 0;
         run.unfinished_slot = Some(UnfinishedSlotInfo {
             next_shred_index,
+            next_code_index: 17,
             slot,
             parent,
             data_shreds_buffer: Vec::default(),
@@ -572,7 +622,7 @@ mod test {
             .expect("Expected a shred that signals an interrupt");
 
         // Validate the shred
-        assert_eq!(shred.parent(), parent);
+        assert_eq!(shred.parent().unwrap(), parent);
         assert_eq!(shred.slot(), slot);
         assert_eq!(shred.index(), next_shred_index);
         assert!(shred.is_data());

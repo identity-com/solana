@@ -17,8 +17,10 @@ pub mod validator_info;
 use {
     crate::parse_account_data::{parse_account_data, AccountAdditionalData, ParsedAccount},
     solana_sdk::{
-        account::ReadableAccount, account::WritableAccount, clock::Epoch,
-        fee_calculator::FeeCalculator, pubkey::Pubkey,
+        account::{ReadableAccount, WritableAccount},
+        clock::Epoch,
+        fee_calculator::FeeCalculator,
+        pubkey::Pubkey,
     },
     std::{
         io::{Read, Write},
@@ -49,7 +51,7 @@ pub enum UiAccountData {
     Binary(String, UiAccountEncoding),
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum UiAccountEncoding {
     Binary, // Legacy. Retained for RPC backwards compatibility
@@ -179,7 +181,7 @@ impl Default for UiFeeCalculator {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiDataSliceConfig {
     pub offset: usize,
@@ -202,8 +204,10 @@ fn slice_data(data: &[u8], data_slice_config: Option<UiDataSliceConfig>) -> &[u8
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use solana_sdk::account::{Account, AccountSharedData};
+    use {
+        super::*,
+        solana_sdk::account::{Account, AccountSharedData},
+    };
 
     #[test]
     fn test_slice_data() {

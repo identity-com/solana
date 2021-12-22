@@ -6,7 +6,7 @@ use {
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
         rpc::{
-            rpc_accounts::*, rpc_bank::*, rpc_deprecated_v1_7::*, rpc_deprecated_v1_8::*,
+            rpc_accounts::*, rpc_bank::*, rpc_deprecated_v1_7::*, rpc_deprecated_v1_9::*,
             rpc_full::*, rpc_minimal::*, rpc_obsolete_v1_7::*, *,
         },
         rpc_health::*,
@@ -24,6 +24,7 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_metrics::inc_new_counter_info,
+    solana_perf::thread::renice_this_thread,
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::{
         bank_forks::BankForks, commitment::BlockCommitmentCache,
@@ -34,13 +35,16 @@ use {
         exit::Exit, genesis_config::DEFAULT_GENESIS_DOWNLOAD_PATH, hash::Hash,
         native_token::lamports_to_sol, pubkey::Pubkey,
     },
-    solana_send_transaction_service::send_transaction_service::SendTransactionService,
+    solana_send_transaction_service::send_transaction_service::{self, SendTransactionService},
     std::{
         collections::HashSet,
         net::SocketAddr,
         path::{Path, PathBuf},
-        sync::atomic::{AtomicBool, AtomicU64, Ordering},
-        sync::{mpsc::channel, Arc, Mutex, RwLock},
+        sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc::channel,
+            Arc, Mutex, RwLock,
+        },
         thread::{self, Builder, JoinHandle},
     },
     tokio_util::codec::{BytesCodec, FramedRead},
@@ -59,7 +63,8 @@ pub struct JsonRpcService {
 
 struct RpcRequestMiddleware {
     ledger_path: PathBuf,
-    snapshot_archive_path_regex: Regex,
+    full_snapshot_archive_path_regex: Regex,
+    incremental_snapshot_archive_path_regex: Regex,
     snapshot_config: Option<SnapshotConfig>,
     bank_forks: Arc<RwLock<BankForks>>,
     health: Arc<RpcHealth>,
@@ -74,8 +79,12 @@ impl RpcRequestMiddleware {
     ) -> Self {
         Self {
             ledger_path,
-            snapshot_archive_path_regex: Regex::new(
-                r"^/snapshot-\d+-[[:alnum:]]+\.(tar|tar\.bz2|tar\.zst|tar\.gz)$",
+            full_snapshot_archive_path_regex: Regex::new(
+                snapshot_utils::FULL_SNAPSHOT_ARCHIVE_FILENAME_REGEX,
+            )
+            .unwrap(),
+            incremental_snapshot_archive_path_regex: Regex::new(
+                snapshot_utils::INCREMENTAL_SNAPSHOT_ARCHIVE_FILENAME_REGEX,
             )
             .unwrap(),
             snapshot_config,
@@ -108,16 +117,23 @@ impl RpcRequestMiddleware {
     }
 
     fn is_file_get_path(&self, path: &str) -> bool {
-        match path {
-            DEFAULT_GENESIS_DOWNLOAD_PATH => true,
-            _ => {
-                if self.snapshot_config.is_some() {
-                    self.snapshot_archive_path_regex.is_match(path)
-                } else {
-                    false
-                }
-            }
+        if path == DEFAULT_GENESIS_DOWNLOAD_PATH {
+            return true;
         }
+
+        if self.snapshot_config.is_none() {
+            return false;
+        }
+
+        let starting_character = '/';
+        if !path.starts_with(starting_character) {
+            return false;
+        }
+
+        let path = path.trim_start_matches(starting_character);
+
+        self.full_snapshot_archive_path_regex.is_match(path)
+            || self.incremental_snapshot_archive_path_regex.is_match(path)
     }
 
     #[cfg(unix)]
@@ -282,11 +298,10 @@ impl JsonRpcService {
         genesis_hash: Hash,
         ledger_path: &Path,
         validator_exit: Arc<RwLock<Exit>>,
-        trusted_validators: Option<HashSet<Pubkey>>,
+        known_validators: Option<HashSet<Pubkey>>,
         override_health_check: Arc<AtomicBool>,
         optimistically_confirmed_bank: Arc<RwLock<OptimisticallyConfirmedBank>>,
-        send_transaction_retry_ms: u64,
-        send_transaction_leader_forward_count: u64,
+        send_transaction_service_config: send_transaction_service::Config,
         max_slots: Arc<MaxSlots>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         current_transaction_status_slot: Arc<AtomicU64>,
@@ -294,10 +309,11 @@ impl JsonRpcService {
         info!("rpc bound to {:?}", rpc_addr);
         info!("rpc configuration: {:?}", config);
         let rpc_threads = 1.max(config.rpc_threads);
+        let rpc_niceness_adj = config.rpc_niceness_adj;
 
         let health = Arc::new(RpcHealth::new(
             cluster_info.clone(),
-            trusted_validators,
+            known_validators,
             config.health_check_slot_distance,
             override_health_check,
         ));
@@ -317,6 +333,7 @@ impl JsonRpcService {
         let runtime = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(rpc_threads)
+                .on_thread_start(move || renice_this_thread(rpc_niceness_adj).unwrap())
                 .thread_name("sol-rpc-el")
                 .enable_all()
                 .build()
@@ -342,6 +359,7 @@ impl JsonRpcService {
                                 bigtable_ledger_storage.clone(),
                                 blockstore.clone(),
                                 block_commitment_cache.clone(),
+                                current_transaction_status_slot.clone(),
                                 exit_bigtable_ledger_upload_service.clone(),
                             )))
                         } else {
@@ -383,13 +401,12 @@ impl JsonRpcService {
 
         let leader_info =
             poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
-        let _send_transaction_service = Arc::new(SendTransactionService::new(
+        let _send_transaction_service = Arc::new(SendTransactionService::new_with_config(
             tpu_address,
             &bank_forks,
             leader_info,
             receiver,
-            send_transaction_retry_ms,
-            send_transaction_leader_forward_count,
+            send_transaction_service_config,
         ));
 
         #[cfg(test)]
@@ -401,6 +418,8 @@ impl JsonRpcService {
         let thread_hdl = Builder::new()
             .name("solana-jsonrpc".to_string())
             .spawn(move || {
+                renice_this_thread(rpc_niceness_adj).unwrap();
+
                 let mut io = MetaIoHandler::default();
 
                 io.extend_with(rpc_minimal::MinimalImpl.to_delegate());
@@ -409,7 +428,7 @@ impl JsonRpcService {
                     io.extend_with(rpc_accounts::AccountsDataImpl.to_delegate());
                     io.extend_with(rpc_full::FullImpl.to_delegate());
                     io.extend_with(rpc_deprecated_v1_7::DeprecatedV1_7Impl.to_delegate());
-                    io.extend_with(rpc_deprecated_v1_8::DeprecatedV1_8Impl.to_delegate());
+                    io.extend_with(rpc_deprecated_v1_9::DeprecatedV1_9Impl.to_delegate());
                 }
                 if obsolete_v1_7_api {
                     io.extend_with(rpc_obsolete_v1_7::ObsoleteV1_7Impl.to_delegate());
@@ -484,19 +503,14 @@ mod tests {
         crate::rpc::create_validator_exit,
         solana_gossip::{
             contact_info::ContactInfo,
-            crds_value::{CrdsData, CrdsValue, SnapshotHash},
+            crds::GossipRoute,
+            crds_value::{CrdsData, CrdsValue, SnapshotHashes},
         },
         solana_ledger::{
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
             get_tmp_ledger_path,
         },
-        solana_runtime::{
-            bank::Bank,
-            snapshot_config::LastFullSnapshotSlot,
-            snapshot_utils::{
-                ArchiveFormat, SnapshotVersion, DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-            },
-        },
+        solana_runtime::bank::Bank,
         solana_sdk::{
             genesis_config::{ClusterType, DEFAULT_GENESIS_ARCHIVE},
             signature::Signer,
@@ -551,8 +565,11 @@ mod tests {
             None,
             Arc::new(AtomicBool::new(false)),
             optimistically_confirmed_bank,
-            1000,
-            1,
+            send_transaction_service::Config {
+                retry_rate_ms: 1000,
+                leader_forward_count: 1,
+                ..send_transaction_service::Config::default()
+            },
             Arc::new(MaxSlots::default()),
             Arc::new(LeaderScheduleCache::default()),
             Arc::new(AtomicU64::default()),
@@ -602,16 +619,7 @@ mod tests {
         );
         let rrm_with_snapshot_config = RpcRequestMiddleware::new(
             PathBuf::from("/"),
-            Some(SnapshotConfig {
-                full_snapshot_archive_interval_slots: 0,
-                incremental_snapshot_archive_interval_slots: u64::MAX,
-                snapshot_archives_dir: PathBuf::from("/"),
-                bank_snapshots_dir: PathBuf::from("/"),
-                archive_format: ArchiveFormat::TarBzip2,
-                snapshot_version: SnapshotVersion::default(),
-                maximum_snapshots_to_retain: DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
-                last_full_snapshot_slot: LastFullSnapshotSlot::default(),
-            }),
+            Some(SnapshotConfig::default()),
             bank_forks,
             RpcHealth::stub(),
         );
@@ -624,6 +632,10 @@ mod tests {
         assert!(!rrm.is_file_get_path(
             "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
         ));
+        assert!(!rrm.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
+
         assert!(rrm_with_snapshot_config.is_file_get_path(
             "/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
         ));
@@ -635,11 +647,32 @@ mod tests {
         assert!(rrm_with_snapshot_config
             .is_file_get_path("/snapshot-100-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"));
 
+        assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
+        assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.zst"
+        ));
+        assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.gz"
+        ));
+        assert!(rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar"
+        ));
+
         assert!(!rrm_with_snapshot_config.is_file_get_path(
             "/snapshot-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
         ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-notaslotnumber-200-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
+        assert!(!rrm_with_snapshot_config.is_file_get_path(
+            "/incremental-snapshot-100-notaslotnumber-AvFf9oS8A8U78HdjT9YG2sTTThLHJZmhaMn2g8vkWYnr.tar.bz2"
+        ));
 
         assert!(!rrm_with_snapshot_config.is_file_get_path("../../../test/snapshot-123-xxx.tar"));
+        assert!(!rrm_with_snapshot_config
+            .is_file_get_path("../../../test/incremental-snapshot-123-456-xxx.tar"));
 
         assert!(!rrm.is_file_get_path("/"));
         assert!(!rrm.is_file_get_path(".."));
@@ -708,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn test_health_check_with_no_trusted_validators() {
+    fn test_health_check_with_no_known_validators() {
         let rm = RpcRequestMiddleware::new(
             PathBuf::from("/"),
             None,
@@ -719,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn test_health_check_with_trusted_validators() {
+    fn test_health_check_with_known_validators() {
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::default(),
             Arc::new(Keypair::new()),
@@ -727,7 +760,7 @@ mod tests {
         ));
         let health_check_slot_distance = 123;
         let override_health_check = Arc::new(AtomicBool::new(false));
-        let trusted_validators = vec![
+        let known_validators = vec![
             solana_sdk::pubkey::new_rand(),
             solana_sdk::pubkey::new_rand(),
             solana_sdk::pubkey::new_rand(),
@@ -735,17 +768,17 @@ mod tests {
 
         let health = Arc::new(RpcHealth::new(
             cluster_info.clone(),
-            Some(trusted_validators.clone().into_iter().collect()),
+            Some(known_validators.clone().into_iter().collect()),
             health_check_slot_distance,
             override_health_check.clone(),
         ));
 
         let rm = RpcRequestMiddleware::new(PathBuf::from("/"), None, create_bank_forks(), health);
 
-        // No account hashes for this node or any trusted validators
+        // No account hashes for this node or any known validators
         assert_eq!(rm.health_check(), "unknown");
 
-        // No account hashes for any trusted validators
+        // No account hashes for any known validators
         cluster_info.push_accounts_hashes(vec![(1000, Hash::default()), (900, Hash::default())]);
         cluster_info.flush_push_queue();
         assert_eq!(rm.health_check(), "unknown");
@@ -755,15 +788,15 @@ mod tests {
         assert_eq!(rm.health_check(), "ok");
         override_health_check.store(false, Ordering::Relaxed);
 
-        // This node is ahead of the trusted validators
+        // This node is ahead of the known validators
         cluster_info
             .gossip
             .crds
             .write()
             .unwrap()
             .insert(
-                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHash::new(
-                    trusted_validators[0],
+                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHashes::new(
+                    known_validators[0],
                     vec![
                         (1, Hash::default()),
                         (1001, Hash::default()),
@@ -771,38 +804,41 @@ mod tests {
                     ],
                 ))),
                 1,
+                GossipRoute::LocalMessage,
             )
             .unwrap();
         assert_eq!(rm.health_check(), "ok");
 
-        // Node is slightly behind the trusted validators
+        // Node is slightly behind the known validators
         cluster_info
             .gossip
             .crds
             .write()
             .unwrap()
             .insert(
-                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHash::new(
-                    trusted_validators[1],
+                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHashes::new(
+                    known_validators[1],
                     vec![(1000 + health_check_slot_distance - 1, Hash::default())],
                 ))),
                 1,
+                GossipRoute::LocalMessage,
             )
             .unwrap();
         assert_eq!(rm.health_check(), "ok");
 
-        // Node is far behind the trusted validators
+        // Node is far behind the known validators
         cluster_info
             .gossip
             .crds
             .write()
             .unwrap()
             .insert(
-                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHash::new(
-                    trusted_validators[2],
+                CrdsValue::new_unsigned(CrdsData::AccountsHashes(SnapshotHashes::new(
+                    known_validators[2],
                     vec![(1000 + health_check_slot_distance, Hash::default())],
                 ))),
                 1,
+                GossipRoute::LocalMessage,
             )
             .unwrap();
         assert_eq!(rm.health_check(), "behind");

@@ -600,15 +600,9 @@ impl SyncClient for ThinClient {
             .map_err(|e| e.into())
     }
 
-    fn get_fee_for_message(&self, blockhash: &Hash, message: &Message) -> TransportResult<u64> {
+    fn get_fee_for_message(&self, message: &Message) -> TransportResult<u64> {
         self.rpc_client()
-            .get_fee_for_message(blockhash, message)
-            .map_err(|e| e.into())
-    }
-
-    fn get_new_latest_blockhash(&self, blockhash: &Hash) -> TransportResult<Hash> {
-        self.rpc_client()
-            .get_new_latest_blockhash(blockhash)
+            .get_fee_for_message(message)
             .map_err(|e| e.into())
     }
 }
@@ -673,8 +667,7 @@ pub fn create_client_with_timeout(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rayon::prelude::*;
+    use {super::*, rayon::prelude::*};
 
     #[test]
     fn test_client_optimizer() {

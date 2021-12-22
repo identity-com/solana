@@ -30,24 +30,23 @@ gives a convenient interface for the RPC methods.
 - [getClusterNodes](jsonrpc-api.md#getclusternodes)
 - [getEpochInfo](jsonrpc-api.md#getepochinfo)
 - [getEpochSchedule](jsonrpc-api.md#getepochschedule)
-- [getFeeCalculatorForBlockhash](jsonrpc-api.md#getfeecalculatorforblockhash)
-- [getFeeRateGovernor](jsonrpc-api.md#getfeerategovernor)
-- [getFees](jsonrpc-api.md#getfees)
+- [getFeeForMessage](jsonrpc-api.md#getfeeformessage)
 - [getFirstAvailableBlock](jsonrpc-api.md#getfirstavailableblock)
 - [getGenesisHash](jsonrpc-api.md#getgenesishash)
 - [getHealth](jsonrpc-api.md#gethealth)
+- [getHighestSnapshotSlot](jsonrpc-api.md#gethighestsnapshotslot)
 - [getIdentity](jsonrpc-api.md#getidentity)
 - [getInflationGovernor](jsonrpc-api.md#getinflationgovernor)
 - [getInflationRate](jsonrpc-api.md#getinflationrate)
 - [getInflationReward](jsonrpc-api.md#getinflationreward)
 - [getLargestAccounts](jsonrpc-api.md#getlargestaccounts)
+- [getLatestBlockhash](jsonrpc-api.md#getlatestblockhash)
 - [getLeaderSchedule](jsonrpc-api.md#getleaderschedule)
 - [getMaxRetransmitSlot](jsonrpc-api.md#getmaxretransmitslot)
 - [getMaxShredInsertSlot](jsonrpc-api.md#getmaxshredinsertslot)
 - [getMinimumBalanceForRentExemption](jsonrpc-api.md#getminimumbalanceforrentexemption)
 - [getMultipleAccounts](jsonrpc-api.md#getmultipleaccounts)
 - [getProgramAccounts](jsonrpc-api.md#getprogramaccounts)
-- [getRecentBlockhash](jsonrpc-api.md#getrecentblockhash)
 - [getRecentPerformanceSamples](jsonrpc-api.md#getrecentperformancesamples)
 - [getSignaturesForAddress](jsonrpc-api.md#getsignaturesforaddress)
 - [getSignatureStatuses](jsonrpc-api.md#getsignaturestatuses)
@@ -55,7 +54,6 @@ gives a convenient interface for the RPC methods.
 - [getSlotLeader](jsonrpc-api.md#getslotleader)
 - [getSlotLeaders](jsonrpc-api.md#getslotleaders)
 - [getStakeActivation](jsonrpc-api.md#getstakeactivation)
-- [getSnapshotSlot](jsonrpc-api.md#getsnapshotslot)
 - [getSupply](jsonrpc-api.md#getsupply)
 - [getTokenAccountBalance](jsonrpc-api.md#gettokenaccountbalance)
 - [getTokenAccountsByDelegate](jsonrpc-api.md#gettokenaccountsbydelegate)
@@ -66,6 +64,7 @@ gives a convenient interface for the RPC methods.
 - [getTransactionCount](jsonrpc-api.md#gettransactioncount)
 - [getVersion](jsonrpc-api.md#getversion)
 - [getVoteAccounts](jsonrpc-api.md#getvoteaccounts)
+- [isBlockhashValid](jsonrpc-api.md#isblockhashvalid)
 - [minimumLedgerSlot](jsonrpc-api.md#minimumledgerslot)
 - [requestAirdrop](jsonrpc-api.md#requestairdrop)
 - [sendTransaction](jsonrpc-api.md#sendtransaction)
@@ -86,6 +85,8 @@ gives a convenient interface for the RPC methods.
 
 Unstable methods may see breaking changes in patch releases and may not be supported in perpetuity.
 
+- [blockSubscribe](jsonrpc-api.md#blocksubscribe---unstable-disabled-by-default)
+- [blockUnsubscribe](jsonrpc-api.md#blockunsubscribe)
 - [slotsUpdatesSubscribe](jsonrpc-api.md#slotsupdatessubscribe---unstable)
 - [slotsUpdatesUnsubscribe](jsonrpc-api.md#slotsupdatesunsubscribe)
 - [voteSubscribe](jsonrpc-api.md#votesubscribe---unstable-disabled-by-default)
@@ -97,7 +98,12 @@ Unstable methods may see breaking changes in patch releases and may not be suppo
 - [getConfirmedBlocks](jsonrpc-api.md#getconfirmedblocks)
 - [getConfirmedBlocksWithLimit](jsonrpc-api.md#getconfirmedblockswithlimit)
 - [getConfirmedSignaturesForAddress2](jsonrpc-api.md#getconfirmedsignaturesforaddress2)
-- [getConfirmedTransaction](jsonrpc-api.md#getconfirmedtransaction)
+- [getConfirmedTransaction](jsonrpc-api.md#getconfirmedtransact)
+- [getFeeCalculatorForBlockhash](jsonrpc-api.md#getfeecalculatorforblockhash)
+- [getFeeRateGovernor](jsonrpc-api.md#getfeerategovernor)
+- [getFees](jsonrpc-api.md#getfees)
+- [getRecentBlockhash](jsonrpc-api.md#getrecentblockhash)
+- [getSnapshotSlot](jsonrpc-api.md#getsnapshotslot)
 
 ## Request Formatting
 
@@ -158,8 +164,8 @@ recognized this block as finalized
   - It does not count votes on descendants of a block, only direct votes on that block.
   - This confirmation level also upholds "optimistic confirmation" guarantees in
     release 1.3 and onwards.
-- `"processed"` - the node will query its most recent block.  Note that the block
-may not be complete.
+- `"processed"` - the node will query its most recent block. Note that the block
+may still be skipped by the cluster.
 
 For processing many dependent transactions in series, it's recommended to use
 `"confirmed"` commitment, which balances speed with rollback safety.
@@ -359,9 +365,6 @@ Result:
 
 ### getBlock
 
-**NEW: This method is only available in solana-core v1.7 or newer. Please use
-[getConfirmedBlock](jsonrpc-api.md#getconfirmedblock) for solana-core v1.6**
-
 Returns identity and transaction information about a confirmed block in the ledger
 
 #### Parameters:
@@ -390,10 +393,10 @@ The result field will be an object with the following fields:
       - `fee: <u64>` - fee this transaction was charged, as u64 integer
       - `preBalances: <array>` - array of u64 account balances from before the transaction was processed
       - `postBalances: <array>` - array of u64 account balances after the transaction was processed
-      - `innerInstructions: <array|undefined>` - List of [inner instructions](#inner-instructions-structure) or omitted if inner instruction recording was not yet enabled during this transaction
+      - `innerInstructions: <array|null>` - List of [inner instructions](#inner-instructions-structure) or `null` if inner instruction recording was not enabled during this transaction
       - `preTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from before the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
       - `postTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from after the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
-      - `logMessages: <array>` - array of string log messages or omitted if log message recording was not yet enabled during this transaction
+      - `logMessages: <array|null>` - array of string log messages or `null` if log message recording was not enabled during this transaction
       - DEPRECATED: `status: <object>` - Transaction status
         - `"Ok": <null>` - Transaction was successful
         - `"Err": <ERR>` - Transaction failed with TransactionError
@@ -516,8 +519,8 @@ Result:
         "meta": {
           "err": null,
           "fee": 5000,
-          "innerInstructions": [],
-          "logMessages": [],
+          "innerInstructions": null,
+          "logMessages": null,
           "postBalances": [
             499998932500,
             26858640,
@@ -764,9 +767,6 @@ Result:
 
 ### getBlocks
 
-**NEW: This method is only available in solana-core v1.7 or newer. Please use
-[getConfirmedBlocks](jsonrpc-api.md#getconfirmedblocks) for solana-core v1.6**
-
 Returns a list of confirmed blocks between two slots
 
 #### Parameters:
@@ -797,9 +797,6 @@ Result:
 ```
 
 ### getBlocksWithLimit
-
-**NEW: This method is only available in solana-core v1.7 or newer. Please use
-[getConfirmedBlocksWithLimit](jsonrpc-api.md#getconfirmedblockswithlimit) for solana-core v1.6**
 
 Returns a list of confirmed blocks starting at the given slot
 
@@ -873,12 +870,12 @@ None
 The result field will be an array of JSON objects, each with the following sub fields:
 
 - `pubkey: <string>` - Node public key, as base-58 encoded string
-- `gossip: <string>` - Gossip network address for the node
-- `tpu: <string>` - TPU network address for the node
-- `rpc: <string>|null` - JSON RPC network address for the node, or `null` if the JSON RPC service is not enabled
-- `version: <string>|null` - The software version of the node, or `null` if the version information is not available
-- `featureSet: <number>|null` - The unique identifier of the node's feature set
-- `shredVersion: <number>|null` - The shred version the node has been configured to use
+- `gossip: <string | null>` - Gossip network address for the node
+- `tpu: <string | null>` - TPU network address for the node
+- `rpc: <string | null>` - JSON RPC network address for the node, or `null` if the JSON RPC service is not enabled
+- `version: <string | null>` - The software version of the node, or `null` if the version information is not available
+- `featureSet: <u32 | null >` - The unique identifier of the node's feature set
+- `shredVersion: <u16 | null>` - The shred version the node has been configured to use
 
 #### Example:
 
@@ -923,6 +920,7 @@ The result field will be an object with the following fields:
 - `epoch: <u64>`, the current epoch
 - `slotIndex: <u64>`, the current slot relative to the start of the current epoch
 - `slotsInEpoch: <u64>`, the number of slots in this epoch
+- `transactionCount: <u64 | null>`, total number of transactions processed without error since genesis
 
 #### Example:
 
@@ -942,7 +940,8 @@ Result:
     "blockHeight": 166500,
     "epoch": 27,
     "slotIndex": 2790,
-    "slotsInEpoch": 8192
+    "slotsInEpoch": 8192,
+    "transactionCount": 22661093
   },
   "id": 1
 }
@@ -990,154 +989,47 @@ Result:
 }
 ```
 
-### getFeeCalculatorForBlockhash
+### getFeeForMessage
 
-Returns the fee calculator associated with the query blockhash, or `null` if the blockhash has expired
+**NEW: This method is only available in solana-core v1.9 or newer. Please use
+[getFees](jsonrpc-api.md#getfees) for solana-core v1.8**
+
+Get the fee the network will charge for a particular Message
 
 #### Parameters:
 
-- `<string>` - query blockhash as a Base58 encoded string
-- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
+- `blockhash: <string>` - The blockhash of this block, as base-58 encoded string
+- `message: <string>` - Base-64 encoded Message
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment) (used for retrieving blockhash)
 
 #### Results:
 
-The result will be an RpcResponse JSON object with `value` equal to:
-
-- `<null>` - if the query blockhash has expired
-- `<object>` - otherwise, a JSON object containing:
-  - `feeCalculator: <object>`, `FeeCalculator` object describing the cluster fee rate at the queried blockhash
+- `<u64>` - Fee corresponding to the message at the specified blockhash
 
 #### Example:
 
 Request:
 ```bash
 curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
-  {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "getFeeCalculatorForBlockhash",
-    "params": [
-      "GJxqhuxcgfn5Tcj6y3f8X4FeCDd2RQ6SnEMo1AAxrPRZ"
-    ]
-  }
+{
+  "id":1,
+  "jsonrpc":"2.0",
+  "method":"getFeeForMessage",
+  "params":[
+    "FxVKTksYShgKjnFG3RQUEo2AEesDb4ZHGY3NGJ7KHd7F","AQABAgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQAA",
+    {
+      "commitment":"processed"
+    }
+  ]
+}
 '
 ```
 
 Result:
 ```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "context": {
-      "slot": 221
-    },
-    "value": {
-      "feeCalculator": {
-        "lamportsPerSignature": 5000
-      }
-    }
-  },
-  "id": 1
-}
+{"jsonrpc":"2.0","result":{"context":{"slot":5068},"value":5000},"id":1}
 ```
 
-### getFeeRateGovernor
-
-Returns the fee rate governor information from the root bank
-
-#### Parameters:
-
-None
-
-#### Results:
-
-The `result` field will be an `object` with the following fields:
-
-- `burnPercent: <u8>`, Percentage of fees collected to be destroyed
-- `maxLamportsPerSignature: <u64>`, Largest value `lamportsPerSignature` can attain for the next slot
-- `minLamportsPerSignature: <u64>`, Smallest value `lamportsPerSignature` can attain for the next slot
-- `targetLamportsPerSignature: <u64>`, Desired fee rate for the cluster
-- `targetSignaturesPerSlot: <u64>`, Desired signature rate for the cluster
-
-#### Example:
-
-Request:
-```bash
-curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
-  {"jsonrpc":"2.0","id":1, "method":"getFeeRateGovernor"}
-'
-```
-
-Result:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "context": {
-      "slot": 54
-    },
-    "value": {
-      "feeRateGovernor": {
-        "burnPercent": 50,
-        "maxLamportsPerSignature": 100000,
-        "minLamportsPerSignature": 5000,
-        "targetLamportsPerSignature": 10000,
-        "targetSignaturesPerSlot": 20000
-      }
-    }
-  },
-  "id": 1
-}
-```
-
-### getFees
-
-Returns a recent block hash from the ledger, a fee schedule that can be used to
-compute the cost of submitting a transaction using it, and the last slot in
-which the blockhash will be valid.
-
-#### Parameters:
-
-- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
-
-#### Results:
-
-The result will be an RpcResponse JSON object with `value` set to a JSON object with the following fields:
-
-- `blockhash: <string>` - a Hash as base-58 encoded string
-- `feeCalculator: <object>` - FeeCalculator object, the fee schedule for this block hash
-- `lastValidSlot: <u64>` - DEPRECATED - this value is inaccurate and should not be relied upon
-- `lastValidBlockHeight: <u64>` - last [block height](../../terminology.md#block-height) at which a blockhash will be valid
-
-#### Example:
-
-Request:
-```bash
-curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
-  {"jsonrpc":"2.0","id":1, "method":"getFees"}
-'
-```
-
-Result:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "context": {
-      "slot": 1
-    },
-    "value": {
-      "blockhash": "CSymwgTNX1j3E4qhKfJAUE41nBWEwXufoYryPbkde5RR",
-      "feeCalculator": {
-        "lamportsPerSignature": 5000
-      },
-      "lastValidSlot": 297,
-      "lastValidBlockHeight": 296
-    }
-  },
-  "id": 1
-}
-```
 
 ### getFirstAvailableBlock
 
@@ -1254,6 +1146,46 @@ Unhealthy Result (if additional information is available)
 }
 ```
 
+### getHighestSnapshotSlot
+
+**NEW: This method is only available in solana-core v1.9 or newer. Please use
+[getSnapshotSlot](jsonrpc-api.md#getsnapshotslot) for solana-core v1.8**
+
+Returns the highest slot information that the node has snapshots for.
+
+This will find the highest full snapshot slot, and the highest incremental
+snapshot slot _based on_ the full snapshot slot, if there is one.
+
+#### Parameters:
+
+None
+
+#### Results:
+
+- `<object>`
+  - `full: <u64>` - Highest full snapshot slot
+  - `incremental: <u64 | undefined>` - Highest incremental snapshot slot _based on_ `full`
+
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {"jsonrpc":"2.0","id":1,"method":"getHighestSnapshotSlot"}
+'
+```
+
+Result:
+```json
+{"jsonrpc":"2.0","result":{"full":100,"incremental":110},"id":1}
+```
+
+Result when the node has no snapshot:
+```json
+{"jsonrpc":"2.0","error":{"code":-32008,"message":"No snapshot"},"id":1}
+```
+
 ### getIdentity
 
 Returns the identity pubkey for the current node
@@ -1340,7 +1272,7 @@ The result field will be a JSON object with the following fields:
 - `total: <f64>`, total inflation
 - `validator: <f64>`, inflation allocated to validators
 - `foundation: <f64>`, inflation allocated to the foundation
-- `epoch: <f64>`, epoch for which these values are valid
+- `epoch: <u64>`, epoch for which these values are valid
 
 #### Example:
 
@@ -1520,6 +1452,58 @@ Result:
     ]
   },
   "id": 1
+}
+```
+
+### getLatestBlockhash
+
+**NEW: This method is only available in solana-core v1.9 or newer. Please use
+[getRecentBlockhash](jsonrpc-api.md#getrecentblockhash) for solana-core v1.8**
+
+Returns the latest blockhash
+
+#### Parameters:
+
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment) (used for retrieving blockhash)
+
+#### Results:
+
+- `RpcResponse<object>` - RpcResponse JSON object with `value` field set to a JSON object including:
+- `blockhash: <string>` - a Hash as base-58 encoded string
+- `lastValidBlockHeight: u64` - Slot
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {
+    "id":1,
+    "jsonrpc":"2.0",
+    "method":"getLatestBlockhash",
+    "params":[
+      {
+        "commitment":"processed"
+      }
+    ]
+  }
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc":"2.0",
+  "result":{
+    "context":{
+      "slot":2792
+    },
+    "value":{
+      "blockhash":"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+      "lastValidBlockHeight":3090
+    }
+  },
+  "id":1
 }
 ```
 
@@ -1924,50 +1908,6 @@ Result:
 }
 ```
 
-### getRecentBlockhash
-
-Returns a recent block hash from the ledger, and a fee schedule that can be used to compute the cost of submitting a transaction using it.
-
-#### Parameters:
-
-- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
-
-#### Results:
-
-An RpcResponse containing a JSON object consisting of a string blockhash and FeeCalculator JSON object.
-
-- `RpcResponse<object>` - RpcResponse JSON object with `value` field set to a JSON object including:
-- `blockhash: <string>` - a Hash as base-58 encoded string
-- `feeCalculator: <object>` - FeeCalculator object, the fee schedule for this block hash
-
-#### Example:
-
-Request:
-```bash
-curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
-  {"jsonrpc":"2.0","id":1, "method":"getRecentBlockhash"}
-'
-```
-
-Result:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "context": {
-      "slot": 1
-    },
-    "value": {
-      "blockhash": "CSymwgTNX1j3E4qhKfJAUE41nBWEwXufoYryPbkde5RR",
-      "feeCalculator": {
-        "lamportsPerSignature": 5000
-      }
-    }
-  },
-  "id": 1
-}
-```
-
 ### getRecentPerformanceSamples
 
 Returns a list of recent performance samples, in reverse slot order. Performance samples are taken every 60 seconds and
@@ -2030,46 +1970,12 @@ Result:
 }
 ```
 
-
-### getSnapshotSlot
-
-Returns the highest slot that the node has a snapshot for
-
-#### Parameters:
-
-None
-
-#### Results:
-
-- `<u64>` - Snapshot slot
-
-#### Example:
-
-Request:
-```bash
-curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
-  {"jsonrpc":"2.0","id":1, "method":"getSnapshotSlot"}
-'
-```
-
-Result:
-```json
-{"jsonrpc":"2.0","result":100,"id":1}
-```
-
-Result when the node has no snapshot:
-```json
-{"jsonrpc":"2.0","error":{"code":-32008,"message":"No snapshot"},"id":1}
-```
-
 ### getSignaturesForAddress
 
-**NEW: This method is only available in solana-core v1.7 or newer. Please use
-[getConfirmedSignaturesForAddress2](jsonrpc-api.md#getconfirmedsignaturesforaddress2) for solana-core v1.6**
 
-
-Returns confirmed signatures for transactions involving an
-address backwards in time from the provided signature or most recent confirmed block
+Returns signatures for confirmed transactions that include the given address in
+their `accountKeys` list. Returns signatures backwards in time from the
+provided signature or most recent confirmed block
 
 #### Parameters:
 * `<string>` - account address as base-58 encoded string
@@ -2569,37 +2475,41 @@ Result:
     },
     "value": [
       {
-        "data": {
-          "program": "spl-token",
-          "parsed": {
-            "info": {
-              "tokenAmount": {
-                "amount": "1",
-                "decimals": 1,
-                "uiAmount": 0.1,
-                "uiAmountString": "0.1",
+        "account": {
+          "data": {
+            "program": "spl-token",
+            "parsed": {
+              "info": {
+                "tokenAmount": {
+                  "amount": "1",
+                  "decimals": 1,
+                  "uiAmount": 0.1,
+                  "uiAmountString": "0.1"
+                },
+                "delegate": "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T",
+                "delegatedAmount": {
+                  "amount": "1",
+                  "decimals": 1,
+                  "uiAmount": 0.1,
+                  "uiAmountString": "0.1"
+                },
+                "state": "initialized",
+                "isNative": false,
+                "mint": "3wyAj7Rt1TWVPZVteFJPLa26JmLvdb1CAKEFZm3NY75E",
+                "owner": "CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYeFwPCQH9TD"
               },
-              "delegate": "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T",
-              "delegatedAmount": {
-                "amount": "1",
-                "decimals": 1,
-                "uiAmount": 0.1,
-                "uiAmountString": "0.1",
-              },
-              "state": "initialized",
-              "isNative": false,
-              "mint": "3wyAj7Rt1TWVPZVteFJPLa26JmLvdb1CAKEFZm3NY75E",
-              "owner": "CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYeFwPCQH9TD"
+              "type": "account"
             },
-            "type": "account"
+            "space": 165
           },
-          "space": 165
+          "executable": false,
+          "lamports": 1726080,
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "rentEpoch": 4
         },
-        "executable": false,
-        "lamports": 1726080,
-        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-        "rentEpoch": 4
+        "pubkey": "28YTZEwqtMHWrhWcvv34se7pjS7wctgqzCPB3gReCFKp"
       }
+
     ]
   },
   "id": 1
@@ -2667,37 +2577,40 @@ Result:
     },
     "value": [
       {
-        "data": {
-          "program": "spl-token",
-          "parsed": {
-            "accountType": "account",
-            "info": {
-              "tokenAmount": {
-                "amount": "1",
-                "decimals": 1,
-                "uiAmount": 0.1,
-                "uiAmountString": "0.1",
+        "account": {
+          "data": {
+              "program": "spl-token",
+              "parsed": {
+                "accountType": "account",
+                "info": {
+                  "tokenAmount": {
+                    "amount": "1",
+                    "decimals": 1,
+                    "uiAmount": 0.1,
+                    "uiAmountString": "0.1"
+                  },
+                  "delegate": "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T",
+                  "delegatedAmount": {
+                    "amount": "1",
+                    "decimals": 1,
+                    "uiAmount": 0.1,
+                    "uiAmountString": "0.1"
+                  },
+                  "state": "initialized",
+                  "isNative": false,
+                  "mint": "3wyAj7Rt1TWVPZVteFJPLa26JmLvdb1CAKEFZm3NY75E",
+                  "owner": "4Qkev8aNZcqFNSRhQzwyLMFSsi94jHqE8WNVTJzTP99F"
+                },
+                "type": "account"
               },
-              "delegate": "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T",
-              "delegatedAmount": {
-                "amount": "1",
-                "decimals": 1,
-                "uiAmount": 0.1,
-                "uiAmountString": "0.1",
-              },
-              "state": "initialized",
-              "isNative": false,
-              "mint": "3wyAj7Rt1TWVPZVteFJPLa26JmLvdb1CAKEFZm3NY75E",
-              "owner": "4Qkev8aNZcqFNSRhQzwyLMFSsi94jHqE8WNVTJzTP99F"
+              "space": 165
             },
-            "type": "account"
-          },
-          "space": 165
+            "executable": false,
+            "lamports": 1726080,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "rentEpoch": 4
         },
-        "executable": false,
-        "lamports": 1726080,
-        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-        "rentEpoch": 4
+        "pubkey": "C2gJg6tKpQs41PRS1nC8aw3ZKNZK3HQQZGVrDFDup5nx"
       }
     ]
   },
@@ -2808,9 +2721,6 @@ Result:
 
 ### getTransaction
 
-**NEW: This method is only available in solana-core v1.7 or newer. Please use
-[getConfirmedTransaction](jsonrpc-api.md#getconfirmedtransaction) for solana-core v1.6**
-
 Returns transaction details for a confirmed transaction
 
 #### Parameters:
@@ -2829,14 +2739,14 @@ Returns transaction details for a confirmed transaction
   - `transaction: <object|[string,encoding]>` - [Transaction](#transaction-structure) object, either in JSON format or encoded binary data, depending on encoding parameter
   - `blockTime: <i64 | null>` - estimated production time, as Unix timestamp (seconds since the Unix epoch) of when the transaction was processed. null if not available
   - `meta: <object | null>` - transaction status metadata object:
-    - `err: <object | null>` - Error if transaction failed, null if transaction succeeded. [TransactionError definitions](https://github.com/solana-labs/solana/blob/master/sdk/src/transaction.rs#L24)
+    - `err: <object | null>` - Error if transaction failed, null if transaction succeeded. [TransactionError definitions](https://docs.rs/solana-sdk/VERSION_FOR_DOCS_RS/solana_sdk/transaction/enum.TransactionError.html)
     - `fee: <u64>` - fee this transaction was charged, as u64 integer
     - `preBalances: <array>` - array of u64 account balances from before the transaction was processed
     - `postBalances: <array>` - array of u64 account balances after the transaction was processed
-    - `innerInstructions: <array|undefined>` - List of [inner instructions](#inner-instructions-structure) or omitted if inner instruction recording was not yet enabled during this transaction
+    - `innerInstructions: <array|null>` - List of [inner instructions](#inner-instructions-structure) or `null` if inner instruction recording was not enabled during this transaction
     - `preTokenBalances: <array|undefined>` - List of  [token balances](#token-balances-structure) from before the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
     - `postTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from after the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
-    - `logMessages: <array>` - array of string log messages or omitted if log message recording was not yet enabled during this transaction
+    - `logMessages: <array|null>` - array of string log messages or `null` if log message recording was not enabled during this transaction
     - DEPRECATED: `status: <object>` - Transaction status
       - `"Ok": <null>` - Transaction was successful
       - `"Err": <ERR>` - Transaction failed with TransactionError
@@ -3039,7 +2949,7 @@ curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
 
 Result:
 ```json
-{"jsonrpc":"2.0","result":{"solana-core": "1.8.0"},"id":1}
+{"jsonrpc":"2.0","result":{"solana-core": "1.10.0"},"id":1}
 ```
 
 ### getVoteAccounts
@@ -3150,6 +3060,52 @@ Result:
     "delinquent": []
   },
   "id": 1
+}
+```
+
+### isBlockhashValid
+
+**NEW: This method is only available in solana-core v1.9 or newer. Please use
+[getFeeCalculatorForBlockhash](jsonrpc-api.md#getfeecalculatorforblockhash) for solana-core v1.8**
+
+Returns whether a blockhash is still valid or not
+
+#### Parameters:
+
+- `blockhash: <string>` - the blockhash of this block, as base-58 encoded string
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment) (used for retrieving blockhash)
+
+#### Results:
+
+- `<bool>` - True if the blockhash is still valid
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {
+    "id":45,
+    "jsonrpc":"2.0",
+    "method":"isBlockhashValid",
+    "params":[
+      "J7rBdM6AecPDEZp8aPq5iPSNKVkU5Q76F3oAV4eW5wsW",
+      {"commitment":"processed"}
+    ]
+  }
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc":"2.0",
+  "result":{
+    "context":{
+      "slot":2483
+    },
+    "value":false
+  },"id":1
 }
 ```
 
@@ -3485,6 +3441,339 @@ Request:
 ```
 
 Result:
+```json
+{"jsonrpc": "2.0","result": true,"id": 1}
+```
+
+### blockSubscribe - Unstable, disabled by default
+
+**This subscription is unstable and only available if the validator was started
+with the `--rpc-pubsub-enable-block-subscription` flag. The format of this
+subscription may change in the future**
+
+Subscribe to receive notification anytime a new block is Confirmed or Finalized.
+
+#### Parameters:
+
+- `filter: <string>|<object>` - filter criteria for the logs to receive results by account type; currently supported:
+  - "all" - include all transactions in block
+  - `{ "mentionsAccountOrProgram": <string> }` - return only transactions that mention the provided public key (as base-58 encoded string). If no mentions in a given block, then no notification will be sent.
+- `<object>` - (optional) Configuration object containing the following optional fields:
+  - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
+  - (optional) `encoding: <string>` - encoding for Account data, either "base58" (*slow*), "base64", "base64+zstd" or "jsonParsed".
+    "jsonParsed" encoding attempts to use program-specific state parsers to return more human-readable and explicit account state data. If "jsonParsed" is requested but a parser cannot be found, the field falls back to base64 encoding, detectable when the `data` field is type `<string>`. Default is "base64".
+  - (optional) `transactionDetails: <string>` - level of transaction detail to return, either "full", "signatures", or "none". If parameter not provided, the default detail level is "full".
+  - (optional) `showRewards: bool` - whether to populate the `rewards` array. If parameter not provided, the default includes rewards.
+
+#### Results:
+
+- `integer` - subscription id \(needed to unsubscribe\)
+
+#### Example:
+
+Request:
+```json
+{"jsonrpc": "2.0", "id": "1", "method": "blockSubscribe", "params": ["all"]}
+```
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "blockSubscribe",
+  "params": [
+    {"mentionsAccountOrProgram": "LieKvPRE8XeX3Y2xVNHjKlpAScD12lYySBVQ4HqoJ5op"},
+    {
+      "commitment": "confirmed",
+      "encoding": "base64",
+      "showRewards": true,
+      "transactionDetails": "full"
+    }
+  ]
+}
+```
+
+Result:
+```json
+{"jsonrpc": "2.0","result": 0,"id": 1}
+```
+
+#### Notification Format:
+
+The notification will be an object with the following fields:
+
+-`slot: <u64>` - The corresponding slot.
+- `err: <object | null>` - Error if something went wrong publishing the notification otherwise null.
+- `block: <object | null>` - A block object as seen in the [getBlock](jsonrpc-api.md#getblock) RPC HTTP method.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "blockNotification",
+  "params": {
+    "result": {
+      "context": {
+        "slot": 112301554
+      },
+      "value": {
+        "slot": 112301554,
+        "block": {
+          "previousBlockhash": "GJp125YAN4ufCSUvZJVdCyWQJ7RPWMmwxoyUQySydZA",
+          "blockhash": "6ojMHjctdqfB55JDpEpqfHnP96fiaHEcvzEQ2NNcxzHP",
+          "parentSlot": 112301553,
+          "transactions": [
+            {
+              "transaction": [
+                "OpltwoUvWxYi1P2U8vbIdE/aPntjYo5Aa0VQ2JJyeJE2g9Vvxk8dDGgFMruYfDu8/IfUWb0REppTe7IpAuuLRgIBAAkWnj4KHRpEWWW7gvO1c0BHy06wZi2g7/DLqpEtkRsThAXIdBbhXCLvltw50ZnjDx2hzw74NVn49kmpYj2VZHQJoeJoYJqaKcvuxCi/2i4yywedcVNDWkM84Iuw+cEn9/ROCrXY4qBFI9dveEERQ1c4kdU46xjxj9Vi+QXkb2Kx45QFVkG4Y7HHsoS6WNUiw2m4ffnMNnOVdF9tJht7oeuEfDMuUEaO7l9JeUxppCvrGk3CP45saO51gkwVYEgKzhpKjCx3rgsYxNR81fY4hnUQXSbbc2Y55FkwgRBpVvQK7/+clR4Gjhd3L4y+OtPl7QF93Akg1LaU9wRMs5nvfDFlggqI9PqJl+IvVWrNRdBbPS8LIIhcwbRTkSbqlJQWxYg3Bo2CTVbw7rt1ZubuHWWp0mD/UJpLXGm2JprWTePNULzHu67sfqaWF99LwmwjTyYEkqkRt1T0Je5VzHgJs0N5jY4iIU9K3lMqvrKOIn/2zEMZ+ol2gdgjshx+sphIyhw65F3J/Dbzk04LLkK+CULmN571Y+hFlXF2ke0BIuUG6AUF+4214Cu7FXnqo3rkxEHDZAk0lRrAJ8X/Z+iwuwI5cgbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpDLAp8axcEkaQkLDKRoWxqp8XLNZSKial7Rk+ELAVVKWoWLRXRZ+OIggu0OzMExvVLE5VHqy71FNHq4gGitkiKYNFWSLIE4qGfdFLZXy/6hwS+wq9ewjikCpd//C9BcCL7Wl0iQdUslxNVCBZHnCoPYih9JXvGefOb9WWnjGy14sG9j70+RSVx6BlkFELWwFvIlWR/tHn3EhHAuL0inS2pwX7ZQTAU6gDVaoqbR2EiJ47cKoPycBNvHLoKxoY9AZaBjPl6q8SKQJSFyFd9n44opAgI6zMTjYF/8Ok4VpXEESp3QaoUyTI9sOJ6oFP6f4dwnvQelgXS+AEfAsHsKXxGAIUDQENAgMEBQAGBwgIDg8IBJCER3QXl1AVDBADCQoOAAQLERITDAjb7ugh3gOuTy==",
+                "base64"
+              ],
+              "meta": {
+                "err": null,
+                "status": {
+                  "Ok": null
+                },
+                "fee": 5000,
+                "preBalances": [
+                  1758510880,
+                  2067120,
+                  1566000,
+                  1461600,
+                  2039280,
+                  2039280,
+                  1900080,
+                  1865280,
+                  0,
+                  3680844220,
+                  2039280
+                ],
+                "postBalances": [
+                  1758505880,
+                  2067120,
+                  1566000,
+                  1461600,
+                  2039280,
+                  2039280,
+                  1900080,
+                  1865280,
+                  0,
+                  3680844220,
+                  2039280
+                ],
+                "innerInstructions": [
+                  {
+                    "index": 0,
+                    "instructions": [
+                      {
+                        "programIdIndex": 13,
+                        "accounts": [
+                          1,
+                          15,
+                          3,
+                          4,
+                          2,
+                          14
+                        ],
+                        "data": "21TeLgZXNbtHXVBzCaiRmH"
+                      },
+                      {
+                        "programIdIndex": 14,
+                        "accounts": [
+                          3,
+                          4,
+                          1
+                        ],
+                        "data": "6qfC8ic7Aq99"
+                      },
+                      {
+                        "programIdIndex": 13,
+                        "accounts": [
+                          1,
+                          15,
+                          3,
+                          5,
+                          2,
+                          14
+                        ],
+                        "data": "21TeLgZXNbsn4QEpaSEr3q"
+                      },
+                      {
+                        "programIdIndex": 14,
+                        "accounts": [
+                          3,
+                          5,
+                          1
+                        ],
+                        "data": "6LC7BYyxhFRh"
+                      }
+                    ]
+                  },
+                  {
+                    "index": 1,
+                    "instructions": [
+                      {
+                        "programIdIndex": 14,
+                        "accounts": [
+                          4,
+                          3,
+                          0
+                        ],
+                        "data": "7aUiLHFjSVdZ"
+                      },
+                      {
+                        "programIdIndex": 19,
+                        "accounts": [
+                          17,
+                          18,
+                          16,
+                          9,
+                          11,
+                          12,
+                          14
+                        ],
+                        "data": "8kvZyjATKQWYxaKR1qD53V"
+                      },
+                      {
+                        "programIdIndex": 14,
+                        "accounts": [
+                          9,
+                          11,
+                          18
+                        ],
+                        "data": "6qfC8ic7Aq99"
+                      }
+                    ]
+                  }
+                ],
+                "logMessages": [
+                  "Program QMNeHCGYnLVDn1icRAfQZpjPLBNkfGbSKRB83G5d8KB invoke [1]",
+                  "Program QMWoBmAyJLAsA1Lh9ugMTw2gciTihncciphzdNzdZYV invoke [2]"
+                ],
+                "preTokenBalances": [
+                  {
+                    "accountIndex": 4,
+                    "mint": "iouQcQBAiEXe6cKLS85zmZxUqaCqBdeHFpqKoSz615u",
+                    "uiTokenAmount": {
+                      "uiAmount": null,
+                      "decimals": 6,
+                      "amount": "0",
+                      "uiAmountString": "0"
+                    },
+                    "owner": "LieKvPRE8XeX3Y2xVNHjKlpAScD12lYySBVQ4HqoJ5op"
+                  },
+                  {
+                    "accountIndex": 5,
+                    "mint": "iouQcQBAiEXe6cKLS85zmZxUqaCqBdeHFpqKoSz615u",
+                    "uiTokenAmount": {
+                      "uiAmount": 11513.0679,
+                      "decimals": 6,
+                      "amount": "11513067900",
+                      "uiAmountString": "11513.0679"
+                    },
+                    "owner": "rXhAofQCT7NN9TUqigyEAUzV1uLL4boeD8CRkNBSkYk"
+                  },
+                  {
+                    "accountIndex": 10,
+                    "mint": "Saber2gLauYim4Mvftnrasomsv6NvAuncvMEZwcLpD1",
+                    "uiTokenAmount": {
+                      "uiAmount": null,
+                      "decimals": 6,
+                      "amount": "0",
+                      "uiAmountString": "0"
+                    },
+                    "owner": "CL9wkGFT3SZRRNa9dgaovuRV7jrVVigBUZ6DjcgySsCU"
+                  },
+                  {
+                    "accountIndex": 11,
+                    "mint": "Saber2gLauYim4Mvftnrasomsv6NvAuncvMEZwcLpD1",
+                    "uiTokenAmount": {
+                      "uiAmount": 15138.514093,
+                      "decimals": 6,
+                      "amount": "15138514093",
+                      "uiAmountString": "15138.514093"
+                    },
+                    "owner": "LieKvPRE8XeX3Y2xVNHjKlpAScD12lYySBVQ4HqoJ5op"
+                  }
+                ],
+                "postTokenBalances": [
+                  {
+                    "accountIndex": 4,
+                    "mint": "iouQcQBAiEXe6cKLS85zmZxUqaCqBdeHFpqKoSz615u",
+                    "uiTokenAmount": {
+                      "uiAmount": null,
+                      "decimals": 6,
+                      "amount": "0",
+                      "uiAmountString": "0"
+                    },
+                    "owner": "LieKvPRE8XeX3Y2xVNHjKlpAScD12lYySBVQ4HqoJ5op"
+                  },
+                  {
+                    "accountIndex": 5,
+                    "mint": "iouQcQBAiEXe6cKLS85zmZxUqaCqBdeHFpqKoSz615u",
+                    "uiTokenAmount": {
+                      "uiAmount": 11513.103028,
+                      "decimals": 6,
+                      "amount": "11513103028",
+                      "uiAmountString": "11513.103028"
+                    },
+                    "owner": "rXhAofQCT7NN9TUqigyEAUzV1uLL4boeD8CRkNBSkYk"
+                  },
+                  {
+                    "accountIndex": 10,
+                    "mint": "Saber2gLauYim4Mvftnrasomsv6NvAuncvMEZwcLpD1",
+                    "uiTokenAmount": {
+                      "uiAmount": null,
+                      "decimals": 6,
+                      "amount": "0",
+                      "uiAmountString": "0"
+                    },
+                    "owner": "CL9wkGFT3SZRRNa9dgaovuRV7jrVVigBUZ6DjcgySsCU"
+                  },
+                  {
+                    "accountIndex": 11,
+                    "mint": "Saber2gLauYim4Mvftnrasomsv6NvAuncvMEZwcLpD1",
+                    "uiTokenAmount": {
+                      "uiAmount": 15489.767829,
+                      "decimals": 6,
+                      "amount": "15489767829",
+                      "uiAmountString": "15489.767829"
+                    },
+                    "owner": "BeiHVPRE8XeX3Y2xVNrSsTpAScH94nYySBVQ4HqgN9at"
+                  }
+                ],
+                "rewards": []
+              }
+            }
+          ],
+          "blockTime": 1639926816,
+          "blockHeight": 101210751
+        },
+        "err": null
+      }
+    },
+    "subscription": 14
+  }
+}
+```
+
+### blockUnsubscribe
+
+Unsubscribe from block notifications
+
+#### Parameters:
+
+- `<integer>` - subscription id to cancel
+
+#### Results:
+
+- `<bool>` - unsubscribe success message
+
+#### Example:
+
+Request:
+```json
+{"jsonrpc":"2.0", "id":1, "method":"blockUnsubscribe", "params":[0]}
+```
+
+Response:
 ```json
 {"jsonrpc": "2.0","result": true,"id": 1}
 ```
@@ -4152,7 +4441,7 @@ Response:
 ### getConfirmedBlock
 
 **DEPRECATED: Please use [getBlock](jsonrpc-api.md#getblock) instead**
-This method is expected to be removed in solana-core v1.8
+This method is expected to be removed in solana-core v2.0
 
 Returns identity and transaction information about a confirmed block in the ledger
 
@@ -4182,10 +4471,10 @@ The result field will be an object with the following fields:
       - `fee: <u64>` - fee this transaction was charged, as u64 integer
       - `preBalances: <array>` - array of u64 account balances from before the transaction was processed
       - `postBalances: <array>` - array of u64 account balances after the transaction was processed
-      - `innerInstructions: <array|undefined>` - List of [inner instructions](#inner-instructions-structure) or omitted if inner instruction recording was not yet enabled during this transaction
+      - `innerInstructions: <array|null>` - List of [inner instructions](#inner-instructions-structure) or `null` if inner instruction recording was not enabled during this transaction
       - `preTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from before the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
       - `postTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from after the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
-      - `logMessages: <array>` - array of string log messages or omitted if log message recording was not yet enabled during this transaction
+      - `logMessages: <array|null>` - array of string log messages or `null` if log message recording was not enabled during this transaction
       - DEPRECATED: `status: <object>` - Transaction status
         - `"Ok": <null>` - Transaction was successful
         - `"Err": <ERR>` - Transaction failed with TransactionError
@@ -4346,7 +4635,7 @@ For more details on returned data:
 ### getConfirmedBlocks
 
 **DEPRECATED: Please use [getBlocks](jsonrpc-api.md#getblocks) instead**
-This method is expected to be removed in solana-core v1.8
+This method is expected to be removed in solana-core v2.0
 
 Returns a list of confirmed blocks between two slots
 
@@ -4380,7 +4669,7 @@ Result:
 ### getConfirmedBlocksWithLimit
 
 **DEPRECATED: Please use [getBlocksWithLimit](jsonrpc-api.md#getblockswithlimit) instead**
-This method is expected to be removed in solana-core v1.8
+This method is expected to be removed in solana-core v2.0
 
 Returns a list of confirmed blocks starting at the given slot
 
@@ -4412,10 +4701,12 @@ Result:
 ### getConfirmedSignaturesForAddress2
 
 **DEPRECATED: Please use [getSignaturesForAddress](jsonrpc-api.md#getsignaturesforaddress) instead**
-This method is expected to be removed in solana-core v1.8
+This method is expected to be removed in solana-core v2.0
 
-Returns confirmed signatures for transactions involving an
-address backwards in time from the provided signature or most recent confirmed block
+Returns signatures for confirmed transactions that include the given address in
+their `accountKeys` list. Returns signatures backwards in time from the
+provided signature or most recent confirmed block
+
 
 #### Parameters:
 * `<string>` - account address as base-58 encoded string
@@ -4474,7 +4765,7 @@ Result:
 ### getConfirmedTransaction
 
 **DEPRECATED: Please use [getTransaction](jsonrpc-api.md#gettransaction) instead**
-This method is expected to be removed in solana-core v1.8
+This method is expected to be removed in solana-core v2.0
 
 Returns transaction details for a confirmed transaction
 
@@ -4494,14 +4785,14 @@ Returns transaction details for a confirmed transaction
   - `transaction: <object|[string,encoding]>` - [Transaction](#transaction-structure) object, either in JSON format or encoded binary data, depending on encoding parameter
   - `blockTime: <i64 | null>` - estimated production time, as Unix timestamp (seconds since the Unix epoch) of when the transaction was processed. null if not available
   - `meta: <object | null>` - transaction status metadata object:
-    - `err: <object | null>` - Error if transaction failed, null if transaction succeeded. [TransactionError definitions](https://github.com/solana-labs/solana/blob/master/sdk/src/transaction.rs#L24)
+    - `err: <object | null>` - Error if transaction failed, null if transaction succeeded. [TransactionError definitions](https://docs.rs/solana-sdk/VERSION_FOR_DOCS_RS/solana_sdk/transaction/enum.TransactionError.html)
     - `fee: <u64>` - fee this transaction was charged, as u64 integer
     - `preBalances: <array>` - array of u64 account balances from before the transaction was processed
     - `postBalances: <array>` - array of u64 account balances after the transaction was processed
-    - `innerInstructions: <array|undefined>` - List of [inner instructions](#inner-instructions-structure) or omitted if inner instruction recording was not yet enabled during this transaction
+    - `innerInstructions: <array|null>` - List of [inner instructions](#inner-instructions-structure) or `null` if inner instruction recording was not enabled during this transaction
     - `preTokenBalances: <array|undefined>` - List of  [token balances](#token-balances-structure) from before the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
     - `postTokenBalances: <array|undefined>` - List of [token balances](#token-balances-structure) from after the transaction was processed or omitted if token balance recording was not yet enabled during this transaction
-    - `logMessages: <array>` - array of string log messages or omitted if log message recording was not yet enabled during this transaction
+    - `logMessages: <array|null>` - array of string log messages or `null` if log message recording was not enabled during this transaction
     - DEPRECATED: `status: <object>` - Transaction status
       - `"Ok": <null>` - Transaction was successful
       - `"Err": <ERR>` - Transaction failed with TransactionError
@@ -4643,4 +4934,240 @@ Result:
   },
   "id": 1
 }
+```
+
+### getFeeCalculatorForBlockhash
+
+**DEPRECATED: Please use [isBlockhashValid](jsonrpc-api.md#isblockhashvalid) or [getFeeForMessage](jsonrpc-api.md#getfeeformessage) instead**
+This method is expected to be removed in solana-core v2.0
+
+Returns the fee calculator associated with the query blockhash, or `null` if the blockhash has expired
+
+#### Parameters:
+
+- `<string>` - query blockhash as a Base58 encoded string
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
+
+#### Results:
+
+The result will be an RpcResponse JSON object with `value` equal to:
+
+- `<null>` - if the query blockhash has expired
+- `<object>` - otherwise, a JSON object containing:
+  - `feeCalculator: <object>`, `FeeCalculator` object describing the cluster fee rate at the queried blockhash
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "getFeeCalculatorForBlockhash",
+    "params": [
+      "GJxqhuxcgfn5Tcj6y3f8X4FeCDd2RQ6SnEMo1AAxrPRZ"
+    ]
+  }
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "context": {
+      "slot": 221
+    },
+    "value": {
+      "feeCalculator": {
+        "lamportsPerSignature": 5000
+      }
+    }
+  },
+  "id": 1
+}
+```
+
+### getFeeRateGovernor
+
+Returns the fee rate governor information from the root bank
+
+#### Parameters:
+
+None
+
+#### Results:
+
+The `result` field will be an `object` with the following fields:
+
+- `burnPercent: <u8>`, Percentage of fees collected to be destroyed
+- `maxLamportsPerSignature: <u64>`, Largest value `lamportsPerSignature` can attain for the next slot
+- `minLamportsPerSignature: <u64>`, Smallest value `lamportsPerSignature` can attain for the next slot
+- `targetLamportsPerSignature: <u64>`, Desired fee rate for the cluster
+- `targetSignaturesPerSlot: <u64>`, Desired signature rate for the cluster
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {"jsonrpc":"2.0","id":1, "method":"getFeeRateGovernor"}
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "context": {
+      "slot": 54
+    },
+    "value": {
+      "feeRateGovernor": {
+        "burnPercent": 50,
+        "maxLamportsPerSignature": 100000,
+        "minLamportsPerSignature": 5000,
+        "targetLamportsPerSignature": 10000,
+        "targetSignaturesPerSlot": 20000
+      }
+    }
+  },
+  "id": 1
+}
+```
+
+### getFees
+
+**DEPRECATED: Please use [getFeeForMessage](jsonrpc-api.md#getfeeformessage) instead**
+This method is expected to be removed in solana-core v2.0
+
+Returns a recent block hash from the ledger, a fee schedule that can be used to
+compute the cost of submitting a transaction using it, and the last slot in
+which the blockhash will be valid.
+
+#### Parameters:
+
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
+
+#### Results:
+
+The result will be an RpcResponse JSON object with `value` set to a JSON object with the following fields:
+
+- `blockhash: <string>` - a Hash as base-58 encoded string
+- `feeCalculator: <object>` - FeeCalculator object, the fee schedule for this block hash
+- `lastValidSlot: <u64>` - DEPRECATED - this value is inaccurate and should not be relied upon
+- `lastValidBlockHeight: <u64>` - last [block height](../../terminology.md#block-height) at which a blockhash will be valid
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {"jsonrpc":"2.0","id":1, "method":"getFees"}
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "context": {
+      "slot": 1
+    },
+    "value": {
+      "blockhash": "CSymwgTNX1j3E4qhKfJAUE41nBWEwXufoYryPbkde5RR",
+      "feeCalculator": {
+        "lamportsPerSignature": 5000
+      },
+      "lastValidSlot": 297,
+      "lastValidBlockHeight": 296
+    }
+  },
+  "id": 1
+}
+```
+
+### getRecentBlockhash
+
+**DEPRECATED: Please use [getFeeForMessage](jsonrpc-api.md#getfeeformessage) instead**
+This method is expected to be removed in solana-core v2.0
+
+Returns a recent block hash from the ledger, and a fee schedule that can be used to compute the cost of submitting a transaction using it.
+
+#### Parameters:
+
+- `<object>` - (optional) [Commitment](jsonrpc-api.md#configuring-state-commitment)
+
+#### Results:
+
+An RpcResponse containing a JSON object consisting of a string blockhash and FeeCalculator JSON object.
+
+- `RpcResponse<object>` - RpcResponse JSON object with `value` field set to a JSON object including:
+- `blockhash: <string>` - a Hash as base-58 encoded string
+- `feeCalculator: <object>` - FeeCalculator object, the fee schedule for this block hash
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {"jsonrpc":"2.0","id":1, "method":"getRecentBlockhash"}
+'
+```
+
+Result:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "context": {
+      "slot": 1
+    },
+    "value": {
+      "blockhash": "CSymwgTNX1j3E4qhKfJAUE41nBWEwXufoYryPbkde5RR",
+      "feeCalculator": {
+        "lamportsPerSignature": 5000
+      }
+    }
+  },
+  "id": 1
+}
+```
+
+### getSnapshotSlot
+
+**DEPRECATED: Please use [getHighestSnapshotSlot](jsonrpc-api.md#gethighestsnapshotslot) instead**
+This method is expected to be removed in solana-core v2.0
+
+Returns the highest slot that the node has a snapshot for
+
+#### Parameters:
+
+None
+
+#### Results:
+
+- `<u64>` - Snapshot slot
+
+#### Example:
+
+Request:
+```bash
+curl http://localhost:8899 -X POST -H "Content-Type: application/json" -d '
+  {"jsonrpc":"2.0","id":1, "method":"getSnapshotSlot"}
+'
+```
+
+Result:
+```json
+{"jsonrpc":"2.0","result":100,"id":1}
+```
+
+Result when the node has no snapshot:
+```json
+{"jsonrpc":"2.0","error":{"code":-32008,"message":"No snapshot"},"id":1}
 ```

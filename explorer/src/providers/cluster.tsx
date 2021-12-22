@@ -1,5 +1,10 @@
 import React from "react";
-import { clusterApiUrl, Connection } from "@solana/web3.js";
+import {
+  clusterApiUrl,
+  Connection,
+  EpochInfo,
+  EpochSchedule,
+} from "@solana/web3.js";
 import { useQuery } from "../utils/url";
 import { useHistory, useLocation } from "react-router-dom";
 import { reportError } from "utils/sentry";
@@ -51,7 +56,8 @@ export function clusterName(cluster: Cluster): string {
   }
 }
 
-export const MAINNET_BETA_URL = clusterApiUrl("mainnet-beta");
+// export const MAINNET_BETA_URL = clusterApiUrl("mainnet-beta");
+export const MAINNET_BETA_URL = 'https://rough-crimson-flower.solana-mainnet.quiknode.pro';
 export const TESTNET_URL = clusterApiUrl("testnet");
 export const DEVNET_URL = clusterApiUrl("devnet");
 
@@ -60,7 +66,8 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
     case Cluster.Devnet:
       return DEVNET_URL.replace("api", "explorer-api");
     case Cluster.MainnetBeta:
-      return MAINNET_BETA_URL.replace("api", "explorer-api");
+      // return MAINNET_BETA_URL.replace("api", "explorer-api");
+      return MAINNET_BETA_URL;
     case Cluster.Testnet:
       return TESTNET_URL.replace("api", "explorer-api");
     case Cluster.Custom:
@@ -69,19 +76,21 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
 }
 
 export const DEFAULT_CLUSTER = Cluster.MainnetBeta;
+const DEFAULT_CUSTOM_URL = "http://localhost:8899";
 
+type Action = State;
 interface State {
   cluster: Cluster;
   customUrl: string;
-  firstAvailableBlock?: number;
+  clusterInfo?: ClusterInfo;
   status: ClusterStatus;
 }
 
-interface Action {
-  status: ClusterStatus;
-  cluster: Cluster;
-  customUrl: string;
-  firstAvailableBlock?: number;
+interface ClusterInfo {
+  firstAvailableBlock: number;
+  epochSchedule: EpochSchedule;
+  epochInfo: EpochInfo;
+  genesisHash: string;
 }
 
 type Dispatch = (action: Action) => void;
@@ -129,7 +138,7 @@ type ClusterProviderProps = { children: React.ReactNode };
 export function ClusterProvider({ children }: ClusterProviderProps) {
   const [state, dispatch] = React.useReducer(clusterReducer, {
     cluster: DEFAULT_CLUSTER,
-    customUrl: "",
+    customUrl: DEFAULT_CUSTOM_URL,
     status: ClusterStatus.Connecting,
   });
   const [showModal, setShowModal] = React.useState(false);
@@ -190,12 +199,24 @@ async function updateCluster(
 
   try {
     const connection = new Connection(clusterUrl(cluster, customUrl));
-    const firstAvailableBlock = await connection.getFirstAvailableBlock();
+    const [firstAvailableBlock, epochSchedule, epochInfo, genesisHash] =
+      await Promise.all([
+        connection.getFirstAvailableBlock(),
+        connection.getEpochSchedule(),
+        connection.getEpochInfo(),
+        connection.getGenesisHash(),
+      ]);
+
     dispatch({
       status: ClusterStatus.Connected,
       cluster,
       customUrl,
-      firstAvailableBlock,
+      clusterInfo: {
+        firstAvailableBlock,
+        genesisHash,
+        epochSchedule,
+        epochInfo,
+      },
     });
   } catch (error) {
     if (cluster !== Cluster.Custom) {

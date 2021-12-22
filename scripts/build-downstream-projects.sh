@@ -68,6 +68,7 @@ spl() {
 
     $cargo build
     $cargo test
+    $cargo_build_bpf
     $cargo_test_bpf
   )
 }
@@ -86,6 +87,7 @@ serum_dex() {
 [workspace]
 exclude = [
     "crank",
+    "permissioned",
 ]
 EOF
     $cargo build

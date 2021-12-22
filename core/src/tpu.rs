@@ -1,39 +1,40 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
-use crate::{
-    banking_stage::BankingStage,
-    broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
-    cluster_info_vote_listener::{
-        ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
-        VerifiedVoteSender, VoteTracker,
+use {
+    crate::{
+        banking_stage::BankingStage,
+        broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        cluster_info_vote_listener::{
+            ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
+            GossipVerifiedVoteHashSender, VerifiedVoteSender, VoteTracker,
+        },
+        fetch_stage::FetchStage,
+        sigverify::TransactionSigVerifier,
+        sigverify_stage::SigVerifyStage,
     },
-    cost_model::CostModel,
-    cost_tracker::CostTracker,
-    fetch_stage::FetchStage,
-    sigverify::TransactionSigVerifier,
-    sigverify_stage::SigVerifyStage,
-};
-use crossbeam_channel::unbounded;
-use solana_gossip::cluster_info::ClusterInfo;
-use solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender};
-use solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry};
-use solana_rpc::{
-    optimistically_confirmed_bank_tracker::BankNotificationSender,
-    rpc_subscriptions::RpcSubscriptions,
-};
-use solana_runtime::{
-    bank_forks::BankForks,
-    vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
-};
-use std::{
-    net::UdpSocket,
-    sync::{
-        atomic::AtomicBool,
-        mpsc::{channel, Receiver},
-        Arc, Mutex, RwLock,
+    crossbeam_channel::unbounded,
+    solana_gossip::cluster_info::ClusterInfo,
+    solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
+    solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
+    solana_rpc::{
+        optimistically_confirmed_bank_tracker::BankNotificationSender,
+        rpc_subscriptions::RpcSubscriptions,
     },
-    thread,
+    solana_runtime::{
+        bank_forks::BankForks,
+        cost_model::CostModel,
+        vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
+    },
+    std::{
+        net::UdpSocket,
+        sync::{
+            atomic::AtomicBool,
+            mpsc::{channel, Receiver},
+            Arc, Mutex, RwLock,
+        },
+        thread,
+    },
 };
 
 pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
@@ -41,6 +42,7 @@ pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
 pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
+    vote_sigverify_stage: SigVerifyStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -55,6 +57,7 @@ impl Tpu {
         retransmit_slots_receiver: RetransmitSlotsReceiver,
         transactions_sockets: Vec<UdpSocket>,
         tpu_forwards_sockets: Vec<UdpSocket>,
+        tpu_vote_sockets: Vec<UdpSocket>,
         broadcast_sockets: Vec<UdpSocket>,
         subscriptions: &Arc<RpcSubscriptions>,
         transaction_status_sender: Option<TransactionStatusSender>,
@@ -74,11 +77,14 @@ impl Tpu {
         cost_model: &Arc<RwLock<CostModel>>,
     ) -> Self {
         let (packet_sender, packet_receiver) = channel();
+        let (vote_packet_sender, vote_packet_receiver) = channel();
         let fetch_stage = FetchStage::new_with_sender(
             transactions_sockets,
             tpu_forwards_sockets,
+            tpu_vote_sockets,
             exit,
             &packet_sender,
+            &vote_packet_sender,
             poh_recorder,
             tpu_coalesce_ms,
         );
@@ -89,11 +95,23 @@ impl Tpu {
             SigVerifyStage::new(packet_receiver, verified_sender, verifier)
         };
 
-        let (verified_vote_packets_sender, verified_vote_packets_receiver) = unbounded();
+        let (verified_tpu_vote_packets_sender, verified_tpu_vote_packets_receiver) = unbounded();
+
+        let vote_sigverify_stage = {
+            let verifier = TransactionSigVerifier::new_reject_non_vote();
+            SigVerifyStage::new(
+                vote_packet_receiver,
+                verified_tpu_vote_packets_sender,
+                verifier,
+            )
+        };
+
+        let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
+            unbounded();
         let cluster_info_vote_listener = ClusterInfoVoteListener::new(
             exit,
             cluster_info.clone(),
-            verified_vote_packets_sender,
+            verified_gossip_vote_packets_sender,
             poh_recorder,
             vote_tracker,
             bank_forks.clone(),
@@ -106,15 +124,15 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
-        let cost_tracker = Arc::new(RwLock::new(CostTracker::new(cost_model.clone())));
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
             verified_receiver,
-            verified_vote_packets_receiver,
+            verified_tpu_vote_packets_receiver,
+            verified_gossip_vote_packets_receiver,
             transaction_status_sender,
             replay_vote_sender,
-            cost_tracker,
+            cost_model.clone(),
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
@@ -131,6 +149,7 @@ impl Tpu {
         Self {
             fetch_stage,
             sigverify_stage,
+            vote_sigverify_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -141,6 +160,7 @@ impl Tpu {
         let results = vec![
             self.fetch_stage.join(),
             self.sigverify_stage.join(),
+            self.vote_sigverify_stage.join(),
             self.cluster_info_vote_listener.join(),
             self.banking_stage.join(),
         ];

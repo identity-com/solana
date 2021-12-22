@@ -17,6 +17,7 @@ use {
     solana_sdk::{
         account::{from_account, Account},
         commitment_config::CommitmentLevel,
+        message::Message,
         signature::Signature,
         transaction::{self, Transaction},
         transport,
@@ -60,11 +61,16 @@ impl BanksClient {
         self.inner.send_transaction_with_context(ctx, transaction)
     }
 
+    #[deprecated(
+        since = "1.9.0",
+        note = "Please use `get_fee_for_message` or `is_blockhash_valid` instead"
+    )]
     pub fn get_fees_with_commitment_and_context(
         &mut self,
         ctx: Context,
         commitment: CommitmentLevel,
     ) -> impl Future<Output = io::Result<(FeeCalculator, Hash, u64)>> + '_ {
+        #[allow(deprecated)]
         self.inner
             .get_fees_with_commitment_and_context(ctx, commitment)
     }
@@ -127,9 +133,14 @@ impl BanksClient {
     /// Return the fee parameters associated with a recent, rooted blockhash. The cluster
     /// will use the transaction's blockhash to look up these same fee parameters and
     /// use them to calculate the transaction fee.
+    #[deprecated(
+        since = "1.9.0",
+        note = "Please use `get_fee_for_message` or `is_blockhash_valid` instead"
+    )]
     pub fn get_fees(
         &mut self,
     ) -> impl Future<Output = io::Result<(FeeCalculator, Hash, u64)>> + '_ {
+        #[allow(deprecated)]
         self.get_fees_with_commitment_and_context(context::current(), CommitmentLevel::default())
     }
 
@@ -151,8 +162,9 @@ impl BanksClient {
     /// Return a recent, rooted blockhash from the server. The cluster will only accept
     /// transactions with a blockhash that has not yet expired. Use the `get_fees`
     /// method to get both a blockhash and the blockhash's last valid slot.
+    #[deprecated(since = "1.9.0", note = "Please use `get_latest_blockhash` instead")]
     pub fn get_recent_blockhash(&mut self) -> impl Future<Output = io::Result<Hash>> + '_ {
-        self.get_fees().map(|result| Ok(result?.1))
+        self.get_latest_blockhash()
     }
 
     /// Send a transaction and return after the transaction has been rejected or
@@ -312,6 +324,41 @@ impl BanksClient {
         // Convert Vec<Result<_, _>> to Result<Vec<_>>
         statuses.into_iter().collect()
     }
+
+    pub fn get_latest_blockhash(&mut self) -> impl Future<Output = io::Result<Hash>> + '_ {
+        self.get_latest_blockhash_with_commitment(CommitmentLevel::default())
+            .map(|result| {
+                result?
+                    .map(|x| x.0)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "account not found"))
+            })
+    }
+
+    pub fn get_latest_blockhash_with_commitment(
+        &mut self,
+        commitment: CommitmentLevel,
+    ) -> impl Future<Output = io::Result<Option<(Hash, u64)>>> + '_ {
+        self.get_latest_blockhash_with_commitment_and_context(context::current(), commitment)
+    }
+
+    pub fn get_latest_blockhash_with_commitment_and_context(
+        &mut self,
+        ctx: Context,
+        commitment: CommitmentLevel,
+    ) -> impl Future<Output = io::Result<Option<(Hash, u64)>>> + '_ {
+        self.inner
+            .get_latest_blockhash_with_commitment_and_context(ctx, commitment)
+    }
+
+    pub fn get_fee_for_message_with_commitment_and_context(
+        &mut self,
+        ctx: Context,
+        commitment: CommitmentLevel,
+        message: Message,
+    ) -> impl Future<Output = io::Result<Option<u64>>> + '_ {
+        self.inner
+            .get_fee_for_message_with_commitment_and_context(ctx, commitment, message)
+    }
 }
 
 pub async fn start_client<C>(transport: C) -> io::Result<BanksClient>
@@ -332,16 +379,18 @@ pub async fn start_tcp_client<T: ToSocketAddrs>(addr: T) -> io::Result<BanksClie
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_banks_server::banks_server::start_local_server;
-    use solana_runtime::{
-        bank::Bank, bank_forks::BankForks, commitment::BlockCommitmentCache,
-        genesis_utils::create_genesis_config,
+    use {
+        super::*,
+        solana_banks_server::banks_server::start_local_server,
+        solana_runtime::{
+            bank::Bank, bank_forks::BankForks, commitment::BlockCommitmentCache,
+            genesis_utils::create_genesis_config,
+        },
+        solana_sdk::{message::Message, signature::Signer, system_instruction},
+        std::sync::{Arc, RwLock},
+        tarpc::transport,
+        tokio::{runtime::Runtime, time::sleep},
     };
-    use solana_sdk::{message::Message, signature::Signer, system_instruction};
-    use std::sync::{Arc, RwLock};
-    use tarpc::transport;
-    use tokio::{runtime::Runtime, time::sleep};
 
     #[test]
     fn test_banks_client_new() {
@@ -369,10 +418,12 @@ mod tests {
         let message = Message::new(&[instruction], Some(&mint_pubkey));
 
         Runtime::new()?.block_on(async {
-            let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
+            let client_transport =
+                start_local_server(bank_forks, block_commitment_cache, Duration::from_millis(1))
+                    .await;
             let mut banks_client = start_client(client_transport).await?;
 
-            let recent_blockhash = banks_client.get_recent_blockhash().await?;
+            let recent_blockhash = banks_client.get_latest_blockhash().await?;
             let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
             banks_client.process_transaction(transaction).await.unwrap();
             assert_eq!(banks_client.get_balance(bob_pubkey).await?, 1);
@@ -400,9 +451,14 @@ mod tests {
         let message = Message::new(&[instruction], Some(mint_pubkey));
 
         Runtime::new()?.block_on(async {
-            let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
+            let client_transport =
+                start_local_server(bank_forks, block_commitment_cache, Duration::from_millis(1))
+                    .await;
             let mut banks_client = start_client(client_transport).await?;
-            let (_, recent_blockhash, last_valid_block_height) = banks_client.get_fees().await?;
+            let (recent_blockhash, last_valid_block_height) = banks_client
+                .get_latest_blockhash_with_commitment(CommitmentLevel::default())
+                .await?
+                .unwrap();
             let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
             let signature = transaction.signatures[0];
             banks_client.send_transaction(transaction).await?;

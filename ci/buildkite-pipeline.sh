@@ -137,7 +137,7 @@ all_test_steps() {
              ^ci/test-coverage.sh \
              ^scripts/coverage.sh \
       ; then
-    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 30
+    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 40
     wait_step
   else
     annotate --style info --context test-coverage \
@@ -226,6 +226,19 @@ EOF
     annotate --style info \
       "downstream-projects skipped as no relevant files were modified"
   fi
+
+  # Wasm support
+  if affects \
+             ^ci/test-wasm.sh \
+             ^ci/test-stable.sh \
+             ^sdk/ \
+      ; then
+    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
+  else
+    annotate --style info \
+      "wasm skipped as no relevant files were modified"
+  fi
+
   # Benches...
   if affects \
              .rs$ \
@@ -243,7 +256,7 @@ EOF
 
   command_step "local-cluster" \
     ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-local-cluster.sh" \
-    45
+    50
 }
 
 pull_or_push_steps() {
@@ -262,7 +275,7 @@ pull_or_push_steps() {
     all_test_steps
   fi
 
-  # web3.js, explorer and docs changes run on Travis...
+  # web3.js, explorer and docs changes run on Travis or Github actions...
 }
 
 

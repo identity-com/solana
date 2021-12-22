@@ -1,6 +1,7 @@
 import bs58 from 'bs58';
 import {Buffer} from 'buffer';
-import fetch, {Response} from 'node-fetch';
+import fetch from 'cross-fetch';
+import type {Response} from 'cross-fetch';
 import {
   type as pick,
   number,
@@ -265,6 +266,16 @@ export type GetLargestAccountsConfig = {
 };
 
 /**
+ * Configuration object for changing `getSupply` request behavior
+ */
+export type GetSupplyConfig = {
+  /** The level of commitment desired */
+  commitment?: Commitment;
+  /** Exclude non circulating accounts list from response */
+  excludeNonCirculatingAccountsList?: boolean;
+};
+
+/**
  * Configuration object for changing query behavior
  */
 export type SignatureStatusConfig = {
@@ -438,15 +449,44 @@ const VersionResult = pick({
   'feature-set': optional(number()),
 });
 
+export type SimulatedTransactionAccountInfo = {
+  /** `true` if this account's data contains a loaded program */
+  executable: boolean;
+  /** Identifier of the program that owns the account */
+  owner: string;
+  /** Number of lamports assigned to the account */
+  lamports: number;
+  /** Optional data assigned to the account */
+  data: string[];
+  /** Optional rent epoch info for account */
+  rentEpoch?: number;
+};
+
 export type SimulatedTransactionResponse = {
   err: TransactionError | string | null;
   logs: Array<string> | null;
+  accounts?: SimulatedTransactionAccountInfo[] | null;
+  unitsConsumed?: number;
 };
 
 const SimulatedTransactionResponseStruct = jsonRpcResultAndContext(
   pick({
     err: nullable(union([pick({}), string()])),
     logs: nullable(array(string())),
+    accounts: optional(
+      nullable(
+        array(
+          pick({
+            executable: boolean(),
+            owner: string(),
+            lamports: number(),
+            data: array(string()),
+            rentEpoch: optional(number()),
+          }),
+        ),
+      ),
+    ),
+    unitsConsumed: optional(number()),
   }),
 );
 
@@ -720,19 +760,24 @@ function createRpcClient(
     agentManager = new AgentManager(useHttps);
   }
 
-  let fetchWithMiddleware: (url: string, options: any) => Promise<Response>;
+  let fetchWithMiddleware:
+    | ((url: string, options: any) => Promise<Response>)
+    | undefined;
 
   if (fetchMiddleware) {
-    fetchWithMiddleware = (url: string, options: any) => {
-      return new Promise<Response>((resolve, reject) => {
-        fetchMiddleware(url, options, async (url: string, options: any) => {
+    fetchWithMiddleware = async (url: string, options: any) => {
+      const modifiedFetchArgs = await new Promise<[string, any]>(
+        (resolve, reject) => {
           try {
-            resolve(await fetch(url, options));
+            fetchMiddleware(url, options, (modifiedUrl, modifiedOptions) =>
+              resolve([modifiedUrl, modifiedOptions]),
+            );
           } catch (error) {
             reject(error);
           }
-        });
-      });
+        },
+      );
+      return await fetch(...modifiedFetchArgs);
     };
   }
 
@@ -785,7 +830,7 @@ function createRpcClient(
         callback(new Error(`${res.status} ${res.statusText}: ${text}`));
       }
     } catch (err) {
-      callback(err);
+      if (err instanceof Error) callback(err);
     } finally {
       agentManager && agentManager.requestEnd();
     }
@@ -1678,6 +1723,8 @@ export type AccountInfo<T> = {
   lamports: number;
   /** Optional data assigned to the account */
   data: T;
+  /** Optional rent epoch infor for account */
+  rentEpoch?: number;
 };
 
 /**
@@ -1930,7 +1977,7 @@ export type HttpHeaders = {[header: string]: string};
 export type FetchMiddleware = (
   url: string,
   options: any,
-  fetch: Function,
+  fetch: (modifiedUrl: string, modifiedOptions: any) => void,
 ) => void;
 
 /**
@@ -1947,6 +1994,8 @@ export type ConnectionConfig = {
   fetchMiddleware?: FetchMiddleware;
   /** Optional Disable retring calls when server responds with HTTP 429 (Too Many Requests) */
   disableRetryOnRateLimit?: boolean;
+  /** time to allow for the server to initially process a transaction (in milliseconds) */
+  confirmTransactionInitialTimeout?: number;
 };
 
 /**
@@ -1954,6 +2003,7 @@ export type ConnectionConfig = {
  */
 export class Connection {
   /** @internal */ _commitment?: Commitment;
+  /** @internal */ _confirmTransactionInitialTimeout?: number;
   /** @internal */ _rpcEndpoint: string;
   /** @internal */ _rpcWsEndpoint: string;
   /** @internal */ _rpcClient: RpcClient;
@@ -2038,6 +2088,8 @@ export class Connection {
       this._commitment = commitmentOrConfig;
     } else if (commitmentOrConfig) {
       this._commitment = commitmentOrConfig.commitment;
+      this._confirmTransactionInitialTimeout =
+        commitmentOrConfig.confirmTransactionInitialTimeout;
       wsEndpoint = commitmentOrConfig.wsEndpoint;
       httpHeaders = commitmentOrConfig.httpHeaders;
       fetchMiddleware = commitmentOrConfig.fetchMiddleware;
@@ -2185,10 +2237,23 @@ export class Connection {
    * Fetch information about the current supply
    */
   async getSupply(
-    commitment?: Commitment,
+    config?: GetSupplyConfig | Commitment,
   ): Promise<RpcResponseAndContext<Supply>> {
-    const args = this._buildArgs([], commitment);
-    const unsafeRes = await this._rpcRequest('getSupply', args);
+    let configArg: GetSupplyConfig = {};
+    if (typeof config === 'string') {
+      configArg = {commitment: config};
+    } else if (config) {
+      configArg = {
+        ...config,
+        commitment: (config && config.commitment) || this.commitment,
+      };
+    } else {
+      configArg = {
+        commitment: this.commitment,
+      };
+    }
+
+    const unsafeRes = await this._rpcRequest('getSupply', [configArg]);
     const res = create(unsafeRes, GetSupplyRpcResult);
     if ('error' in res) {
       throw new Error('failed to get supply: ' + res.error.message);
@@ -2597,14 +2662,14 @@ export class Connection {
       }
     });
 
-    let timeoutMs = 60 * 1000;
+    let timeoutMs = this._confirmTransactionInitialTimeout || 60 * 1000;
     switch (subscriptionCommitment) {
       case 'processed':
       case 'recent':
       case 'single':
       case 'confirmed':
       case 'singleGossip': {
-        timeoutMs = 30 * 1000;
+        timeoutMs = this._confirmTransactionInitialTimeout || 30 * 1000;
         break;
       }
       // exhaust enums to ensure full coverage
@@ -2757,13 +2822,11 @@ export class Connection {
    * @deprecated Deprecated since v1.2.8. Please use {@link getSupply} instead.
    */
   async getTotalSupply(commitment?: Commitment): Promise<number> {
-    const args = this._buildArgs([], commitment);
-    const unsafeRes = await this._rpcRequest('getSupply', args);
-    const res = create(unsafeRes, GetSupplyRpcResult);
-    if ('error' in res) {
-      throw new Error('failed to get total supply: ' + res.error.message);
-    }
-    return res.result.value.total;
+    const result = await this.getSupply({
+      commitment,
+      excludeNonCirculatingAccountsList: true,
+    });
+    return result.value.total;
   }
 
   /**
@@ -2963,6 +3026,18 @@ export class Connection {
   }
 
   /**
+   * Fetch the genesis hash
+   */
+  async getGenesisHash(): Promise<string> {
+    const unsafeRes = await this._rpcRequest('getGenesisHash', []);
+    const res = create(unsafeRes, jsonRpcResult(string()));
+    if ('error' in res) {
+      throw new Error('failed to get genesis hash: ' + res.error.message);
+    }
+    return res.result;
+  }
+
+  /**
    * Fetch a processed block from the cluster.
    */
   async getBlock(
@@ -3056,6 +3131,26 @@ export class Connection {
         };
       }),
     };
+  }
+
+  /**
+   * Fetch confirmed blocks between two slots
+   */
+  async getBlocks(
+    startSlot: number,
+    endSlot?: number,
+    commitment?: Finality,
+  ): Promise<Array<number>> {
+    const args = this._buildArgsAtLeastConfirmed(
+      endSlot !== undefined ? [startSlot, endSlot] : [startSlot],
+      commitment,
+    );
+    const unsafeRes = await this._rpcRequest('getConfirmedBlocks', args);
+    const res = create(unsafeRes, jsonRpcResult(array(number())));
+    if ('error' in res) {
+      throw new Error('failed to get blocks: ' + res.error.message);
+    }
+    return res.result;
   }
 
   /**
@@ -3191,7 +3286,7 @@ export class Connection {
             block.signatures[block.signatures.length - 1].toString();
         }
       } catch (err) {
-        if (err.message.includes('skipped')) {
+        if (err instanceof Error && err.message.includes('skipped')) {
           continue;
         } else {
           throw err;
@@ -3213,7 +3308,7 @@ export class Connection {
             block.signatures[block.signatures.length - 1].toString();
         }
       } catch (err) {
-        if (err.message.includes('skipped')) {
+        if (err instanceof Error && err.message.includes('skipped')) {
           continue;
         } else {
           throw err;
@@ -3417,9 +3512,17 @@ export class Connection {
    * Simulate a transaction
    */
   async simulateTransaction(
-    transaction: Transaction,
+    transactionOrMessage: Transaction | Message,
     signers?: Array<Signer>,
+    includeAccounts?: boolean | Array<PublicKey>,
   ): Promise<RpcResponseAndContext<SimulatedTransactionResponse>> {
+    let transaction;
+    if (transactionOrMessage instanceof Transaction) {
+      transaction = transactionOrMessage;
+    } else {
+      transaction = Transaction.populate(transactionOrMessage);
+    }
+
     if (transaction.nonceInfo && signers) {
       transaction.sign(...signers);
     } else {
@@ -3453,13 +3556,27 @@ export class Connection {
       }
     }
 
-    const signData = transaction.serializeMessage();
+    const message = transaction._compile();
+    const signData = message.serialize();
     const wireTransaction = transaction._serialize(signData);
     const encodedTransaction = wireTransaction.toString('base64');
     const config: any = {
       encoding: 'base64',
       commitment: this.commitment,
     };
+
+    if (includeAccounts) {
+      const addresses = (
+        Array.isArray(includeAccounts)
+          ? includeAccounts
+          : message.nonProgramIds()
+      ).map(key => key.toBase58());
+
+      config['accounts'] = {
+        encoding: 'base64',
+        addresses,
+      };
+    }
 
     if (signers) {
       config.sigVerify = true;
@@ -3641,7 +3758,13 @@ export class Connection {
           // eslint-disable-next-line require-atomic-updates
           sub.subscriptionId = null;
         }
-        console.error(`${rpcMethod} error for argument`, rpcArgs, err.message);
+        if (err instanceof Error) {
+          console.error(
+            `${rpcMethod} error for argument`,
+            rpcArgs,
+            err.message,
+          );
+        }
       }
     }
   }
@@ -3659,7 +3782,9 @@ export class Connection {
       try {
         await this._rpcWebSocket.call(rpcMethod, [unsubscribeId]);
       } catch (err) {
-        console.error(`${rpcMethod} error:`, err.message);
+        if (err instanceof Error) {
+          console.error(`${rpcMethod} error:`, err.message);
+        }
       }
     }
   }
