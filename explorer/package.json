@@ -6,6 +6,7 @@
     "@blockworks-foundation/mango-client": "^3.1.1",
     "@bonfida/bot": "^0.5.3",
     "@bonfida/spl-name-service": "^0.1.22",
+    "@civic/solana-gateway-react": "^0.4.6",
     "@cloudflare/stream-react": "^1.2.0",
     "@identity.com/solana-gateway-ts": "^0.3.3",
     "@metamask/jazzicon": "^2.0.0",

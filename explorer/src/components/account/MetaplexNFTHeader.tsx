@@ -6,6 +6,8 @@ import { InfoTooltip } from "components/common/InfoTooltip";
 import { clusterPath } from "utils/url";
 import { Link } from "react-router-dom";
 import { EditionInfo } from "providers/accounts/utils/getEditionInfo";
+import { Badge } from "@civic/solana-gateway-react";
+import { Cluster, useCluster } from "providers/cluster";
 
 export function NFTHeader({
   nftData,
@@ -66,47 +68,59 @@ function getCreatorDropdownItems(creators: Creator[] | null) {
     const shareTooltip =
       "The percentage of the proceeds a creator receives when this NFT is sold.";
 
-    return (
-      <div
-        className={
-          "d-flex align-items-center dropdown-header creator-dropdown-entry"
-        }
-      >
-        <div className="d-flex text-monospace creator-dropdown-header">
-          <span>Creator Address</span>
-          <InfoTooltip bottom text={creatorTooltip} />
-        </div>
-        <div className="d-flex text-monospace">
-          <span className="text-monospace">Royalty</span>
-          <InfoTooltip bottom text={shareTooltip} />
-        </div>
-      </div>
-    );
-  };
+        return (
+            <div
+                className={
+                    "d-flex align-items-center dropdown-header"
+                }
+            >
+                <div className="d-flex text-monospace creator-dropdown-header">
+                    <span>Creator Address</span>
+                    <InfoTooltip bottom text={creatorTooltip}/>
+                </div>
+                <div className="mr-3 d-flex text-monospace">
+                    <span className="text-monospace">Royalty</span>
+                    <InfoTooltip bottom text={shareTooltip}/>
+                </div>
+                <div className="ml-3 d-flex text-monospace">
+                    Civic
+                </div>
+            </div>
+        );
+    };
 
   const getVerifiedIcon = (isVerified: boolean) => {
     const className = isVerified ? "fe fe-check" : "fe fe-alert-octagon";
     return <i className={`ml-3 ${className}`}></i>;
   };
 
-  const CreatorEntry = (creator: Creator) => {
-    return (
-      <div
-        className={
-          "d-flex align-items-center text-monospace creator-dropdown-entry ml-3 mr-3"
-        }
-      >
-        {getVerifiedIcon(creator.verified)}
-        <Link
-          className="dropdown-item text-monospace creator-dropdown-entry-address"
-          to={clusterPath(`/address/${creator.address}`)}
-        >
-          {creator.address}
-        </Link>
-        <div className="mr-3"> {`${creator.share}%`}</div>
-      </div>
-    );
-  };
+    const CreatorEntry = (creator: Creator) => {
+        const cluster = useCluster();
+
+        return (
+            <div
+                className={
+                    "d-flex align-items-center text-monospace ml-3 mr-3"
+                }
+            >
+                {getVerifiedIcon(creator.verified)}
+                <Link
+                    className="dropdown-item text-monospace creator-dropdown-entry-address"
+                    to={clusterPath(`/address/${creator.address}`)}
+                >
+                    {creator.address}
+                </Link>
+                <div className="mr-3"> {`${creator.share}%`}</div>
+                <div className="ml-3 mr-3">
+                    <Badge
+                        clusterName={cluster.cluster === Cluster.Devnet ? "devnet" : "mainnet-beta"}
+                        gatekeeperNetwork={new PublicKey(cluster.cluster === Cluster.Devnet ? "tgaxdij8CgAbfDDkhtkvZgEtwLPrVEXTQe3L4zkA7gE" : "ni1jXzPTq1yTqo67tUmVgnp22b1qGAAZCtPmHtskqYG")}
+                        publicKey={new PublicKey(creator.address)}
+                    />
+                </div>
+            </div>
+        );
+    };
 
   if (creators && creators.length > 0) {
     let listOfCreators: JSX.Element[] = [];

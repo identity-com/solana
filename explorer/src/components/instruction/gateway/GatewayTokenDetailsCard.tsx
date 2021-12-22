@@ -77,7 +77,7 @@ function parseGatewayInstruction(
         seed: issueVanilla?.seed,
         // @ts-ignore
         expireTime: new Date(
-          issueVanilla?.expireTime?.toNumber() * 1000
+            (issueVanilla?.expireTime?? 0) * 1000
         ).toISOString(),
       };
     case GatewayInstructionType.UpdateExpiry:
