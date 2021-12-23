@@ -1,15 +1,18 @@
-use crate::bucket_stats::BucketStats;
-use crate::MaxSearch;
-use memmap2::MmapMut;
-use rand::{thread_rng, Rng};
-use solana_measure::measure::Measure;
-use std::fs::{remove_file, OpenOptions};
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use {
+    crate::{bucket_stats::BucketStats, MaxSearch},
+    memmap2::MmapMut,
+    rand::{thread_rng, Rng},
+    solana_measure::measure::Measure,
+    std::{
+        fs::{remove_file, OpenOptions},
+        io::{Seek, SeekFrom, Write},
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+    },
+};
 
 /*
 1	2
@@ -32,7 +35,7 @@ use std::sync::Arc;
 pub const DEFAULT_CAPACITY_POW2: u8 = 5;
 
 /// A Header UID of 0 indicates that the header is unlocked
-pub(crate) const UID_UNLOCKED: Uid = 0;
+const UID_UNLOCKED: Uid = 0;
 
 pub(crate) type Uid = u64;
 
@@ -51,8 +54,13 @@ impl Header {
     fn unlock(&self) -> Uid {
         self.lock.swap(UID_UNLOCKED, Ordering::Release)
     }
-    fn uid(&self) -> Uid {
-        self.lock.load(Ordering::Acquire)
+    fn uid(&self) -> Option<Uid> {
+        let result = self.lock.load(Ordering::Acquire);
+        if result == UID_UNLOCKED {
+            None
+        } else {
+            Some(result)
+        }
     }
 }
 
@@ -61,7 +69,7 @@ pub struct BucketStorage {
     mmap: MmapMut,
     pub cell_size: u64,
     pub capacity_pow2: u8,
-    pub used: AtomicU64,
+    pub count: Arc<AtomicU64>,
     pub stats: Arc<BucketStats>,
     pub max_search: MaxSearch,
 }
@@ -85,6 +93,7 @@ impl BucketStorage {
         capacity_pow2: u8,
         max_search: MaxSearch,
         stats: Arc<BucketStats>,
+        count: Arc<AtomicU64>,
     ) -> Self {
         let cell_size = elem_size * num_elems + std::mem::size_of::<Header>() as u64;
         let (mmap, path) = Self::new_map(&drives, cell_size as usize, capacity_pow2, &stats);
@@ -92,7 +101,7 @@ impl BucketStorage {
             path,
             mmap,
             cell_size,
-            used: AtomicU64::new(0),
+            count,
             capacity_pow2,
             stats,
             max_search,
@@ -109,6 +118,7 @@ impl BucketStorage {
         elem_size: u64,
         max_search: MaxSearch,
         stats: Arc<BucketStats>,
+        count: Arc<AtomicU64>,
     ) -> Self {
         Self::new_with_capacity(
             drives,
@@ -117,53 +127,56 @@ impl BucketStorage {
             DEFAULT_CAPACITY_POW2,
             max_search,
             stats,
+            count,
         )
     }
 
-    pub fn uid(&self, ix: u64) -> Uid {
-        assert!(ix < self.capacity(), "bad index size");
+    /// return ref to header of item 'ix' in mmapped file
+    fn header_ptr(&self, ix: u64) -> &Header {
         let ix = (ix * self.cell_size) as usize;
         let hdr_slice: &[u8] = &self.mmap[ix..ix + std::mem::size_of::<Header>()];
         unsafe {
             let hdr = hdr_slice.as_ptr() as *const Header;
-            return hdr.as_ref().unwrap().uid();
+            hdr.as_ref().unwrap()
         }
     }
 
-    pub fn allocate(&self, ix: u64, uid: Uid) -> Result<(), BucketStorageError> {
+    pub fn uid(&self, ix: u64) -> Option<Uid> {
+        assert!(ix < self.capacity(), "bad index size");
+        self.header_ptr(ix).uid()
+    }
+
+    /// caller knows id is not empty
+    pub fn uid_unchecked(&self, ix: u64) -> Uid {
+        self.uid(ix).unwrap()
+    }
+
+    /// 'is_resizing' true if caller is resizing the index (so don't increment count)
+    /// 'is_resizing' false if caller is adding an item to the index (so increment count)
+    pub fn allocate(&self, ix: u64, uid: Uid, is_resizing: bool) -> Result<(), BucketStorageError> {
         assert!(ix < self.capacity(), "allocate: bad index size");
         assert!(UID_UNLOCKED != uid, "allocate: bad uid");
         let mut e = Err(BucketStorageError::AlreadyAllocated);
-        let ix = (ix * self.cell_size) as usize;
         //debug!("ALLOC {} {}", ix, uid);
-        let hdr_slice: &[u8] = &self.mmap[ix..ix + std::mem::size_of::<Header>()];
-        unsafe {
-            let hdr = hdr_slice.as_ptr() as *const Header;
-            if hdr.as_ref().unwrap().try_lock(uid) {
-                e = Ok(());
-                self.used.fetch_add(1, Ordering::Relaxed);
+        if self.header_ptr(ix).try_lock(uid) {
+            e = Ok(());
+            if !is_resizing {
+                self.count.fetch_add(1, Ordering::Relaxed);
             }
-        };
+        }
         e
     }
 
     pub fn free(&self, ix: u64, uid: Uid) {
         assert!(ix < self.capacity(), "bad index size");
         assert!(UID_UNLOCKED != uid, "free: bad uid");
-        let ix = (ix * self.cell_size) as usize;
-        //debug!("FREE {} {}", ix, uid);
-        let hdr_slice: &[u8] = &self.mmap[ix..ix + std::mem::size_of::<Header>()];
-        unsafe {
-            let hdr = hdr_slice.as_ptr() as *const Header;
-            //debug!("FREE uid: {}", hdr.as_ref().unwrap().uid());
-            let previous_uid = hdr.as_ref().unwrap().unlock();
-            assert_eq!(
-                previous_uid, uid,
-                "free: unlocked a header with a differet uid: {}",
-                previous_uid
-            );
-            self.used.fetch_sub(1, Ordering::Relaxed);
-        }
+        let previous_uid = self.header_ptr(ix).unlock();
+        assert_eq!(
+            previous_uid, uid,
+            "free: unlocked a header with a differet uid: {}",
+            previous_uid
+        );
+        self.count.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn get<T: Sized>(&self, ix: u64) -> &T {
@@ -321,6 +334,9 @@ impl BucketStorage {
             capacity_pow_2,
             max_search,
             Arc::clone(stats),
+            bucket
+                .map(|bucket| Arc::clone(&bucket.count))
+                .unwrap_or_default(),
         );
         if let Some(bucket) = bucket {
             new_bucket.copy_contents(bucket);

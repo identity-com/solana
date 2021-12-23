@@ -119,7 +119,6 @@ fn initialize_from_snapshot(
     );
     let (bank0, _) = snapshot_utils::bank_from_snapshot_archives(
         &replica_config.account_paths,
-        &[],
         &snapshot_config.bank_snapshots_dir,
         &archive_info,
         None,
@@ -192,6 +191,8 @@ fn start_client_rpc_services(
 
     let subscriptions = Arc::new(RpcSubscriptions::new(
         &exit,
+        max_complete_transaction_status_slot.clone(),
+        blockstore.clone(),
         bank_forks.clone(),
         block_commitment_cache.clone(),
         optimistically_confirmed_bank.clone(),

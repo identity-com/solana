@@ -14,6 +14,7 @@ use {
         serve_repair_service::ServeRepairService,
         sigverify,
         snapshot_packager_service::SnapshotPackagerService,
+        stats_reporter_service::StatsReporterService,
         system_monitor_service::{verify_udp_stats_access, SystemMonitorService},
         tower_storage::TowerStorage,
         tpu::{Tpu, DEFAULT_TPU_COALESCE_MS},
@@ -136,7 +137,6 @@ pub struct ValidatorConfig {
     pub gossip_validators: Option<HashSet<Pubkey>>, // None = gossip with all
     pub halt_on_known_validators_accounts_hash_mismatch: bool,
     pub accounts_hash_fault_injection_slots: u64, // 0 = no fault injection
-    pub frozen_accounts: Vec<Pubkey>,
     pub no_rocksdb_compaction: bool,
     pub rocksdb_compaction_interval: Option<u64>,
     pub rocksdb_max_compaction_jitter: Option<u64>,
@@ -166,7 +166,6 @@ pub struct ValidatorConfig {
     pub validator_exit: Arc<RwLock<Exit>>,
     pub no_wait_for_vote_to_start_leader: bool,
     pub accounts_shrink_ratio: AccountShrinkThreshold,
-    pub disable_epoch_boundary_optimization: bool,
 }
 
 impl Default for ValidatorConfig {
@@ -197,7 +196,6 @@ impl Default for ValidatorConfig {
             gossip_validators: None,
             halt_on_known_validators_accounts_hash_mismatch: false,
             accounts_hash_fault_injection_slots: 0,
-            frozen_accounts: vec![],
             no_rocksdb_compaction: false,
             rocksdb_compaction_interval: None,
             rocksdb_max_compaction_jitter: None,
@@ -227,7 +225,6 @@ impl Default for ValidatorConfig {
             no_wait_for_vote_to_start_leader: true,
             accounts_shrink_ratio: AccountShrinkThreshold::default(),
             accounts_db_config: None,
-            disable_epoch_boundary_optimization: false,
         }
     }
 }
@@ -280,6 +277,7 @@ pub struct Validator {
     cache_block_meta_service: Option<CacheBlockMetaService>,
     system_monitor_service: Option<SystemMonitorService>,
     sample_performance_service: Option<SamplePerformanceService>,
+    stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
     serve_repair_service: ServeRepairService,
     completed_data_sets_service: CompletedDataSetsService,
@@ -542,6 +540,8 @@ impl Validator {
 
         let rpc_subscriptions = Arc::new(RpcSubscriptions::new_with_config(
             &exit,
+            max_complete_transaction_status_slot.clone(),
+            blockstore.clone(),
             bank_forks.clone(),
             block_commitment_cache.clone(),
             optimistically_confirmed_bank.clone(),
@@ -699,12 +699,17 @@ impl Validator {
                 Some(node.info.shred_version),
             )),
         };
+
+        let (stats_reporter_sender, stats_reporter_receiver) = channel();
+        let stats_reporter_service = StatsReporterService::new(stats_reporter_receiver, &exit);
+
         let gossip_service = GossipService::new(
             &cluster_info,
             Some(bank_forks.clone()),
             node.sockets.gossip,
             config.gossip_validators.clone(),
             should_check_duplicate_instance,
+            Some(stats_reporter_sender.clone()),
             &exit,
         );
         let serve_repair = Arc::new(RwLock::new(ServeRepair::new(cluster_info.clone())));
@@ -713,6 +718,7 @@ impl Validator {
             Some(blockstore.clone()),
             node.sockets.serve_repair,
             socket_addr_space,
+            stats_reporter_sender,
             &exit,
         );
 
@@ -830,6 +836,11 @@ impl Validator {
                     .iter()
                     .map(|s| s.try_clone().expect("Failed to clone TVU forwards Sockets"))
                     .collect(),
+                ancestor_hashes_requests: node
+                    .sockets
+                    .ancestor_hashes_requests
+                    .try_clone()
+                    .expect("Failed to clone ancestor_hashes_requests socket"),
             },
             blockstore.clone(),
             ledger_signal_receiver,
@@ -868,7 +879,6 @@ impl Validator {
                 rocksdb_max_compaction_jitter: config.rocksdb_compaction_interval,
                 wait_for_vote_to_start_leader,
                 accounts_shrink_ratio: config.accounts_shrink_ratio,
-                disable_epoch_boundary_optimization: config.disable_epoch_boundary_optimization,
             },
             &max_slots,
             &cost_model,
@@ -907,6 +917,7 @@ impl Validator {
 
         *start_progress.write().unwrap() = ValidatorStartProgress::Running;
         Self {
+            stats_reporter_service,
             gossip_service,
             serve_repair_service,
             json_rpc_service,
@@ -1031,6 +1042,9 @@ impl Validator {
         self.serve_repair_service
             .join()
             .expect("serve_repair_service");
+        self.stats_reporter_service
+            .join()
+            .expect("stats_reporter_service");
         self.tpu.join().expect("tpu");
         self.tvu.join().expect("tvu");
         self.completed_data_sets_service
@@ -1276,7 +1290,6 @@ fn new_banks_from_ledger(
         poh_verify,
         dev_halt_at_slot: config.dev_halt_at_slot,
         new_hard_forks: config.new_hard_forks.clone(),
-        frozen_accounts: config.frozen_accounts.clone(),
         debug_keys: config.debug_keys.clone(),
         account_indexes: config.account_indexes.clone(),
         accounts_db_caching_enabled: config.accounts_db_caching_enabled,
@@ -1743,11 +1756,12 @@ pub fn is_snapshot_config_valid(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_ledger::{create_new_tmp_ledger, genesis_utils::create_genesis_config_with_leader};
-    use solana_sdk::genesis_config::create_genesis_config;
-    use solana_sdk::poh_config::PohConfig;
-    use std::fs::remove_dir_all;
+    use {
+        super::*,
+        solana_ledger::{create_new_tmp_ledger, genesis_utils::create_genesis_config_with_leader},
+        solana_sdk::{genesis_config::create_genesis_config, poh_config::PohConfig},
+        std::fs::remove_dir_all,
+    };
 
     #[test]
     fn validator_exit() {
@@ -1792,8 +1806,10 @@ mod tests {
     fn test_backup_and_clear_blockstore() {
         use std::time::Instant;
         solana_logger::setup();
-        use solana_entry::entry;
-        use solana_ledger::{blockstore, get_tmp_ledger_path};
+        use {
+            solana_entry::entry,
+            solana_ledger::{blockstore, get_tmp_ledger_path},
+        };
         let blockstore_path = get_tmp_ledger_path!();
         {
             let blockstore = Blockstore::open(&blockstore_path).unwrap();

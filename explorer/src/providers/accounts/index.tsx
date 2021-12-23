@@ -1,19 +1,15 @@
 import React from "react";
-import {
-  AccountInfo,
-  Connection,
-  PublicKey,
-  StakeActivationData,
-} from "@solana/web3.js";
-import { Cluster, useCluster } from "../cluster";
+import { pubkeyToString } from "utils";
+import {PublicKey, Connection, StakeActivationData, AccountInfo} from "@solana/web3.js";
+import { useCluster, Cluster } from "../cluster";
 import { HistoryProvider } from "./history";
 import { TokensProvider } from "./tokens";
 import { create } from "superstruct";
 import { ParsedInfo } from "validators";
 import { StakeAccount } from "validators/accounts/stake";
 import {
-  MintAccountInfo,
   TokenAccount,
+  MintAccountInfo,
   TokenAccountInfo,
 } from "validators/accounts/token";
 import * as Cache from "providers/cache";
@@ -30,7 +26,7 @@ import {
   UpgradeableLoaderAccount,
 } from "validators/accounts/upgradeable-program";
 import { RewardsProvider } from "./rewards";
-import { Metadata, MetadataData } from "@metaplex/js";
+import { programs, MetadataJson } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
 import { GatewayTokenAccount } from "../../validators/accounts/gateway";
 import {
@@ -41,6 +37,8 @@ import {
 } from "@identity.com/solana-gateway-ts";
 
 export { useAccountHistory } from "./history";
+
+const Metadata = programs.metadata.Metadata;
 
 export type StakeProgramData = {
   program: "stake";
@@ -55,7 +53,8 @@ export type UpgradeableLoaderAccountData = {
 };
 
 export type NFTData = {
-  metadata: MetadataData;
+  metadata: programs.metadata.MetadataData;
+  json: MetadataJson | undefined;
   editionInfo: EditionInfo;
 };
 
@@ -300,8 +299,16 @@ async function fetchAccountInfo(
                       metadata,
                       connection
                     );
-
-                    nftData = { metadata: metadata.data, editionInfo };
+                    const id = pubkeyToString(pubkey);
+                    const metadataJSON = await getMetaDataJSON(
+                      id,
+                      metadata.data
+                    );
+                    nftData = {
+                      metadata: metadata.data,
+                      json: metadataJSON,
+                      editionInfo,
+                    };
                   }
                 }
               } catch (error) {
@@ -351,6 +358,53 @@ async function fetchAccountInfo(
     url,
   });
 }
+
+const getMetaDataJSON = async (
+  id: string,
+  metadata: programs.metadata.MetadataData
+): Promise<MetadataJson | undefined> => {
+  return new Promise(async (resolve, reject) => {
+    const uri = metadata.data.uri;
+    if (!uri) return resolve(undefined);
+
+    const processJson = (extended: any) => {
+      if (!extended || extended?.properties?.files?.length === 0) {
+        return;
+      }
+
+      if (extended?.image) {
+        extended.image = extended.image.startsWith("http")
+          ? extended.image
+          : `${metadata.data.uri}/${extended.image}`;
+      }
+
+      return extended;
+    };
+
+    try {
+      fetch(uri)
+        .then(async (_) => {
+          try {
+            const data = await _.json();
+            try {
+              localStorage.setItem(uri, JSON.stringify(data));
+            } catch {
+              // ignore
+            }
+            resolve(processJson(data));
+          } catch {
+            resolve(undefined);
+          }
+        })
+        .catch(() => {
+          resolve(undefined);
+        });
+    } catch (ex) {
+      console.error(ex);
+      resolve(undefined);
+    }
+  });
+};
 
 export function useAccounts() {
   const context = React.useContext(StateContext);

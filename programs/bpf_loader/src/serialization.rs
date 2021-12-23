@@ -1,17 +1,16 @@
-use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
-use solana_rbpf::{aligned_memory::AlignedMemory, ebpf::HOST_ALIGN};
-use solana_sdk::{
-    account::{ReadableAccount, WritableAccount},
-    bpf_loader_deprecated,
-    entrypoint::{MAX_PERMITTED_DATA_INCREASE, PARAMETER_ALIGNMENT},
-    instruction::InstructionError,
-    keyed_account::KeyedAccount,
-    pubkey::Pubkey,
-    system_instruction::MAX_PERMITTED_DATA_LENGTH,
-};
-use std::{
-    io::prelude::*,
-    mem::{align_of, size_of},
+use {
+    byteorder::{ByteOrder, LittleEndian, WriteBytesExt},
+    solana_rbpf::{aligned_memory::AlignedMemory, ebpf::HOST_ALIGN},
+    solana_sdk::{
+        account::{ReadableAccount, WritableAccount},
+        bpf_loader_deprecated,
+        entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE},
+        instruction::InstructionError,
+        keyed_account::KeyedAccount,
+        pubkey::Pubkey,
+        system_instruction::MAX_PERMITTED_DATA_LENGTH,
+    },
+    std::{io::prelude::*, mem::size_of},
 };
 
 /// Look for a duplicate account and return its position if found
@@ -183,7 +182,7 @@ pub fn get_serialized_account_size_aligned(
             + size_of::<u64>()  // data len
             + data_len
             + MAX_PERMITTED_DATA_INCREASE
-            + (data_len as *const u8).align_offset(align_of::<u128>())
+            + (data_len as *const u8).align_offset(BPF_ALIGN_OF_U128)
             + size_of::<u64>(), // rent epoch
     )
 }
@@ -242,7 +241,7 @@ pub fn serialize_parameters_aligned(
                 .map_err(|_| InstructionError::InvalidArgument)?;
             v.resize(
                 MAX_PERMITTED_DATA_INCREASE
-                    + (v.write_index() as *const u8).align_offset(PARAMETER_ALIGNMENT),
+                    + (v.write_index() as *const u8).align_offset(BPF_ALIGN_OF_U128),
                 0,
             )
             .map_err(|_| InstructionError::InvalidArgument)?;
@@ -306,7 +305,7 @@ pub fn deserialize_parameters_aligned(
             };
             account.set_data_from_slice(&buffer[start..data_end]);
             start += *pre_len + MAX_PERMITTED_DATA_INCREASE; // data
-            start += (start as *const u8).align_offset(align_of::<u128>());
+            start += (start as *const u8).align_offset(BPF_ALIGN_OF_U128);
             start += size_of::<u64>(); // rent_epoch
         }
     }
@@ -315,149 +314,155 @@ pub fn deserialize_parameters_aligned(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_program_runtime::invoke_context::{
-        prepare_mock_invoke_context, InvokeContext, ThisInvokeContext,
-    };
-    use solana_sdk::{
-        account::{Account, AccountSharedData},
-        account_info::AccountInfo,
-        bpf_loader,
-        entrypoint::deserialize,
-    };
-    use std::{
-        cell::RefCell,
-        rc::Rc,
-        // Hide Result from bindgen gets confused about generics in non-generic type declarations
-        slice::{from_raw_parts, from_raw_parts_mut},
+    use {
+        super::*,
+        solana_program_runtime::invoke_context::{prepare_mock_invoke_context, InvokeContext},
+        solana_sdk::{
+            account::{Account, AccountSharedData},
+            account_info::AccountInfo,
+            bpf_loader,
+            entrypoint::deserialize,
+            instruction::AccountMeta,
+        },
+        std::{
+            cell::RefCell,
+            rc::Rc,
+            slice::{from_raw_parts, from_raw_parts_mut},
+        },
     };
 
     #[test]
     fn test_serialize_parameters() {
         let program_id = solana_sdk::pubkey::new_rand();
-        let dup_key = solana_sdk::pubkey::new_rand();
-        let dup_key2 = solana_sdk::pubkey::new_rand();
-        let keyed_accounts = [
+        let transaction_accounts = vec![
             (
-                false,
-                false,
                 program_id,
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
+                AccountSharedData::from(Account {
                     lamports: 0,
                     data: vec![],
                     owner: bpf_loader::id(),
                     executable: true,
                     rent_epoch: 0,
-                }))),
+                }),
             ),
             (
-                false,
-                false,
-                dup_key,
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
-                    lamports: 1,
-                    data: vec![1u8, 2, 3, 4, 5],
-                    owner: bpf_loader::id(),
-                    executable: false,
-                    rent_epoch: 100,
-                }))),
-            ),
-            (
-                false,
-                false,
-                dup_key,
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
-                    lamports: 1,
-                    data: vec![1u8, 2, 3, 4, 5],
-                    owner: bpf_loader::id(),
-                    executable: false,
-                    rent_epoch: 100,
-                }))),
-            ),
-            (
-                false,
-                false,
                 solana_sdk::pubkey::new_rand(),
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
+                AccountSharedData::from(Account {
+                    lamports: 1,
+                    data: vec![1u8, 2, 3, 4, 5],
+                    owner: bpf_loader::id(),
+                    executable: false,
+                    rent_epoch: 100,
+                }),
+            ),
+            (
+                solana_sdk::pubkey::new_rand(),
+                AccountSharedData::from(Account {
                     lamports: 2,
                     data: vec![11u8, 12, 13, 14, 15, 16, 17, 18, 19],
                     owner: bpf_loader::id(),
                     executable: true,
                     rent_epoch: 200,
-                }))),
+                }),
             ),
             (
-                false,
-                false,
                 solana_sdk::pubkey::new_rand(),
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
+                AccountSharedData::from(Account {
                     lamports: 3,
                     data: vec![],
                     owner: bpf_loader::id(),
                     executable: false,
                     rent_epoch: 3100,
-                }))),
+                }),
             ),
             (
-                false,
-                true,
-                dup_key2,
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
-                    lamports: 4,
-                    data: vec![1u8, 2, 3, 4, 5],
-                    owner: bpf_loader::id(),
-                    executable: false,
-                    rent_epoch: 100,
-                }))),
-            ),
-            (
-                false,
-                true,
-                dup_key2,
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
-                    lamports: 4,
-                    data: vec![1u8, 2, 3, 4, 5],
-                    owner: bpf_loader::id(),
-                    executable: false,
-                    rent_epoch: 100,
-                }))),
-            ),
-            (
-                false,
-                true,
                 solana_sdk::pubkey::new_rand(),
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
+                AccountSharedData::from(Account {
+                    lamports: 4,
+                    data: vec![1u8, 2, 3, 4, 5],
+                    owner: bpf_loader::id(),
+                    executable: false,
+                    rent_epoch: 100,
+                }),
+            ),
+            (
+                solana_sdk::pubkey::new_rand(),
+                AccountSharedData::from(Account {
                     lamports: 5,
                     data: vec![11u8, 12, 13, 14, 15, 16, 17, 18, 19],
                     owner: bpf_loader::id(),
                     executable: true,
                     rent_epoch: 200,
-                }))),
+                }),
             ),
             (
-                false,
-                true,
                 solana_sdk::pubkey::new_rand(),
-                Rc::new(RefCell::new(AccountSharedData::from(Account {
+                AccountSharedData::from(Account {
                     lamports: 6,
                     data: vec![],
                     owner: bpf_loader::id(),
                     executable: false,
                     rent_epoch: 3100,
-                }))),
+                }),
             ),
+        ];
+        let instruction_accounts = vec![
+            AccountMeta {
+                pubkey: transaction_accounts[1].0,
+                is_signer: false,
+                is_writable: false,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[1].0,
+                is_signer: false,
+                is_writable: false,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[2].0,
+                is_signer: false,
+                is_writable: false,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[3].0,
+                is_signer: false,
+                is_writable: false,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[4].0,
+                is_signer: false,
+                is_writable: true,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[4].0,
+                is_signer: false,
+                is_writable: true,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[5].0,
+                is_signer: false,
+                is_writable: true,
+            },
+            AccountMeta {
+                pubkey: transaction_accounts[6].0,
+                is_signer: false,
+                is_writable: true,
+            },
         ];
         let instruction_data = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
         let program_indices = [0];
-        let preparation =
-            prepare_mock_invoke_context(&program_indices, &instruction_data, &keyed_accounts);
-        let mut invoke_context = ThisInvokeContext::new_mock(&preparation.accounts, &[]);
+        let preparation = prepare_mock_invoke_context(
+            &program_indices,
+            &instruction_data,
+            transaction_accounts.clone(),
+            instruction_accounts,
+        );
+        let mut invoke_context = InvokeContext::new_mock(&preparation.accounts, &[]);
         invoke_context
             .push(
                 &preparation.message,
                 &preparation.message.instructions[0],
                 &program_indices,
-                Some(&preparation.account_indices),
+                &preparation.account_indices,
             )
             .unwrap();
 
@@ -478,12 +483,15 @@ mod tests {
         assert_eq!(&program_id, de_program_id);
         assert_eq!(instruction_data, de_instruction_data);
         assert_eq!(
-            (&de_instruction_data[0] as *const u8).align_offset(align_of::<u128>()),
+            (&de_instruction_data[0] as *const u8).align_offset(BPF_ALIGN_OF_U128),
             0
         );
-        for ((_, _, key, account), account_info) in keyed_accounts.iter().skip(1).zip(de_accounts) {
-            assert_eq!(key, account_info.key);
-            let account = account.borrow();
+        for account_info in de_accounts {
+            let account = &transaction_accounts
+                .iter()
+                .find(|(key, _account)| key == account_info.key)
+                .unwrap()
+                .1;
             assert_eq!(account.lamports(), account_info.lamports());
             assert_eq!(account.data(), &account_info.data.borrow()[..]);
             assert_eq!(account.owner(), account_info.owner);
@@ -491,7 +499,7 @@ mod tests {
             assert_eq!(account.rent_epoch(), account_info.rent_epoch);
 
             assert_eq!(
-                (*account_info.lamports.borrow() as *const u64).align_offset(align_of::<u64>()),
+                (*account_info.lamports.borrow() as *const u64).align_offset(BPF_ALIGN_OF_U128),
                 0
             );
             assert_eq!(
@@ -499,7 +507,7 @@ mod tests {
                     .data
                     .borrow()
                     .as_ptr()
-                    .align_offset(align_of::<u128>()),
+                    .align_offset(BPF_ALIGN_OF_U128),
                 0
             );
         }
@@ -513,12 +521,14 @@ mod tests {
             true,
         )
         .unwrap();
-        for ((_, _, key, account), de_keyed_account) in keyed_accounts.iter().zip(de_keyed_accounts)
-        {
-            assert_eq!(key, de_keyed_account.unsigned_key());
-            let account = account.borrow();
-            assert_eq!(account.executable(), de_keyed_account.executable().unwrap());
-            assert_eq!(account.rent_epoch(), de_keyed_account.rent_epoch().unwrap());
+        for keyed_account in de_keyed_accounts {
+            let account = &transaction_accounts
+                .iter()
+                .find(|(key, _account)| key == keyed_account.unsigned_key())
+                .unwrap()
+                .1;
+            assert_eq!(account.executable(), keyed_account.executable().unwrap());
+            assert_eq!(account.rent_epoch(), keyed_account.rent_epoch().unwrap());
         }
 
         // check serialize_parameters_unaligned
@@ -536,9 +546,12 @@ mod tests {
             unsafe { deserialize_unaligned(&mut serialized.as_slice_mut()[0] as *mut u8) };
         assert_eq!(&program_id, de_program_id);
         assert_eq!(instruction_data, de_instruction_data);
-        for ((_, _, key, account), account_info) in keyed_accounts.iter().skip(1).zip(de_accounts) {
-            assert_eq!(key, account_info.key);
-            let account = account.borrow();
+        for account_info in de_accounts {
+            let account = &transaction_accounts
+                .iter()
+                .find(|(key, _account)| key == account_info.key)
+                .unwrap()
+                .1;
             assert_eq!(account.lamports(), account_info.lamports());
             assert_eq!(account.data(), &account_info.data.borrow()[..]);
             assert_eq!(account.owner(), account_info.owner);
@@ -555,18 +568,20 @@ mod tests {
             true,
         )
         .unwrap();
-        for ((_, _, key, account), de_keyed_account) in keyed_accounts.iter().zip(de_keyed_accounts)
-        {
-            assert_eq!(key, de_keyed_account.unsigned_key());
-            let account = account.borrow();
-            assert_eq!(account.lamports(), de_keyed_account.lamports().unwrap());
+        for keyed_account in de_keyed_accounts {
+            let account = &transaction_accounts
+                .iter()
+                .find(|(key, _account)| key == keyed_account.unsigned_key())
+                .unwrap()
+                .1;
+            assert_eq!(account.lamports(), keyed_account.lamports().unwrap());
             assert_eq!(
                 account.data(),
-                de_keyed_account.try_account_ref().unwrap().data()
+                keyed_account.try_account_ref().unwrap().data()
             );
-            assert_eq!(*account.owner(), de_keyed_account.owner().unwrap());
-            assert_eq!(account.executable(), de_keyed_account.executable().unwrap());
-            assert_eq!(account.rent_epoch(), de_keyed_account.rent_epoch().unwrap());
+            assert_eq!(*account.owner(), keyed_account.owner().unwrap());
+            assert_eq!(account.executable(), keyed_account.executable().unwrap());
+            assert_eq!(account.rent_epoch(), keyed_account.rent_epoch().unwrap());
         }
     }
 

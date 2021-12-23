@@ -3,16 +3,15 @@
 
 #[allow(deprecated)]
 use solana_sdk::sysvar::fees::Fees;
+// Export tokio for test clients
+pub use tokio;
 use {
     async_trait::async_trait,
     chrono_humanize::{Accuracy, HumanTime, Tense},
     log::*,
     solana_banks_client::start_client,
     solana_banks_server::banks_server::start_local_server,
-    solana_program_runtime::{
-        ic_msg, instruction_processor::InstructionProcessor,
-        invoke_context::ProcessInstructionWithContext, stable_log,
-    },
+    solana_program_runtime::{ic_msg, invoke_context::ProcessInstructionWithContext, stable_log},
     solana_runtime::{
         bank::{Bank, ExecuteTimings},
         bank_forks::BankForks,
@@ -27,12 +26,10 @@ use {
         compute_budget::ComputeBudget,
         entrypoint::{ProgramResult, SUCCESS},
         epoch_schedule::EpochSchedule,
-        feature_set::demote_program_write_locks,
         fee_calculator::{FeeCalculator, FeeRateGovernor},
         genesis_config::{ClusterType, GenesisConfig},
         hash::Hash,
-        instruction::Instruction,
-        instruction::InstructionError,
+        instruction::{Instruction, InstructionError},
         message::Message,
         native_token::sol_to_lamports,
         poh_config::PohConfig,
@@ -43,7 +40,7 @@ use {
         sysvar::{
             clock, epoch_schedule,
             fees::{self},
-            rent, Sysvar,
+            rent, Sysvar, SysvarId,
         },
     },
     solana_vote_program::vote_state::{VoteState, VoteStateVersions},
@@ -65,13 +62,8 @@ use {
     thiserror::Error,
     tokio::task::JoinHandle,
 };
-
 // Export types so test clients can limit their solana crate dependencies
-pub use solana_banks_client::BanksClient;
-pub use solana_program_runtime::invoke_context::InvokeContext;
-
-// Export tokio for test clients
-pub use tokio;
+pub use {solana_banks_client::BanksClient, solana_program_runtime::invoke_context::InvokeContext};
 
 pub mod programs;
 
@@ -87,26 +79,25 @@ pub enum ProgramTestError {
 }
 
 thread_local! {
-    static INVOKE_CONTEXT: RefCell<Option<(usize, usize)>> = RefCell::new(None);
+    static INVOKE_CONTEXT: RefCell<Option<usize>> = RefCell::new(None);
 }
-fn set_invoke_context(new: &mut dyn InvokeContext) {
-    INVOKE_CONTEXT.with(|invoke_context| unsafe {
-        invoke_context.replace(Some(transmute::<_, (usize, usize)>(new)))
-    });
+fn set_invoke_context(new: &mut InvokeContext) {
+    INVOKE_CONTEXT
+        .with(|invoke_context| unsafe { invoke_context.replace(Some(transmute::<_, usize>(new))) });
 }
-fn get_invoke_context<'a>() -> &'a mut dyn InvokeContext {
-    let fat = INVOKE_CONTEXT.with(|invoke_context| match *invoke_context.borrow() {
+fn get_invoke_context<'a, 'b>() -> &'a mut InvokeContext<'b> {
+    let ptr = INVOKE_CONTEXT.with(|invoke_context| match *invoke_context.borrow() {
         Some(val) => val,
         None => panic!("Invoke context not set!"),
     });
-    unsafe { transmute::<(usize, usize), &mut dyn InvokeContext>(fat) }
+    unsafe { transmute::<usize, &mut InvokeContext>(ptr) }
 }
 
 pub fn builtin_process_instruction(
     process_instruction: solana_sdk::entrypoint::ProcessInstruction,
     _first_instruction_account: usize,
     input: &[u8],
-    invoke_context: &mut dyn InvokeContext,
+    invoke_context: &mut InvokeContext,
 ) -> Result<(), InstructionError> {
     set_invoke_context(invoke_context);
 
@@ -190,7 +181,7 @@ macro_rules! processor {
         Some(
             |first_instruction_account: usize,
              input: &[u8],
-             invoke_context: &mut dyn solana_program_test::InvokeContext| {
+             invoke_context: &mut solana_program_test::InvokeContext| {
                 $crate::builtin_process_instruction(
                     $process_instruction,
                     first_instruction_account,
@@ -218,7 +209,7 @@ fn get_sysvar<T: Default + Sysvar + Sized + serde::de::DeserializeOwned>(
         panic!("Exceeded compute budget");
     }
 
-    match solana_program_runtime::invoke_context::get_sysvar::<T>(invoke_context, id) {
+    match invoke_context.get_sysvar::<T>(id) {
         Ok(sysvar_data) => unsafe {
             *(var_addr as *mut _ as *mut T) = sysvar_data;
             SUCCESS
@@ -252,14 +243,12 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
         let message = Message::new(&[instruction.clone()], None);
         let program_id_index = message.instructions[0].program_id_index as usize;
         let program_id = message.account_keys[program_id_index];
-        let demote_program_write_locks =
-            invoke_context.is_feature_active(&demote_program_write_locks::id());
         // TODO don't have the caller's keyed_accounts so can't validate writer or signer escalation or deescalation yet
         let caller_privileges = message
             .account_keys
             .iter()
             .enumerate()
-            .map(|(i, _)| message.is_writable(i, demote_program_write_locks))
+            .map(|(i, _)| message.is_writable(i))
             .collect::<Vec<bool>>();
 
         stable_log::program_invoke(&log_collector, &program_id, invoke_context.invoke_depth());
@@ -268,8 +257,8 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
         let mut account_indices = Vec::with_capacity(message.account_keys.len());
         let mut accounts = Vec::with_capacity(message.account_keys.len());
         for (i, account_key) in message.account_keys.iter().enumerate() {
-            let ((account_index, account), account_info) = invoke_context
-                .get_account(account_key)
+            let (account_index, account_info) = invoke_context
+                .find_index_of_account(account_key)
                 .zip(
                     account_infos
                         .iter()
@@ -278,23 +267,24 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
                 .ok_or(InstructionError::MissingAccount)
                 .unwrap();
             {
-                let mut account = account.borrow_mut();
+                let mut account = invoke_context
+                    .get_account_at_index(account_index)
+                    .borrow_mut();
                 account.copy_into_owner_from_slice(account_info.owner.as_ref());
                 account.set_data_from_slice(&account_info.try_borrow_data().unwrap());
                 account.set_lamports(account_info.lamports());
                 account.set_executable(account_info.executable);
                 account.set_rent_epoch(account_info.rent_epoch);
             }
-            let account_info = if message.is_writable(i, demote_program_write_locks) {
+            let account_info = if message.is_writable(i) {
                 Some(account_info)
             } else {
                 None
             };
             account_indices.push(account_index);
-            accounts.push((account, account_info));
+            accounts.push((account_index, account_info));
         }
-        let (program_account_index, _program_account) =
-            invoke_context.get_account(&program_id).unwrap();
+        let program_account_index = invoke_context.find_index_of_account(&program_id).unwrap();
         let program_indices = vec![program_account_index];
 
         // Check Signers
@@ -321,31 +311,35 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
             }
         }
 
-        invoke_context.record_instruction(instruction);
+        if let Some(instruction_recorder) = &invoke_context.instruction_recorder {
+            instruction_recorder.record_instruction(instruction.clone());
+        }
 
-        InstructionProcessor::process_cross_program_instruction(
-            &message,
-            &program_indices,
-            &account_indices,
-            &caller_privileges,
-            invoke_context,
-        )
-        .map_err(|err| ProgramError::try_from(err).unwrap_or_else(|err| panic!("{}", err)))?;
+        invoke_context
+            .process_instruction(
+                &message,
+                &message.instructions[0],
+                &program_indices,
+                &account_indices,
+                &caller_privileges,
+            )
+            .map_err(|err| ProgramError::try_from(err).unwrap_or_else(|err| panic!("{}", err)))?;
 
         // Copy writeable account modifications back into the caller's AccountInfos
-        for (account, account_info) in accounts.iter() {
+        for (account_index, account_info) in accounts.into_iter() {
             if let Some(account_info) = account_info {
-                **account_info.try_borrow_mut_lamports().unwrap() = account.borrow().lamports();
-                let mut data = account_info.try_borrow_mut_data()?;
+                let account = invoke_context.get_account_at_index(account_index);
                 let account_borrow = account.borrow();
+                **account_info.try_borrow_mut_lamports().unwrap() = account_borrow.lamports();
+                let mut data = account_info.try_borrow_mut_data()?;
                 let new_data = account_borrow.data();
-                if account_info.owner != account.borrow().owner() {
+                if account_info.owner != account_borrow.owner() {
                     // TODO Figure out a better way to allow the System Program to set the account owner
                     #[allow(clippy::transmute_ptr_to_ptr)]
                     #[allow(mutable_transmutes)]
                     let account_info_mut =
                         unsafe { transmute::<&Pubkey, &mut Pubkey>(account_info.owner) };
-                    *account_info_mut = *account.borrow().owner();
+                    *account_info_mut = *account_borrow.owner();
                 }
                 // TODO: Figure out how to allow the System Program to resize the account data
                 assert!(
@@ -1035,6 +1029,30 @@ impl ProgramTestContext {
         let versioned = VoteStateVersions::new_current(vote_state);
         VoteState::to(&versioned, &mut vote_account).unwrap();
         bank.store_account(vote_account_address, &vote_account);
+    }
+
+    /// Create or overwrite an account, subverting normal runtime checks.
+    ///
+    /// This method exists to make it easier to set up artificial situations
+    /// that would be difficult to replicate by sending individual transactions.
+    /// Beware that it can be used to create states that would not be reachable
+    /// by sending transactions!
+    pub fn set_account(&mut self, address: &Pubkey, account: &AccountSharedData) {
+        let bank_forks = self.bank_forks.read().unwrap();
+        let bank = bank_forks.working_bank();
+        bank.store_account(address, account);
+    }
+
+    /// Create or overwrite a sysvar, subverting normal runtime checks.
+    ///
+    /// This method exists to make it easier to set up artificial situations
+    /// that would be difficult to replicate on a new test cluster. Beware
+    /// that it can be used to create states that would not be reachable
+    /// under normal conditions!
+    pub fn set_sysvar<T: SysvarId + Sysvar>(&self, sysvar: &T) {
+        let bank_forks = self.bank_forks.read().unwrap();
+        let bank = bank_forks.working_bank();
+        bank.set_sysvar_for_tests(sysvar);
     }
 
     /// Force the working bank ahead to a new slot

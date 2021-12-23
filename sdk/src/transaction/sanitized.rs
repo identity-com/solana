@@ -3,7 +3,10 @@
 use {
     crate::{
         hash::Hash,
-        message::{v0, MappedAddresses, MappedMessage, SanitizedMessage, VersionedMessage},
+        message::{
+            v0::{self, LoadedAddresses},
+            SanitizedMessage, VersionedMessage,
+        },
         nonce::NONCED_TX_MARKER_IX_INDEX,
         precompiles::verify_if_precompile,
         program_utils::limited_deserialize,
@@ -37,21 +40,21 @@ pub struct TransactionAccountLocks<'a> {
 
 impl SanitizedTransaction {
     /// Create a sanitized transaction from an unsanitized transaction.
-    /// If the input transaction uses address maps, attempt to map the
-    /// transaction keys to full addresses.
+    /// If the input transaction uses address tables, attempt to lookup
+    /// the address for each table index.
     pub fn try_create(
         tx: VersionedTransaction,
         message_hash: Hash,
         is_simple_vote_tx: Option<bool>,
-        address_mapper: impl Fn(&v0::Message) -> Result<MappedAddresses>,
+        address_loader: impl Fn(&v0::Message) -> Result<LoadedAddresses>,
     ) -> Result<Self> {
         tx.sanitize()?;
 
         let signatures = tx.signatures;
         let message = match tx.message {
             VersionedMessage::Legacy(message) => SanitizedMessage::Legacy(message),
-            VersionedMessage::V0(message) => SanitizedMessage::V0(MappedMessage {
-                mapped_addresses: address_mapper(&message)?,
+            VersionedMessage::V0(message) => SanitizedMessage::V0(v0::LoadedMessage {
+                loaded_addresses: address_loader(&message)?,
                 message,
             }),
         };
@@ -125,9 +128,9 @@ impl SanitizedTransaction {
     pub fn to_versioned_transaction(&self) -> VersionedTransaction {
         let signatures = self.signatures.clone();
         match &self.message {
-            SanitizedMessage::V0(mapped_msg) => VersionedTransaction {
+            SanitizedMessage::V0(sanitized_msg) => VersionedTransaction {
                 signatures,
-                message: VersionedMessage::V0(mapped_msg.message.clone()),
+                message: VersionedMessage::V0(sanitized_msg.message.clone()),
             },
             SanitizedMessage::Legacy(message) => VersionedTransaction {
                 signatures,
@@ -137,7 +140,7 @@ impl SanitizedTransaction {
     }
 
     /// Return the list of accounts that must be locked during processing this transaction.
-    pub fn get_account_locks(&self, demote_program_write_locks: bool) -> TransactionAccountLocks {
+    pub fn get_account_locks(&self) -> TransactionAccountLocks {
         let message = &self.message;
         let num_readonly_accounts = message.num_readonly_accounts();
         let num_writable_accounts = message
@@ -150,7 +153,7 @@ impl SanitizedTransaction {
         };
 
         for (i, key) in message.account_keys_iter().enumerate() {
-            if message.is_writable(i, demote_program_write_locks) {
+            if message.is_writable(i) {
                 account_locks.writable.push(key);
             } else {
                 account_locks.readonly.push(key);
@@ -180,7 +183,7 @@ impl SanitizedTransaction {
             .and_then(|ix| {
                 ix.accounts.get(0).and_then(|idx| {
                     let idx = *idx as usize;
-                    if nonce_must_be_writable && !self.message.is_writable(idx, true) {
+                    if nonce_must_be_writable && !self.message.is_writable(idx) {
                         None
                     } else {
                         self.message.get_account_key(idx)
@@ -193,13 +196,8 @@ impl SanitizedTransaction {
     fn message_data(&self) -> Vec<u8> {
         match &self.message {
             SanitizedMessage::Legacy(message) => message.serialize(),
-            SanitizedMessage::V0(mapped_msg) => mapped_msg.message.serialize(),
+            SanitizedMessage::V0(message) => message.serialize(),
         }
-    }
-
-    /// Verify the length of signatures matches the value in the message header
-    pub fn verify_signatures_len(&self) -> bool {
-        self.signatures.len() == self.message.header().num_required_signatures as usize
     }
 
     /// Verify the transaction signatures

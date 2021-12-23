@@ -280,12 +280,18 @@ impl Sanitize for DuplicateShred {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
-    use rand::Rng;
-    use solana_entry::entry::Entry;
-    use solana_ledger::shred::Shredder;
-    use solana_sdk::{hash, signature::Keypair, signature::Signer, system_transaction};
-    use std::sync::Arc;
+    use {
+        super::*,
+        rand::Rng,
+        solana_entry::entry::Entry,
+        solana_ledger::shred::Shredder,
+        solana_sdk::{
+            hash,
+            signature::{Keypair, Signer},
+            system_transaction,
+        },
+        std::sync::Arc,
+    };
 
     #[test]
     fn test_duplicate_shred_header_size() {
@@ -330,11 +336,12 @@ pub(crate) mod tests {
         })
         .take(5)
         .collect();
-        let (mut data_shreds, _coding_shreds, _last_shred_index) = shredder.entries_to_shreds(
+        let (mut data_shreds, _coding_shreds) = shredder.entries_to_shreds(
             keypair,
             &entries,
             true, // is_last_in_slot
             next_shred_index,
+            next_shred_index, // next_code_index
         );
         data_shreds.swap_remove(0)
     }
