@@ -68,8 +68,7 @@ export function clusterUrl(cluster: Cluster, customUrl: string): string {
             // return MAINNET_BETA_URL.replace("api", "explorer-api");
             return MAINNET_BETA_URL;
         case Cluster.Testnet:
-            // return TESTNET_URL.replace("api", "explorer-api");
-            return TESTNET_URL;
+            return TESTNET_URL.replace("api", "explorer-api");
         case Cluster.Custom:
             return customUrl;
     }
