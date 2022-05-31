@@ -111,7 +111,7 @@ Resources:
         Aliases:
           - !Ref WebsiteAddress
         Origins:
-          - DomainName: !GetAtt S3Bucket.DomainName
+          - DomainName: !GetAtt S3Bucket.RegionalDomainName
             OriginPath: !Ref CloudFrontOriginPath
             Id: S3BucketOrigin
             S3OriginConfig:
