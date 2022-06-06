@@ -115,6 +115,9 @@ function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
   throw new Error("Unrecognised state " + JSON.stringify(state));
 }
 
+export const SOL_DID_PROGRAM_ID = new PublicKey("idDa4XeCjVwKcprVAo812coUQbovSZ4kDGJf2sPaBnM");
+
+
 type State = Cache.State<Account>;
 type Dispatch = Cache.Dispatch<Account>;
 
