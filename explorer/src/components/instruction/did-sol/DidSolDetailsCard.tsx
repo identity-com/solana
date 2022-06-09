@@ -11,7 +11,7 @@ import { Address } from "components/common/Address";
 import { reportError } from "utils/sentry";
 import { programLabel } from "utils/tx";
 import { useCluster } from "providers/cluster";
-import {  SolData} from "@identity.com/sol-did-client";
+// import {  SolDafta} from "@identity.com/sol-did-client";
 
 type DetailsProps = {
   ix: TransactionInstruction;
