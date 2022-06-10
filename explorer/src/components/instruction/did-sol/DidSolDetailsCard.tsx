@@ -9,9 +9,7 @@ import { UnknownDetailsCard } from "../UnknownDetailsCard";
 import { InstructionCard } from "../InstructionCard";
 import { Address } from "components/common/Address";
 import { reportError } from "utils/sentry";
-import { programLabel } from "utils/tx";
-import { useCluster } from "providers/cluster";
-// import {  SolDafta} from "@identity.com/sol-did-client";
+import {ClusterType, ServiceEndpoint, SolData, SolPublicKey, VerificationMethod} from "@identity.com/sol-did-client";
 
 type DetailsProps = {
   ix: TransactionInstruction;
@@ -39,72 +37,81 @@ const codeToTitle = (code: DidSolInstructionType) => {
 
 export function DidSolDetailsCard(props: DetailsProps) {
   try {
+    const id = props.ix.data;
     const code = parseDidSolInstructionCode(props.ix);
     const title = codeToTitle(code);
     const created = parseDidSolInstruction(code, props.ix);
     return <DidSolInstruction title={title} info = {created}  {...props}/> ;
   } catch (err) {
     reportError(err, {});
-    console.log(1);
     return <UnknownDetailsCard {...props} />;
   }
 }
 
 type InfoProps = {
   ix: TransactionInstruction;
-  info: any;
+  info: {[key: string]: any};
   result: SignatureResult;
   index: number;
   title: string;
 };
 
-function parseDidSolInstruction(code: DidSolInstructionType, ix: TransactionInstruction) {
+function parseDidSolInstruction(code: DidSolInstructionType, ix: TransactionInstruction): {[key: string]: any} {
   switch (code) {
     case DidSolInstructionType.Initialize:
-      return { 
+      const solData = SolData.decode<SolData>(ix.data.slice(9,));
+      const {account, cluster, ...result} = { 
         Funder: ix.keys[0].pubkey,
         DataAccount: ix.keys[1].pubkey,
-        Authority: ix.keys[2].pubkey,
+        AuthorityAccount: ix.keys[2].pubkey,
         RentAccount: ix.keys[3].pubkey,
         SystemAccount: ix.keys[4].pubkey,
+        ...solData
       };
+      return result
     case DidSolInstructionType.Write:
       return {
-        SolAccount: ix.keys[0].pubkey,
-        SolSignerAuthority: ix.keys[1].pubkey,
+        DataAccount: ix.keys[0].pubkey,
+        AuthorityAccount: ix.keys[1].pubkey,
       }
     case DidSolInstructionType.CloseAccount:
       return {
-        SolAccount: ix.keys[0].pubkey,
-        SolSignerAuthority: ix.keys[1].pubkey,
+        DataAccount: ix.keys[0].pubkey,
+        AuthorityAccount: ix.keys[1].pubkey,
         ReceiverAccount: ix.keys[2].pubkey,
       }
   }
-
-
+}
+function display(value: any): JSX.Element {
+  if (Array.isArray(value)) {
+    return <ul>
+          {value.map(val => <li className="text-lg-right">{display(val)}</li>)}
+      </ul>
+  } else if (value instanceof PublicKey) {
+      return <Address pubkey={value} alignRight link />
+  } else if (value instanceof SolPublicKey) {
+    return <Address pubkey={value.toPublicKey()} alignRight link />
+  } else if (typeof value === "string") {
+    return <>{value}</>
+  } else if (typeof value === "number") {
+    return <>{value}</>
+  } else if (value instanceof VerificationMethod) {
+    return <Address pubkey={value.pubkey.toPublicKey()} alignRight link />
+  } else if (value instanceof ServiceEndpoint) {
+    return <>{value}</>
+  } else {
+    return <>Not available</>
+  }
 }
 
 function DidSolInstruction(props: InfoProps) {
-   const attributes: JSX.Element[] = [];
-
-   for (let key in props.info) {
-     let value = props.info[key];
-
- 
-     let tag;
-     let labelSuffix = "";
-     console.log(key, value);
-     tag = <Address pubkey={value} alignRight link />;
- 
-     let label = key.charAt(0).toUpperCase() + key.slice(1) + labelSuffix;
-     console.log(key)
-     attributes.push(
-       <tr key={key}>
-         <td>{label}</td>
-         <td className="text-lg-right">{tag}</td>
-       </tr>
-     );
-   }
+  const attributes = Object.entries(props.info).filter(([key, val]) => (!Array.isArray(val) || !(val.length ===0))).map(([key, val]) => {
+    let label = key.charAt(0).toUpperCase() + key.slice(1) + '';
+    return <tr key={key}>
+      <td>{label}</td>
+      <td>{display(val)}</td>
+    </tr>
+  })
   return (
     <InstructionCard
       ix={props.ix}
