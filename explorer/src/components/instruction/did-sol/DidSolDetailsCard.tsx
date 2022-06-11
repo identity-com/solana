@@ -9,7 +9,7 @@ import { UnknownDetailsCard } from "../UnknownDetailsCard";
 import { InstructionCard } from "../InstructionCard";
 import { Address } from "components/common/Address";
 import { reportError } from "utils/sentry";
-import {ClusterType, ServiceEndpoint, SolData, SolPublicKey, VerificationMethod} from "@identity.com/sol-did-client";
+import {ServiceEndpoint, SolData, SolPublicKey, VerificationMethod} from "@identity.com/sol-did-client";
 
 type DetailsProps = {
   ix: TransactionInstruction;
@@ -92,15 +92,15 @@ function display(value: any): JSX.Element {
   } else if (value instanceof SolPublicKey) {
     return <Address pubkey={value.toPublicKey()} alignRight link />
   } else if (typeof value === "string") {
-    return <>{value}</>
+    return <td className="text-lg-right">{value}</td>
   } else if (typeof value === "number") {
-    return <>{value}</>
+    return <td className="text-lg-right">{value}</td>
   } else if (value instanceof VerificationMethod) {
     return <Address pubkey={value.pubkey.toPublicKey()} alignRight link />
   } else if (value instanceof ServiceEndpoint) {
-    return <>{value}</>
+    return <td className="text-lg-right">{value}</td>
   } else {
-    return <>Not available</>
+    return <td className="text-lg-right">Not available</td>
   }
 }
 

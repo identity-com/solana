@@ -30,6 +30,8 @@ import { programs, MetadataJson } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
 import { GatewayTokenAccount } from "../../validators/accounts/gateway";
 import { GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
+import { SolData, SolDataConstructor } from "@identity.com/sol-did-client";
+import { ClusterType } from "@identity.com/sol-did-client";
 export { useAccountHistory } from "./history";
 
 const Metadata = programs.metadata.Metadata;
@@ -149,6 +151,17 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
   );
 }
 
+function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluster: Cluster): ProgramData {
+  const parsedData = SolData.decode<SolData>(result.data);
+  const parsed = new SolData({
+    ...parsedData
+  });
+  return {
+    program: "spl-token",
+    parsed: {info: parsed},
+  }
+}
+
 function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):GatewayTokenProgramData {
   const parsedData = GatewayTokenData.fromAccount(result.data);
   const parsed = new GatewayToken(
@@ -226,13 +239,11 @@ async function fetchAccountInfo(
                   );
                 }
               }
-
               data = {
                 program: result.data.program,
                 parsed,
                 programData,
               };
-
               break;
             }
             case "stake": {
@@ -324,9 +335,10 @@ async function fetchAccountInfo(
       } else {
         if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
           data = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
+        } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
+          data = parseDidSolToken(result as AccountInfo<Buffer>, pubkey, cluster);
         }
       }
-
       details = {
         space,
         executable: result.executable,
@@ -474,3 +486,4 @@ export function useFetchAccountInfo() {
     [dispatch, cluster, url]
   );
 }
+

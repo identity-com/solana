@@ -16,11 +16,13 @@ export enum ClusterStatus {
   Failure,
 }
 
+
 export enum Cluster {
   MainnetBeta,
   Testnet,
   Devnet,
   Custom,
+  Metadata
 }
 
 export const CLUSTERS = [
