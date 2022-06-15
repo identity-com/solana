@@ -22,7 +22,6 @@ export enum Cluster {
   Testnet,
   Devnet,
   Custom,
-  Metadata
 }
 
 export const CLUSTERS = [

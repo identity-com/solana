@@ -84,23 +84,32 @@ function parseDidSolInstruction(code: DidSolInstructionType, ix: TransactionInst
 }
 function display(value: any): JSX.Element {
   if (Array.isArray(value)) {
-    return <ul>
-          {value.map(val => <li className="text-lg-right">{display(val)}</li>)}
+    return <ul style ={{listStyle:'none'}}>
+          {value.map(val => <li className="text-end">{display(val)}</li>)}
       </ul>
   } else if (value instanceof PublicKey) {
       return <Address pubkey={value} alignRight link />
   } else if (value instanceof SolPublicKey) {
     return <Address pubkey={value.toPublicKey()} alignRight link />
   } else if (typeof value === "string") {
-    return <td className="text-lg-right">{value}</td>
+    return <>{value}</>
   } else if (typeof value === "number") {
-    return <td className="text-lg-right">{value}</td>
+    return <>{value}</>
   } else if (value instanceof VerificationMethod) {
-    return <Address pubkey={value.pubkey.toPublicKey()} alignRight link />
+    return <ul style ={{listStyle:'none'}}>
+    <li>{value.id}</li>
+    <li><Address pubkey={value.pubkey.toPublicKey()} alignRight link /></li>
+    <li>{value.verificationType}</li>
+    </ul>
   } else if (value instanceof ServiceEndpoint) {
-    return <td className="text-lg-right">{value}</td>
+    return< ul style ={{listStyle:'none'}}>
+    <li>{value.id}</li>
+    <li>{value.endpointType}</li>
+    <li>{value.endpoint}</li>
+    <li>{value.description}</li>
+    </ul>
   } else {
-    return <td className="text-lg-right">Not available</td>
+    return <>Not available</>
   }
 }
 
@@ -109,7 +118,7 @@ function DidSolInstruction(props: InfoProps) {
     let label = key.charAt(0).toUpperCase() + key.slice(1) + '';
     return <tr key={key}>
       <td>{label}</td>
-      <td>{display(val)}</td>
+      <td className="text-end" >{display(val)}</td>
     </tr>
   })
   return (

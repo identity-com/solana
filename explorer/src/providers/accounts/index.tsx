@@ -32,6 +32,7 @@ import { GatewayTokenAccount } from "../../validators/accounts/gateway";
 import { GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
 import { SolData, SolDataConstructor } from "@identity.com/sol-did-client";
 import { ClusterType } from "@identity.com/sol-did-client";
+import { DidSolTokenAccount } from "validators/accounts/didsol";
 export { useAccountHistory } from "./history";
 
 const Metadata = programs.metadata.Metadata;
@@ -85,6 +86,12 @@ export type GatewayTokenProgramData = {
   parsed: GatewayTokenAccount;
 };
 
+export type DidSolProgramData = {
+  program: "didsol"
+  parsed: DidSolTokenAccount;
+  //todo
+}
+
 export type ProgramData =
   | UpgradeableLoaderAccountData
   | StakeProgramData
@@ -93,7 +100,8 @@ export type ProgramData =
   | NonceProgramData
   | SysvarProgramData
   | ConfigProgramData
-  | GatewayTokenProgramData;
+  | GatewayTokenProgramData
+  | DidSolProgramData;
 
 export interface Details {
   executable: boolean;
@@ -138,7 +146,7 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
 
   return (
     <StateContext.Provider value={state}>
-      <DispatchContext.Provider value={dispatch}>
+      <DispatchContext.Provider value={dispatch}> 
         <TokensProvider>
           <HistoryProvider>
             <RewardsProvider>
@@ -151,13 +159,29 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
   );
 }
 
-function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluster: Cluster): ProgramData {
+
+
+function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluster: Cluster): DidSolProgramData {
   const parsedData = SolData.decode<SolData>(result.data);
-  const parsed = new SolData({
-    ...parsedData
-  });
+  const controllerKeys: PublicKey[] = [];
+  parsedData.controller.map(val => controllerKeys.push(val.toPublicKey()));
+  const serviceID: string[] = [];
+// what to write and anyway to test it?
+
+  const parsed = {
+    account: parsedData.account.toPublicKey(),
+    authority: parsedData.authority.toPublicKey(),
+    accountVersion: parsedData.accountVersion,
+    version: parsedData.version,
+    controller: controllerKeys,
+    authentication: parsedData.authentication,
+    capabilityInvocation: parsedData.capabilityInvocation,
+    capabilityDelegation: parsedData.capabilityDelegation,
+    keyAgreement: parsedData.keyAgreement,
+    assertionMethod: parsedData.assertionMethod,
+  };
   return {
-    program: "spl-token",
+    program: "didsol",
     parsed: {info: parsed},
   }
 }
@@ -335,7 +359,8 @@ async function fetchAccountInfo(
       } else {
         if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
           data = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
-        } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
+        } 
+        else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
           data = parseDidSolToken(result as AccountInfo<Buffer>, pubkey, cluster);
         }
       }
