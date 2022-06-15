@@ -41,6 +41,7 @@ import { MetaplexMetadataCard } from "components/account/MetaplexMetadataCard";
 import { NFTHeader } from "components/account/MetaplexNFTHeader";
 import { DomainsCard } from "components/account/DomainsCard";
 import isMetaplexNFT from "providers/accounts/utils/isMetaplexNFT";
+import { DidSolAccountSection } from "components/account/SolDidAccountSection";
 
 const IDENTICON_WIDTH = 64;
 
@@ -303,6 +304,9 @@ function InfoSection({ account }: { account: Account }) {
     return <NonceAccountSection account={account} nonceAccount={data.parsed} />;
   } else if (data && data.program === "vote") {
     return <VoteAccountSection account={account} voteAccount={data.parsed} />;
+  } else if (data && data.program === "didsol") {
+    console.log("run through accountdetailpage");
+    return <DidSolAccountSection account={account} soldata={data.parsed}/>
   } else if (data && data.program === "sysvar") {
     return (
       <SysvarAccountSection account={account} sysvarAccount={data.parsed} />

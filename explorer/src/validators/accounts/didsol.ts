@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-redeclare */
 
-import { ClusterType, ServiceEndpoint, SolPublicKey, VerificationMethod } from "@identity.com/sol-did-client/dist/lib/solana/sol-data";
 import {
     Infer,
     enums,
@@ -19,13 +18,18 @@ import {
     accountVersion: number(),
     version: string(),
     controller: array(PublicKeyFromString),
-    //verificationMethod: VerificationMethod[],
+    verificationID: array(string()),
+    vertificationType: array(string()), 
+    vertificationPubkey: array(PublicKeyFromString),
     authentication: array(string()),
     capabilityInvocation: array(string()),
     capabilityDelegation: array(string()),
     keyAgreement: array(string()),
     assertionMethod: array(string()),
-    //service: ServiceEndpoint[],
+    serviceID: array(string()),
+    serviceEndpointType: array(string()),
+    serviceEndpoint: array(string()),
+    serviceDescription: array(string()),
   })
 
   export type DidSolTokenAccount = Infer<typeof DidSolTokenAccount>;

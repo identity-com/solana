@@ -166,19 +166,37 @@ function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluste
   const controllerKeys: PublicKey[] = [];
   parsedData.controller.map(val => controllerKeys.push(val.toPublicKey()));
   const serviceID: string[] = [];
-// what to write and anyway to test it?
-
+  parsedData.service.map(val => serviceID.push(val.id));
+  const serviceEndpoint: string[] = [];
+  parsedData.service.map(val => serviceEndpoint.push(val.endpoint));
+  const serviceEndpointType: string[] = [];
+  parsedData.service.map(val => serviceEndpointType.push(val.endpointType));
+  const serviceDescription: string[] = [];
+  parsedData.service.map(val => serviceDescription.push(val.description));
+  const verificationID: string[] = [];
+  parsedData.verificationMethod.map(val => verificationID.push(val.id));
+  const vertificationType: string[] = [];
+  parsedData.verificationMethod.map(val => vertificationType.push(val.verificationType));
+  const vertificationPubkey: PublicKey[] = [];
+  parsedData.verificationMethod.map(val => vertificationPubkey.push(val.pubkey.toPublicKey()));
   const parsed = {
     account: parsedData.account.toPublicKey(),
     authority: parsedData.authority.toPublicKey(),
     accountVersion: parsedData.accountVersion,
     version: parsedData.version,
     controller: controllerKeys,
+    serviceID: serviceID,
+    serviceEndpointType: serviceEndpointType,
+    serviceEndpoint: serviceEndpoint,
+    serviceDescription: serviceDescription,
     authentication: parsedData.authentication,
     capabilityInvocation: parsedData.capabilityInvocation,
     capabilityDelegation: parsedData.capabilityDelegation,
     keyAgreement: parsedData.keyAgreement,
     assertionMethod: parsedData.assertionMethod,
+    verificationID: verificationID,
+    vertificationType: vertificationType,
+    vertificationPubkey: vertificationPubkey,
   };
   return {
     program: "didsol",
