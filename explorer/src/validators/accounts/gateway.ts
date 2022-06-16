@@ -1,12 +1,6 @@
 /* eslint-disable @typescript-eslint/no-redeclare */
 
-import {
-  Infer,
-  enums,
-  type,
-  number,
-  optional
-} from "superstruct";
+import { Infer, enums, type, number, optional } from "superstruct";
 import { PublicKeyFromString } from "validators/pubkey";
 
 export type GatewayTokenAccountState = Infer<typeof AccountState>;

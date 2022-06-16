@@ -6,13 +6,16 @@ import { Address } from "components/common/Address";
 import { UnknownAccountCard } from "./UnknownAccountCard";
 import { Cluster, useCluster } from "providers/cluster";
 import { reportError } from "utils/sentry";
-import {GatewayTokenAccount, GatewayTokenAccountInfo} from "../../validators/accounts/gateway";
-import {InfoTooltip} from "../common/InfoTooltip";
+import {
+  GatewayTokenAccount,
+  GatewayTokenAccountInfo,
+} from "../../validators/accounts/gateway";
+import { InfoTooltip } from "../common/InfoTooltip";
 
 export function GatewayTokenAccountSection({
-                                             account,
-                                             tokenAccount,
-                                           }: {
+  account,
+  tokenAccount,
+}: {
   account: Account;
   tokenAccount: GatewayTokenAccount;
 }) {
@@ -34,12 +37,13 @@ export function GatewayTokenAccountSection({
 
 const timestampToDate = (timestamp: number) => new Date(timestamp * 1000);
 
-const expired = (info: GatewayTokenAccountInfo) => info.expiryTime && timestampToDate(info.expiryTime) < new Date();
+const expired = (info: GatewayTokenAccountInfo) =>
+  info.expiryTime && timestampToDate(info.expiryTime) < new Date();
 
 function GatewayTokenAccountCard({
-                                   account,
-                                   info,
-                                 }: {
+  account,
+  info,
+}: {
   account: Account;
   info: GatewayTokenAccountInfo;
 }) {
@@ -98,16 +102,16 @@ function GatewayTokenAccountCard({
           {info.expiryTime && (
             <tr>
               <td>Expires</td>
-              
-                <td className="text-lg-right">
-                  <InfoTooltip
-                    right
-                    text={timestampToDate(info.expiryTime).toISOString()}
-                  >
+
+              <td className="text-lg-right">
+                <InfoTooltip
+                  right
+                  text={timestampToDate(info.expiryTime).toISOString()}
+                >
                   {timestampToDate(info.expiryTime).toLocaleString()}
-                  {expired(info) && ' EXPIRED'}
-                  </InfoTooltip>
-                </td>
+                  {expired(info) && " EXPIRED"}
+                </InfoTooltip>
+              </td>
             </tr>
           )}
         </TableCardBody>

@@ -6,14 +6,21 @@ import { Address } from "components/common/Address";
 import { UnknownAccountCard } from "./UnknownAccountCard";
 import { Cluster, useCluster } from "providers/cluster";
 import { reportError } from "utils/sentry";
-import { SolPublicKey, VerificationMethod, ServiceEndpoint } from "@identity.com/sol-did-client";
+import {
+  SolPublicKey,
+  VerificationMethod,
+  ServiceEndpoint,
+} from "@identity.com/sol-did-client";
 import { PublicKey } from "@solana/web3.js";
-import { DidSolTokenAccount, DidSolTokenAccountInfo } from "validators/accounts/didsol";
+import {
+  DidSolTokenAccount,
+  DidSolTokenAccountInfo,
+} from "validators/accounts/didsol";
 
 export function DidSolAccountSection({
-                                             account,
-                                             soldata,
-                                           }: {
+  account,
+  soldata,
+}: {
   account: Account;
   soldata: DidSolTokenAccount;
 }) {
@@ -34,36 +41,44 @@ export function DidSolAccountSection({
 function display(value: any): JSX.Element {
   if (Array.isArray(value)) {
     console.log(value);
-    return <ul style ={{listStyle:'none'}}>
-          {value.map(val => <li className="text-end">{display(val)}</li>)}
+    return (
+      <ul style={{ listStyle: "none" }}>
+        {value.map((val) => (
+          <li className="text-end">{display(val)}</li>
+        ))}
       </ul>
+    );
   } else if (value instanceof PublicKey) {
-      return <Address pubkey={value} alignRight link />
+    return <Address pubkey={value} alignRight link />;
   } else if (typeof value === "string") {
-    return <>{value}</>
+    return <>{value}</>;
   } else if (typeof value === "number") {
-    return <>{value}</>
+    return <>{value}</>;
   } else {
-    return <>Not available</>
+    return <>Not available</>;
   }
 }
 
 function SolDidAccountCard({
-                                   account,
-                                   info,
-                                 }: {
+  account,
+  info,
+}: {
   account: Account;
   info: DidSolTokenAccountInfo;
 }) {
   const fetchInfo = useFetchAccountInfo();
   const refresh = () => fetchInfo(account.pubkey);
-  const attributes = Object.entries(info).filter(([key, val]) => (!Array.isArray(val) || !(val.length ===0))).map(([key, val]) => {
-    let label = key.charAt(0).toUpperCase() + key.slice(1) + '';
-    return <tr key={key}>
-      <td>{label}</td>
-      <td className="text-end" >{display(val)}</td>
-    </tr>
-  })
+  const attributes = Object.entries(info)
+    .filter(([key, val]) => !Array.isArray(val) || !(val.length === 0))
+    .map(([key, val]) => {
+      let label = key.charAt(0).toUpperCase() + key.slice(1) + "";
+      return (
+        <tr key={key}>
+          <td>{label}</td>
+          <td className="text-end">{display(val)}</td>
+        </tr>
+      );
+    });
   return (
     <>
       <div className="card">
@@ -76,8 +91,7 @@ function SolDidAccountCard({
             Refresh
           </button>
         </div>
-        <TableCardBody>{attributes}
-        </TableCardBody>
+        <TableCardBody>{attributes}</TableCardBody>
       </div>
     </>
   );

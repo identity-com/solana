@@ -1,6 +1,11 @@
 import React from "react";
 import { pubkeyToString } from "utils";
-import { AccountInfo, PublicKey, Connection, StakeActivationData } from "@solana/web3.js";
+import {
+  AccountInfo,
+  PublicKey,
+  Connection,
+  StakeActivationData,
+} from "@solana/web3.js";
 import { useCluster, Cluster } from "../cluster";
 import { HistoryProvider } from "./history";
 import { TokensProvider } from "./tokens";
@@ -29,7 +34,12 @@ import { RewardsProvider } from "./rewards";
 import { programs, MetadataJson } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
 import { GatewayTokenAccount } from "../../validators/accounts/gateway";
-import { GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
+import {
+  GatewayToken,
+  State as GatewayState,
+  GatewayTokenData,
+  GatewayTokenState,
+} from "@identity.com/solana-gateway-ts";
 import { SolData, SolDataConstructor } from "@identity.com/sol-did-client";
 import { ClusterType } from "@identity.com/sol-did-client";
 import { DidSolTokenAccount } from "validators/accounts/didsol";
@@ -87,10 +97,10 @@ export type GatewayTokenProgramData = {
 };
 
 export type DidSolProgramData = {
-  program: "didsol"
+  program: "didsol";
   parsed: DidSolTokenAccount;
   //todo
-}
+};
 
 export type ProgramData =
   | UpgradeableLoaderAccountData
@@ -116,7 +126,9 @@ export interface Account {
   details?: Details;
 }
 
-export const GATEWAY_PROGRAM_ID = new PublicKey("gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs");
+export const GATEWAY_PROGRAM_ID = new PublicKey(
+  "gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs"
+);
 function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
   if (!!state.active) return GatewayState.ACTIVE;
   if (!!state.revoked) return GatewayState.REVOKED;
@@ -125,8 +137,9 @@ function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
   throw new Error("Unrecognised state " + JSON.stringify(state));
 }
 
-export const SOL_DID_PROGRAM_ID = new PublicKey("idDa4XeCjVwKcprVAo812coUQbovSZ4kDGJf2sPaBnM");
-
+export const SOL_DID_PROGRAM_ID = new PublicKey(
+  "idDa4XeCjVwKcprVAo812coUQbovSZ4kDGJf2sPaBnM"
+);
 
 type State = Cache.State<Account>;
 type Dispatch = Cache.Dispatch<Account>;
@@ -146,7 +159,7 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
 
   return (
     <StateContext.Provider value={state}>
-      <DispatchContext.Provider value={dispatch}> 
+      <DispatchContext.Provider value={dispatch}>
         <TokensProvider>
           <HistoryProvider>
             <RewardsProvider>
@@ -159,26 +172,32 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
   );
 }
 
-
-
-function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluster: Cluster): DidSolProgramData {
+function parseDidSolToken(
+  result: AccountInfo<Buffer>,
+  pubkey: PublicKey,
+  cluster: Cluster
+): DidSolProgramData {
   const parsedData = SolData.decode<SolData>(result.data);
   const controllerKeys: PublicKey[] = [];
-  parsedData.controller.map(val => controllerKeys.push(val.toPublicKey()));
+  parsedData.controller.map((val) => controllerKeys.push(val.toPublicKey()));
   const serviceID: string[] = [];
-  parsedData.service.map(val => serviceID.push(val.id));
+  parsedData.service.map((val) => serviceID.push(val.id));
   const serviceEndpoint: string[] = [];
-  parsedData.service.map(val => serviceEndpoint.push(val.endpoint));
+  parsedData.service.map((val) => serviceEndpoint.push(val.endpoint));
   const serviceEndpointType: string[] = [];
-  parsedData.service.map(val => serviceEndpointType.push(val.endpointType));
+  parsedData.service.map((val) => serviceEndpointType.push(val.endpointType));
   const serviceDescription: string[] = [];
-  parsedData.service.map(val => serviceDescription.push(val.description));
+  parsedData.service.map((val) => serviceDescription.push(val.description));
   const verificationID: string[] = [];
-  parsedData.verificationMethod.map(val => verificationID.push(val.id));
+  parsedData.verificationMethod.map((val) => verificationID.push(val.id));
   const vertificationType: string[] = [];
-  parsedData.verificationMethod.map(val => vertificationType.push(val.verificationType));
+  parsedData.verificationMethod.map((val) =>
+    vertificationType.push(val.verificationType)
+  );
   const vertificationPubkey: PublicKey[] = [];
-  parsedData.verificationMethod.map(val => vertificationPubkey.push(val.pubkey.toPublicKey()));
+  parsedData.verificationMethod.map((val) =>
+    vertificationPubkey.push(val.pubkey.toPublicKey())
+  );
   const parsed = {
     account: parsedData.account.toPublicKey(),
     authority: parsedData.authority.toPublicKey(),
@@ -200,11 +219,14 @@ function parseDidSolToken(result: AccountInfo<Buffer>, pubkey: PublicKey, cluste
   };
   return {
     program: "didsol",
-    parsed: {info: parsed},
-  }
+    parsed: { info: parsed },
+  };
 }
 
-function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):GatewayTokenProgramData {
+function parseGatewayToken(
+  result: AccountInfo<Buffer>,
+  pubkey: PublicKey
+): GatewayTokenProgramData {
   const parsedData = GatewayTokenData.fromAccount(result.data);
   const parsed = new GatewayToken(
     parsedData.issuingGatekeeper.toPublicKey(),
@@ -217,8 +239,8 @@ function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):Gatew
   );
   return {
     program: "gateway",
-    parsed: {info: parsed},
-  }
+    parsed: { info: parsed },
+  };
 }
 
 async function fetchAccountInfo(
@@ -377,9 +399,12 @@ async function fetchAccountInfo(
       } else {
         if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
           data = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
-        } 
-        else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
-          data = parseDidSolToken(result as AccountInfo<Buffer>, pubkey, cluster);
+        } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
+          data = parseDidSolToken(
+            result as AccountInfo<Buffer>,
+            pubkey,
+            cluster
+          );
         }
       }
       details = {
@@ -529,4 +554,3 @@ export function useFetchAccountInfo() {
     [dispatch, cluster, url]
   );
 }
-

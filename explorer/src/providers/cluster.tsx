@@ -16,7 +16,6 @@ export enum ClusterStatus {
   Failure,
 }
 
-
 export enum Cluster {
   MainnetBeta,
   Testnet,
@@ -58,7 +57,8 @@ export function clusterName(cluster: Cluster): string {
 }
 
 // export const MAINNET_BETA_URL = clusterApiUrl("mainnet-beta");
-export const MAINNET_BETA_URL = 'https://rough-crimson-flower.solana-mainnet.quiknode.pro';
+export const MAINNET_BETA_URL =
+  "https://rough-crimson-flower.solana-mainnet.quiknode.pro";
 export const TESTNET_URL = clusterApiUrl("testnet");
 export const DEVNET_URL = clusterApiUrl("devnet");
 
