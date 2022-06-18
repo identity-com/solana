@@ -75,8 +75,8 @@ function parseGatewayInstruction(
         rent: ix.keys[6].pubkey,
         systemProgram: ix.keys[7].pubkey,
         seed: issueVanilla?.seed,
-        // @ts-ignore
         expireTime: new Date(
+                  // @ts-ignore
           issueVanilla?.expireTime?.toNumber() * 1000
         ).toISOString(),
       };

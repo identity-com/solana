@@ -1,5 +1,5 @@
 import React from "react";
-import { Account, useFetchAccountInfo } from "providers/accounts";
+import { Account, lightService, lightVertification, useFetchAccountInfo } from "providers/accounts";
 import { create } from "superstruct";
 import { TableCardBody } from "components/common/TableCardBody";
 import { Address } from "components/common/Address";
@@ -38,25 +38,73 @@ export function DidSolAccountSection({
   return <UnknownAccountCard account={account} />;
 }
 
-function display(value: any): JSX.Element {
-  if (Array.isArray(value)) {
-    console.log(value);
-    return (
-      <ul style={{ listStyle: "none" }}>
-        {value.map((val) => (
-          <li className="text-end">{display(val)}</li>
-        ))}
-      </ul>
-    );
-  } else if (value instanceof PublicKey) {
-    return <Address pubkey={value} alignRight link />;
-  } else if (typeof value === "string") {
-    return <>{value}</>;
-  } else if (typeof value === "number") {
-    return <>{value}</>;
-  } else {
-    return <>Not available</>;
-  }
+function displaycontroller(controller: PublicKey) {
+  return <Address pubkey={controller} alignRight link />;
+}
+
+function displaycontrollers(controllers: PublicKey[]) {
+  return <ul style={{ listStyle: "none" }}>
+  {controllers.map((val) => (
+    <li className="text-end">{displaycontroller(val)}</li>
+  ))}
+</ul>
+}
+
+function displayVertification(vertifications: lightVertification) {
+  return (
+    <ul style={{ listStyle: "none" }}>
+      <li>{vertifications.id}</li>
+      <li>
+        <Address pubkey={vertifications.PublicKey} alignRight link />
+      </li>
+      <li>{vertifications.vertificationType}</li>
+    </ul>
+  );
+}
+
+function displayVertifications(vertifications: lightVertification[]) {
+  return (
+    <ul style={{ listStyle: "none" }}>
+      {vertifications.map((val) => (
+    <li className="text-end">{displayVertification(val)}</li>
+  ))}
+</ul>
+  )
+}
+
+function displayString(oneStr: string) {
+  return <>{oneStr}</>;
+}
+
+function displayStringArrays(strings: string[]) {
+  return (
+    <ul style={{ listStyle: "none" }}>
+      {strings.map((val) => (
+    <li className="text-end">{displayString(val)}</li>
+  ))}
+</ul>
+  )
+}
+
+function displayServicePoint(service: lightService) {
+  return (
+    <ul style={{ listStyle: "none" }}>
+      <li>{service.id}</li>
+      <li>{service.endpointType}</li>
+      <li>{service.Endpoint}</li>
+      <li>{service.description}</li>
+    </ul>
+  );
+}
+
+function displayServicePoints(services: lightService[]) {
+  return (
+    <ul style={{ listStyle: "none" }}>
+      {services.map((val) => (
+        <li className="text-end">{displayServicePoint(val)}</li>
+      ))}
+    </ul>
+  );
 }
 
 function SolDidAccountCard({
@@ -68,17 +116,6 @@ function SolDidAccountCard({
 }) {
   const fetchInfo = useFetchAccountInfo();
   const refresh = () => fetchInfo(account.pubkey);
-  const attributes = Object.entries(info)
-    .filter(([key, val]) => !Array.isArray(val) || !(val.length === 0))
-    .map(([key, val]) => {
-      let label = key.charAt(0).toUpperCase() + key.slice(1) + "";
-      return (
-        <tr key={key}>
-          <td>{label}</td>
-          <td className="text-end">{display(val)}</td>
-        </tr>
-      );
-    });
   return (
     <>
       <div className="card">
@@ -91,7 +128,84 @@ function SolDidAccountCard({
             Refresh
           </button>
         </div>
-        <TableCardBody>{attributes}</TableCardBody>
+        <TableCardBody>
+          {info.account && (
+            <tr>
+              <td>Account</td>
+              <td className="text-end">
+                <Address pubkey={info.account} alignRight link />
+              </td>
+            </tr>
+          )}
+          {info.authority && (
+            <tr>
+              <td>Authority</td>
+              <td className="text-end">
+                <Address pubkey={info.authority} alignRight link />
+              </td>
+            </tr>
+          )}
+          {info.version && (
+            <tr>
+              <td>Version</td>
+              <td className="text-end">{info.version}</td>
+            </tr>
+          )}
+          {info.accountVersion && (
+            <tr>
+              <td>Account Version</td>
+              <td className="text-end">{info.accountVersion}</td>
+            </tr>
+          )}
+          {info.controller && (
+            <tr>
+              <td>Controllers</td>
+              <td className="text-end">{displaycontrollers(info.controller)}</td>
+            </tr>
+          )}
+          {info.vertificationMethod && (
+            <tr>
+              <td>Vertification Method</td>
+              <td className="text-end">{displayVertifications(info.vertificationMethod)}</td>
+            </tr>
+          )}
+          {info.authentication && (
+            <tr>
+              <td>Authentiacation</td>
+              <td className="text-end">{displayStringArrays(info.authentication)}</td>
+            </tr>
+          )}
+          {info.capabilityInvocation && (
+            <tr>
+              <td>Capability Invocation</td>
+              <td className="text-end">{displayStringArrays(info.capabilityInvocation)}</td>
+            </tr>
+          )}
+          {info.capabilityDelegation && (
+            <tr>
+              <td>Capability Delegation</td>
+              <td className="text-end">{displayStringArrays(info.capabilityDelegation)}</td>
+            </tr>
+          )}
+          {info.keyAgreement && (
+            <tr>
+              <td>Key Agreement</td>
+              <td className="text-end">{displayStringArrays(info.keyAgreement)}</td>
+            </tr>
+          )}
+          {info.assertionMethod && (
+            <tr>
+              <td>Assertion Method</td>
+              <td className="text-end">{displayStringArrays(info.assertionMethod)}</td>
+            </tr>
+          )}
+          {info.ServiceEndpoint && (
+            <tr>
+              <td>Service Endpoint</td>
+              <td className="text-end">{displayServicePoints(info.ServiceEndpoint)}</td>
+            </tr>
+          )}
+          </TableCardBody>
       </div>
     </>
   );
