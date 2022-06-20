@@ -138,7 +138,6 @@ function display(value: any): JSX.Element {
 
 function DidSolInstruction(props: InfoProps) {
   const attributes = Object.entries(props.info)
-    .filter(([key, val]) => !Array.isArray(val) || !(val.length === 0))
     .map(([key, val]) => {
       let label = key.charAt(0).toUpperCase() + key.slice(1) + "";
       return (
