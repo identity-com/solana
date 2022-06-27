@@ -277,8 +277,6 @@ function DetailsSections({
 function InfoSection({ account }: { account: Account }) {
   const data = account?.details?.data;
 
-  console.log(data);
-
   if (data && data.program === "bpf-upgradeable-loader") {
     return (
       <UpgradeableLoaderAccountSection
@@ -310,7 +308,6 @@ function InfoSection({ account }: { account: Account }) {
   } else if (data && data.program === "vote") {
     return <VoteAccountSection account={account} voteAccount={data.parsed} />;
   } else if (data && data.program === "didsol") {
-    console.log("run through accountdetailpage");
     return <DidSolAccountSection account={account} soldata={data.parsed} />;
   } else if (data && data.program === "sysvar") {
     return (
