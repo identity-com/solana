@@ -1,6 +1,11 @@
 import React from "react";
 import { pubkeyToString } from "utils";
-import { AccountInfo, PublicKey, Connection, StakeActivationData } from "@solana/web3.js";
+import {
+  AccountInfo,
+  PublicKey,
+  Connection,
+  StakeActivationData,
+} from "@solana/web3.js";
 import { useCluster, Cluster } from "../cluster";
 import { HistoryProvider } from "./history";
 import { TokensProvider } from "./tokens";
@@ -29,7 +34,15 @@ import { RewardsProvider } from "./rewards";
 import { programs, MetadataJson } from "@metaplex/js";
 import getEditionInfo, { EditionInfo } from "./utils/getEditionInfo";
 import { GatewayTokenAccount } from "../../validators/accounts/gateway";
-import { GatewayToken, State as GatewayState, GatewayTokenData, GatewayTokenState } from "@identity.com/solana-gateway-ts";
+import {
+  GatewayToken,
+  State as GatewayState,
+  GatewayTokenData,
+  GatewayTokenState,
+} from "@identity.com/solana-gateway-ts";
+import { SolData, SolDataConstructor } from "@identity.com/sol-did-client";
+import { ClusterType } from "@identity.com/sol-did-client";
+import { DidSolTokenAccount } from "validators/accounts/didsol";
 export { useAccountHistory } from "./history";
 
 const Metadata = programs.metadata.Metadata;
@@ -83,6 +96,12 @@ export type GatewayTokenProgramData = {
   parsed: GatewayTokenAccount;
 };
 
+export type DidSolProgramData = {
+  program: "didsol";
+  parsed: DidSolTokenAccount;
+  //todo
+};
+
 export type ProgramData =
   | UpgradeableLoaderAccountData
   | StakeProgramData
@@ -91,7 +110,8 @@ export type ProgramData =
   | NonceProgramData
   | SysvarProgramData
   | ConfigProgramData
-  | GatewayTokenProgramData;
+  | GatewayTokenProgramData
+  | DidSolProgramData;
 
 export interface Details {
   executable: boolean;
@@ -106,7 +126,9 @@ export interface Account {
   details?: Details;
 }
 
-export const GATEWAY_PROGRAM_ID = new PublicKey("gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs");
+export const GATEWAY_PROGRAM_ID = new PublicKey(
+  "gatem74V238djXdzWnJf94Wo1DcnuGkfijbf3AuBhfs"
+);
 function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
   if (!!state.active) return GatewayState.ACTIVE;
   if (!!state.revoked) return GatewayState.REVOKED;
@@ -114,6 +136,10 @@ function fromGatewayTokenState(state: GatewayTokenState): GatewayState {
 
   throw new Error("Unrecognised state " + JSON.stringify(state));
 }
+
+export const SOL_DID_PROGRAM_ID = new PublicKey(
+  "idDa4XeCjVwKcprVAo812coUQbovSZ4kDGJf2sPaBnM"
+);
 
 type State = Cache.State<Account>;
 type Dispatch = Cache.Dispatch<Account>;
@@ -146,7 +172,64 @@ export function AccountsProvider({ children }: AccountsProviderProps) {
   );
 }
 
-function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):GatewayTokenProgramData {
+export interface lightService {
+  id: string,
+  endpointType: string,
+  Endpoint: string,
+  description: string,
+}
+
+export interface lightVertification {
+  id: string,
+  vertificationType: string,
+  PublicKey: PublicKey,
+}
+
+function parseDidSolToken(
+  result: AccountInfo<Buffer>,
+  pubkey: PublicKey,
+  cluster: Cluster
+): DidSolProgramData {
+  const parsedData = SolData.decode<SolData>(result.data);
+  const controllerKeys: PublicKey[] = [];
+  parsedData.controller.map((val) => controllerKeys.push(val.toPublicKey()));
+  const service: lightService[] = [];
+  parsedData.service.map((val) => service.push({
+    id: val.id,
+    endpointType: val.endpointType,
+    Endpoint: val.endpoint,
+    description: val.description,
+  }));
+  const vertification: lightVertification[] = [];
+  parsedData.verificationMethod.map((val) => vertification.push({
+    id : val.id,
+    vertificationType: val.verificationType,
+    PublicKey: val.pubkey.toPublicKey(),
+  }))
+  const parsed = {
+    account: parsedData.account.toPublicKey(),
+    authority: parsedData.authority.toPublicKey(),
+    accountVersion: parsedData.accountVersion,
+    version: parsedData.version,
+    controller: controllerKeys,
+    ServiceEndpoint:service,
+    authentication: parsedData.authentication,
+    capabilityInvocation: parsedData.capabilityInvocation,
+    capabilityDelegation: parsedData.capabilityDelegation,
+    keyAgreement: parsedData.keyAgreement,
+    assertionMethod: parsedData.assertionMethod,
+    vertificationMethod: vertification,
+  };
+  return {
+    program: "didsol",
+    parsed: { info: parsed },
+  };
+}
+
+function parseGatewayToken(
+  result: AccountInfo<Buffer>,
+  pubkey: PublicKey
+): GatewayTokenProgramData {
   const parsedData = GatewayTokenData.fromAccount(result.data);
   const parsed = new GatewayToken(
     parsedData.issuingGatekeeper.toPublicKey(),
@@ -159,8 +242,8 @@ function parseGatewayToken(result: AccountInfo<Buffer>, pubkey: PublicKey):Gatew
   );
   return {
     program: "gateway",
-    parsed: {info: parsed},
-  }
+    parsed: { info: parsed },
+  };
 }
 
 async function fetchAccountInfo(
@@ -223,13 +306,11 @@ async function fetchAccountInfo(
                   );
                 }
               }
-
               data = {
                 program: result.data.program,
                 parsed,
                 programData,
               };
-
               break;
             }
             case "stake": {
@@ -321,9 +402,14 @@ async function fetchAccountInfo(
       } else {
         if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
           data = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
+        } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
+          data = parseDidSolToken(
+            result as AccountInfo<Buffer>,
+            pubkey,
+            cluster
+          );
         }
       }
-
       details = {
         space,
         executable: result.executable,

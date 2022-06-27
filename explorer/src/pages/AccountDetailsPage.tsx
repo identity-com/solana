@@ -41,6 +41,7 @@ import { MetaplexMetadataCard } from "components/account/MetaplexMetadataCard";
 import { NFTHeader } from "components/account/MetaplexNFTHeader";
 import { DomainsCard } from "components/account/DomainsCard";
 import isMetaplexNFT from "providers/accounts/utils/isMetaplexNFT";
+import { DidSolAccountSection } from "components/account/SolDidAccountSection";
 
 const IDENTICON_WIDTH = 64;
 
@@ -207,7 +208,7 @@ export function AccountHeader({
       </div>
     );
   }
-  
+
   if (isGatewayProgram) {
     return (
       <>
@@ -275,8 +276,6 @@ function DetailsSections({
 
 function InfoSection({ account }: { account: Account }) {
   const data = account?.details?.data;
-  
-  console.log(data);
 
   if (data && data.program === "bpf-upgradeable-loader") {
     return (
@@ -298,11 +297,18 @@ function InfoSection({ account }: { account: Account }) {
   } else if (data && data.program === "spl-token") {
     return <TokenAccountSection account={account} tokenAccount={data.parsed} />;
   } else if (data && data.program === "gateway") {
-    return <GatewayTokenAccountSection account={account} tokenAccount={data.parsed} />;
+    return (
+      <GatewayTokenAccountSection
+        account={account}
+        tokenAccount={data.parsed}
+      />
+    );
   } else if (data && data.program === "nonce") {
     return <NonceAccountSection account={account} nonceAccount={data.parsed} />;
   } else if (data && data.program === "vote") {
     return <VoteAccountSection account={account} voteAccount={data.parsed} />;
+  } else if (data && data.program === "didsol") {
+    return <DidSolAccountSection account={account} soldata={data.parsed} />;
   } else if (data && data.program === "sysvar") {
     return (
       <SysvarAccountSection account={account} sysvarAccount={data.parsed} />

@@ -43,6 +43,8 @@ import { AssociatedTokenDetailsCard } from "components/instruction/AssociatedTok
 import { isGatewayInstruction } from "../instruction/gateway/types";
 import { isMangoInstruction } from "components/instruction/mango/types";
 import { MangoDetailsCard } from "components/instruction/MangoDetails";
+import { isDidSolInstruction } from "../instruction/did-sol/types";
+import { DidSolDetailsCard } from "../instruction/did-sol/DidSolDetailsCard";
 
 export type InstructionDetailsProps = {
   tx: ParsedTransaction;
@@ -228,6 +230,8 @@ function renderInstructionCard({
     return <WormholeDetailsCard key={key} {...props} />;
   } else if (isGatewayInstruction(transactionIx)) {
     return <GatewayTokenDetailsCard key={key} {...props} />;
+  } else if (isDidSolInstruction(transactionIx)) {
+    return <DidSolDetailsCard key={key} {...props} />;
   } else {
     return <UnknownDetailsCard key={key} {...props} />;
   }

@@ -8,6 +8,7 @@
     "@bonfida/spl-name-service": "^0.1.22",
     "@cloudflare/stream-react": "^1.2.0",
     "@identity.com/solana-gateway-ts": "^0.3.1",
+    "@identity.com/sol-did-client": "^2.0.1",
     "@metamask/jazzicon": "^2.0.0",
     "@metaplex/js": "4.9.0",
     "@project-serum/serum": "^0.13.61",
