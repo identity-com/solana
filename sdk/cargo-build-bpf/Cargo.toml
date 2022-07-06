@@ -12,7 +12,7 @@ publish = false
 [dependencies]
 bzip2 = "0.4.3"
 clap = "2.33.3"
-regex = "1.5.4"
+regex = "1.6.0"
 cargo_metadata = "0.14.1"
 solana-sdk = { path = "..", version = "=1.10.0" }
 solana-download-utils = { path = "../../download-utils", version = "=1.10.0" }
