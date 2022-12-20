@@ -5,10 +5,12 @@ on:
     branches: [ master ]
     paths:
       - "web3.js/**"
+      - ".github/workflows/web3.yml"
   pull_request:
     branches: [ master ]
     paths:
       - "web3.js/**"
+      - ".github/workflows/web3.yml"
 
 jobs:
   # needed for grouping check-web3 strategies into one check for mergify
@@ -30,11 +32,11 @@ jobs:
         working-directory: web3.js
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           # maybe needed for base sha below
           fetch-depth: 0
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v3
         with:
           node-version: '16'
           cache: 'npm'
@@ -55,30 +57,17 @@ jobs:
 
     strategy:
       matrix:
-        node: [ '12', '14', '16' ]
+        node:
+          - '14'
+          - '16'
 
     name: Node ${{ matrix.node }}
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.node }}
           cache: 'npm'
           cache-dependency-path: web3.js/package-lock.json
-      - run: npm i -g npm@7
-      - run: npm ci
-      - run: npm run lint
       - run: |
-          npm run build
-          ls -l lib
-          test -r lib/index.iife.js
-          test -r lib/index.cjs.js
-          test -r lib/index.esm.js
-      - run: npm run doc
-      - run: npm run codecov
-      - run: |
-          sh -c "$(curl -sSfL https://release.solana.com/edge/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
-          PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-          solana --version
-      - run: npm run test:live-with-test-validator
+          scripts/test.sh

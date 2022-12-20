@@ -1,87 +1,107 @@
 //! The `blockstore` module provides functions for parallel verification of the
 //! Proof of History ledger as well as iterative read, append write, and random
 //! access read to a persistent file-based ledger.
-pub use crate::{blockstore_db::BlockstoreError, blockstore_meta::SlotMeta};
+
 use {
     crate::{
         ancestor_iterator::AncestorIterator,
         blockstore_db::{
-            columns as cf, AccessType, BlockstoreRecoveryMode, Column, Database, IteratorDirection,
-            IteratorMode, LedgerColumn, Result, WriteBatch,
+            columns as cf, Column, Database, IteratorDirection, IteratorMode, LedgerColumn, Result,
+            WriteBatch,
         },
         blockstore_meta::*,
+        blockstore_options::{
+            AccessType, BlockstoreOptions, LedgerColumnOptions, BLOCKSTORE_DIRECTORY_ROCKS_FIFO,
+            BLOCKSTORE_DIRECTORY_ROCKS_LEVEL,
+        },
         leader_schedule_cache::LeaderScheduleCache,
         next_slots_iterator::NextSlotsIterator,
         shred::{
-            max_ticks_per_n_shreds, ErasureSetId, Result as ShredResult, Shred, ShredId, ShredType,
-            Shredder, SHRED_PAYLOAD_SIZE,
+            self, max_ticks_per_n_shreds, ErasureSetId, ProcessShredsStats, ReedSolomonCache,
+            Shred, ShredData, ShredId, ShredType, Shredder,
         },
+        slot_stats::{ShredSource, SlotsStats},
     },
+    assert_matches::debug_assert_matches,
     bincode::deserialize,
+    crossbeam_channel::{bounded, Receiver, Sender, TrySendError},
+    dashmap::DashSet,
     log::*,
     rayon::{
-        iter::{IntoParallelRefIterator, ParallelIterator},
+        iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator},
         ThreadPool,
     },
-    rocksdb::DBRawIterator,
+    rocksdb::{DBRawIterator, LiveFile},
     solana_entry::entry::{create_ticks, Entry},
     solana_measure::measure::Measure,
-    solana_metrics::{datapoint_debug, datapoint_error},
-    solana_rayon_threadlimit::get_thread_count,
+    solana_metrics::{
+        datapoint_debug, datapoint_error,
+        poh_timing_point::{send_poh_timing_point, PohTimingSender, SlotPohTimingInfo},
+    },
+    solana_rayon_threadlimit::get_max_thread_count,
     solana_runtime::hardened_unpack::{unpack_genesis_archive, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
     solana_sdk::{
         clock::{Slot, UnixTimestamp, DEFAULT_TICKS_PER_SECOND, MS_PER_TICK},
         genesis_config::{GenesisConfig, DEFAULT_GENESIS_ARCHIVE, DEFAULT_GENESIS_FILE},
         hash::Hash,
         pubkey::Pubkey,
-        sanitize::Sanitize,
         signature::{Keypair, Signature, Signer},
         timing::timestamp,
         transaction::VersionedTransaction,
     },
     solana_storage_proto::{StoredExtendedRewards, StoredTransactionStatusMeta},
     solana_transaction_status::{
-        ConfirmedBlock, ConfirmedTransaction, ConfirmedTransactionStatusWithSignature, Rewards,
-        TransactionStatusMeta, TransactionWithStatusMeta,
+        ConfirmedTransactionStatusWithSignature, ConfirmedTransactionWithStatusMeta, Rewards,
+        TransactionStatusMeta, TransactionWithStatusMeta, VersionedConfirmedBlock,
+        VersionedTransactionWithStatusMeta,
     },
     std::{
         borrow::Cow,
         cell::RefCell,
         cmp,
-        collections::{hash_map::Entry as HashMapEntry, BTreeMap, BTreeSet, HashMap, HashSet},
+        collections::{hash_map::Entry as HashMapEntry, BTreeSet, HashMap, HashSet, VecDeque},
         convert::TryInto,
+        fmt::Write,
         fs,
         io::{Error as IoError, ErrorKind},
         path::{Path, PathBuf},
         rc::Rc,
         sync::{
             atomic::{AtomicBool, Ordering},
-            mpsc::{sync_channel, Receiver, Sender, SyncSender, TrySendError},
             Arc, Mutex, RwLock, RwLockWriteGuard,
         },
-        time::Instant,
     },
     tempfile::{Builder, TempDir},
     thiserror::Error,
     trees::{Tree, TreeWalk},
 };
-
 pub mod blockstore_purge;
+pub use {
+    crate::{
+        blockstore_db::BlockstoreError,
+        blockstore_meta::{OptimisticSlotMetaVersioned, SlotMeta},
+        blockstore_metrics::BlockstoreInsertionMetrics,
+    },
+    blockstore_purge::PurgeType,
+    rocksdb::properties as RocksProperties,
+};
 
-pub const BLOCKSTORE_DIRECTORY: &str = "rocksdb";
+// get_max_thread_count to match number of threads in the old code.
+// see: https://github.com/solana-labs/solana/pull/24853
+lazy_static! {
+    static ref PAR_THREAD_POOL: ThreadPool = rayon::ThreadPoolBuilder::new()
+        .num_threads(get_max_thread_count())
+        .thread_name(|ix| format!("solBstore{ix:02}"))
+        .build()
+        .unwrap();
+    static ref PAR_THREAD_POOL_ALL_CPUS: ThreadPool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get())
+        .thread_name(|ix| format!("solBstoreAll{ix:02}"))
+        .build()
+        .unwrap();
+}
 
-thread_local!(static PAR_THREAD_POOL: RefCell<ThreadPool> = RefCell::new(rayon::ThreadPoolBuilder::new()
-                    .num_threads(get_thread_count())
-                    .thread_name(|ix| format!("blockstore_{}", ix))
-                    .build()
-                    .unwrap()));
-
-thread_local!(static PAR_THREAD_POOL_ALL_CPUS: RefCell<ThreadPool> = RefCell::new(rayon::ThreadPoolBuilder::new()
-                    .num_threads(num_cpus::get())
-                    .thread_name(|ix| format!("blockstore_{}", ix))
-                    .build()
-                    .unwrap()));
-
+pub const MAX_REPLAY_WAKE_UP_SIGNALS: usize = 1;
 pub const MAX_COMPLETED_SLOTS_IN_CHANNEL: usize = 100_000;
 pub const MAX_TURBINE_PROPAGATION_IN_MS: u64 = 100;
 pub const MAX_TURBINE_DELAY_IN_TICKS: u64 = MAX_TURBINE_PROPAGATION_IN_MS / MS_PER_TICK;
@@ -91,15 +111,14 @@ pub const MAX_TURBINE_DELAY_IN_TICKS: u64 = MAX_TURBINE_PROPAGATION_IN_MS / MS_P
 // (32K shreds per slot * 4 TX per shred * 2.5 slots per sec)
 pub const MAX_DATA_SHREDS_PER_SLOT: usize = 32_768;
 
-pub type CompletedSlotsSender = SyncSender<Vec<Slot>>;
+pub type CompletedSlotsSender = Sender<Vec<Slot>>;
 pub type CompletedSlotsReceiver = Receiver<Vec<Slot>>;
 type CompletedRanges = Vec<(u32, u32)>;
 
-#[derive(Clone, Copy)]
-pub enum PurgeType {
-    Exact,
-    PrimaryIndex,
-    CompactionFilter,
+#[derive(Default)]
+pub struct SignatureInfosForAddress {
+    pub infos: Vec<ConfirmedTransactionStatusWithSignature>,
+    pub found_before: bool,
 }
 
 #[derive(Error, Debug)]
@@ -151,33 +170,14 @@ pub struct Blockstore {
     block_height_cf: LedgerColumn<cf::BlockHeight>,
     program_costs_cf: LedgerColumn<cf::ProgramCosts>,
     bank_hash_cf: LedgerColumn<cf::BankHash>,
-    last_root: Arc<RwLock<Slot>>,
-    insert_shreds_lock: Arc<Mutex<()>>,
-    pub new_shreds_signals: Vec<SyncSender<bool>>,
-    pub completed_slots_senders: Vec<CompletedSlotsSender>,
-    pub lowest_cleanup_slot: Arc<RwLock<Slot>>,
-    no_compaction: bool,
-    slots_stats: Arc<Mutex<SlotsStats>>,
-}
-
-struct SlotsStats {
-    last_cleanup_ts: Instant,
-    stats: BTreeMap<Slot, SlotStats>,
-}
-
-impl Default for SlotsStats {
-    fn default() -> Self {
-        SlotsStats {
-            last_cleanup_ts: Instant::now(),
-            stats: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct SlotStats {
-    num_repaired: usize,
-    num_recovered: usize,
+    optimistic_slots_cf: LedgerColumn<cf::OptimisticSlots>,
+    last_root: RwLock<Slot>,
+    insert_shreds_lock: Mutex<()>,
+    new_shreds_signals: Mutex<Vec<Sender<bool>>>,
+    completed_slots_senders: Mutex<Vec<CompletedSlotsSender>>,
+    pub shred_timing_point_sender: Option<PohTimingSender>,
+    pub lowest_cleanup_slot: RwLock<Slot>,
+    pub slots_stats: SlotsStats,
 }
 
 pub struct IndexMetaWorkingSetEntry {
@@ -187,50 +187,24 @@ pub struct IndexMetaWorkingSetEntry {
     did_insert_occur: bool,
 }
 
+/// The in-memory data structure for updating entries in the column family
+/// [`cf::SlotMeta`].
 pub struct SlotMetaWorkingSetEntry {
+    /// The dirty version of the `SlotMeta` which might not be persisted
+    /// to the blockstore yet.
     new_slot_meta: Rc<RefCell<SlotMeta>>,
+    /// The latest version of the `SlotMeta` that was persisted in the
+    /// blockstore.  If None, it means the current slot is new to the
+    /// blockstore.
     old_slot_meta: Option<SlotMeta>,
-    // True only if at least one shred for this SlotMeta was inserted since the time this
-    // struct was created.
+    /// True only if at least one shred for this SlotMeta was inserted since
+    /// this struct was created.
     did_insert_occur: bool,
 }
 
-#[derive(PartialEq, Debug, Clone)]
-enum ShredSource {
-    Turbine,
-    Repaired,
-    Recovered,
-}
-
-#[derive(Default)]
-pub struct BlockstoreInsertionMetrics {
-    pub num_shreds: usize,
-    pub insert_lock_elapsed: u64,
-    pub insert_shreds_elapsed: u64,
-    pub shred_recovery_elapsed: u64,
-    pub chaining_elapsed: u64,
-    pub commit_working_sets_elapsed: u64,
-    pub write_batch_elapsed: u64,
-    pub total_elapsed: u64,
-    pub num_inserted: u64,
-    pub num_repair: u64,
-    pub num_recovered: usize,
-    num_recovered_blockstore_error: usize,
-    pub num_recovered_inserted: usize,
-    pub num_recovered_failed_sig: usize,
-    pub num_recovered_failed_invalid: usize,
-    pub num_recovered_exists: usize,
-    pub index_meta_time: u64,
-    num_data_shreds_exists: usize,
-    num_data_shreds_invalid: usize,
-    num_data_shreds_blockstore_error: usize,
-    num_coding_shreds_exists: usize,
-    num_coding_shreds_invalid: usize,
-    num_coding_shreds_invalid_erasure_config: usize,
-    num_coding_shreds_inserted: usize,
-}
-
 impl SlotMetaWorkingSetEntry {
+    /// Construct a new SlotMetaWorkingSetEntry with the specified `new_slot_meta`
+    /// and `old_slot_meta`.  `did_insert_occur` is set to false.
     fn new(new_slot_meta: Rc<RefCell<SlotMeta>>, old_slot_meta: Option<SlotMeta>) -> Self {
         Self {
             new_slot_meta,
@@ -240,132 +214,40 @@ impl SlotMetaWorkingSetEntry {
     }
 }
 
-impl BlockstoreInsertionMetrics {
-    pub fn report_metrics(&self, metric_name: &'static str) {
-        datapoint_info!(
-            metric_name,
-            ("num_shreds", self.num_shreds as i64, i64),
-            ("total_elapsed", self.total_elapsed as i64, i64),
-            ("insert_lock_elapsed", self.insert_lock_elapsed as i64, i64),
-            (
-                "insert_shreds_elapsed",
-                self.insert_shreds_elapsed as i64,
-                i64
-            ),
-            (
-                "shred_recovery_elapsed",
-                self.shred_recovery_elapsed as i64,
-                i64
-            ),
-            ("chaining_elapsed", self.chaining_elapsed as i64, i64),
-            (
-                "commit_working_sets_elapsed",
-                self.commit_working_sets_elapsed as i64,
-                i64
-            ),
-            ("write_batch_elapsed", self.write_batch_elapsed as i64, i64),
-            ("num_inserted", self.num_inserted as i64, i64),
-            ("num_repair", self.num_repair as i64, i64),
-            ("num_recovered", self.num_recovered as i64, i64),
-            (
-                "num_recovered_inserted",
-                self.num_recovered_inserted as i64,
-                i64
-            ),
-            (
-                "num_recovered_failed_sig",
-                self.num_recovered_failed_sig as i64,
-                i64
-            ),
-            (
-                "num_recovered_failed_invalid",
-                self.num_recovered_failed_invalid as i64,
-                i64
-            ),
-            (
-                "num_recovered_exists",
-                self.num_recovered_exists as i64,
-                i64
-            ),
-            (
-                "num_recovered_blockstore_error",
-                self.num_recovered_blockstore_error,
-                i64
-            ),
-            ("num_data_shreds_exists", self.num_data_shreds_exists, i64),
-            ("num_data_shreds_invalid", self.num_data_shreds_invalid, i64),
-            (
-                "num_data_shreds_blockstore_error",
-                self.num_data_shreds_blockstore_error,
-                i64
-            ),
-            (
-                "num_coding_shreds_exists",
-                self.num_coding_shreds_exists,
-                i64
-            ),
-            (
-                "num_coding_shreds_invalid",
-                self.num_coding_shreds_invalid,
-                i64
-            ),
-            (
-                "num_coding_shreds_invalid_erasure_config",
-                self.num_coding_shreds_invalid_erasure_config,
-                i64
-            ),
-            (
-                "num_coding_shreds_inserted",
-                self.num_coding_shreds_inserted,
-                i64
-            ),
-        );
-    }
-}
-
 impl Blockstore {
     pub fn db(self) -> Arc<Database> {
         self.db
     }
 
+    /// The path to the ledger store
     pub fn ledger_path(&self) -> &PathBuf {
         &self.ledger_path
     }
 
     /// Opens a Ledger in directory, provides "infinite" window of shreds
     pub fn open(ledger_path: &Path) -> Result<Blockstore> {
-        Self::do_open(ledger_path, AccessType::PrimaryOnly, None, true)
+        Self::do_open(ledger_path, BlockstoreOptions::default())
     }
 
-    pub fn open_with_access_type(
-        ledger_path: &Path,
-        access_type: AccessType,
-        recovery_mode: Option<BlockstoreRecoveryMode>,
-        enforce_ulimit_nofile: bool,
-    ) -> Result<Blockstore> {
-        Self::do_open(
-            ledger_path,
-            access_type,
-            recovery_mode,
-            enforce_ulimit_nofile,
-        )
+    pub fn open_with_options(ledger_path: &Path, options: BlockstoreOptions) -> Result<Blockstore> {
+        Self::do_open(ledger_path, options)
     }
 
-    fn do_open(
-        ledger_path: &Path,
-        access_type: AccessType,
-        recovery_mode: Option<BlockstoreRecoveryMode>,
-        enforce_ulimit_nofile: bool,
-    ) -> Result<Blockstore> {
-        fs::create_dir_all(&ledger_path)?;
-        let blockstore_path = ledger_path.join(BLOCKSTORE_DIRECTORY);
+    fn do_open(ledger_path: &Path, options: BlockstoreOptions) -> Result<Blockstore> {
+        fs::create_dir_all(ledger_path)?;
+        let blockstore_path = ledger_path.join(
+            options
+                .column_options
+                .shred_storage_type
+                .blockstore_directory(),
+        );
 
-        adjust_ulimit_nofile(enforce_ulimit_nofile)?;
+        adjust_ulimit_nofile(options.enforce_ulimit_nofile)?;
 
         // Open the database
         let mut measure = Measure::start("open");
         info!("Opening database at {:?}", blockstore_path);
-        let db = Database::open(&blockstore_path, access_type, recovery_mode)?;
+        let db = Database::open(&blockstore_path, options)?;
 
         // Create the metadata column family
         let meta_cf = db.column();
@@ -393,6 +275,7 @@ impl Blockstore {
         let block_height_cf = db.column();
         let program_costs_cf = db.column();
         let bank_hash_cf = db.column();
+        let optimistic_slots_cf = db.column();
 
         let db = Arc::new(db);
 
@@ -402,7 +285,7 @@ impl Blockstore {
             .next()
             .map(|(slot, _)| slot)
             .unwrap_or(0);
-        let last_root = Arc::new(RwLock::new(max_root));
+        let last_root = RwLock::new(max_root);
 
         // Get active transaction-status index or 0
         let active_transaction_status_index = db
@@ -444,13 +327,14 @@ impl Blockstore {
             block_height_cf,
             program_costs_cf,
             bank_hash_cf,
-            new_shreds_signals: vec![],
-            completed_slots_senders: vec![],
-            insert_shreds_lock: Arc::new(Mutex::new(())),
+            optimistic_slots_cf,
+            new_shreds_signals: Mutex::default(),
+            completed_slots_senders: Mutex::default(),
+            shred_timing_point_sender: None,
+            insert_shreds_lock: Mutex::<()>::default(),
             last_root,
-            lowest_cleanup_slot: Arc::new(RwLock::new(0)),
-            no_compaction: false,
-            slots_stats: Arc::new(Mutex::new(SlotsStats::default())),
+            lowest_cleanup_slot: RwLock::<Slot>::default(),
+            slots_stats: SlotsStats::default(),
         };
         if initialize_transaction_status_index {
             blockstore.initialize_transaction_status_index()?;
@@ -460,21 +344,15 @@ impl Blockstore {
 
     pub fn open_with_signal(
         ledger_path: &Path,
-        recovery_mode: Option<BlockstoreRecoveryMode>,
-        enforce_ulimit_nofile: bool,
+        options: BlockstoreOptions,
     ) -> Result<BlockstoreSignals> {
-        let mut blockstore = Self::open_with_access_type(
-            ledger_path,
-            AccessType::PrimaryOnly,
-            recovery_mode,
-            enforce_ulimit_nofile,
-        )?;
-        let (ledger_signal_sender, ledger_signal_receiver) = sync_channel(1);
+        let blockstore = Self::open_with_options(ledger_path, options)?;
+        let (ledger_signal_sender, ledger_signal_receiver) = bounded(MAX_REPLAY_WAKE_UP_SIGNALS);
         let (completed_slots_sender, completed_slots_receiver) =
-            sync_channel(MAX_COMPLETED_SLOTS_IN_CHANNEL);
+            bounded(MAX_COMPLETED_SLOTS_IN_CHANNEL);
 
-        blockstore.new_shreds_signals = vec![ledger_signal_sender];
-        blockstore.completed_slots_senders = vec![completed_slots_sender];
+        blockstore.add_new_shred_signal(ledger_signal_sender);
+        blockstore.add_completed_slots_signal(completed_slots_sender);
 
         Ok(BlockstoreSignals {
             blockstore,
@@ -517,11 +395,12 @@ impl Blockstore {
                     entries.pop().unwrap();
                 }
                 let shreds = entries_to_test_shreds(
-                    entries.clone(),
+                    &entries,
                     slot,
                     parent.unwrap_or(slot),
                     is_slot_complete,
                     0,
+                    true, // merkle_variant
                 );
                 self.insert_shreds(shreds, None, false).unwrap();
             }
@@ -529,21 +408,24 @@ impl Blockstore {
         }
     }
 
-    pub fn set_no_compaction(&mut self, no_compaction: bool) {
-        self.no_compaction = no_compaction;
-    }
-
+    /// Deletes the blockstore at the specified path.
+    ///
+    /// Note that if the `ledger_path` has multiple rocksdb instances, this
+    /// function will destroy all.
     pub fn destroy(ledger_path: &Path) -> Result<()> {
-        // Database::destroy() fails if the path doesn't exist
+        // Database::destroy() fails if the root directory doesn't exist
         fs::create_dir_all(ledger_path)?;
-        let blockstore_path = ledger_path.join(BLOCKSTORE_DIRECTORY);
-        Database::destroy(&blockstore_path)
+        Database::destroy(&Path::new(ledger_path).join(BLOCKSTORE_DIRECTORY_ROCKS_LEVEL)).and(
+            Database::destroy(&Path::new(ledger_path).join(BLOCKSTORE_DIRECTORY_ROCKS_FIFO)),
+        )
     }
 
+    /// Returns the SlotMeta of the specified slot.
     pub fn meta(&self, slot: Slot) -> Result<Option<SlotMeta>> {
         self.meta_cf.get(slot)
     }
 
+    /// Returns true if the specified slot is full.
     pub fn is_full(&self, slot: Slot) -> bool {
         if let Ok(Some(meta)) = self.meta_cf.get(slot) {
             return meta.is_full();
@@ -555,11 +437,17 @@ impl Blockstore {
         self.erasure_meta_cf.get(erasure_set.store_key())
     }
 
+    /// Check whether the specified slot is an orphan slot which does not
+    /// have a parent slot.
+    ///
+    /// Returns true if the specified slot does not have a parent slot.
+    /// For other return values, it means either the slot is not in the
+    /// blockstore or the slot isn't an orphan slot.
     pub fn orphan(&self, slot: Slot) -> Result<Option<bool>> {
         self.orphans_cf.get(slot)
     }
 
-    // Get max root or 0 if it doesn't exist
+    /// Returns the max root or 0 if it does not exist.
     pub fn max_root(&self) -> Slot {
         self.db
             .iter::<cf::Root>(IteratorMode::End)
@@ -580,7 +468,7 @@ impl Blockstore {
             (
                 slot,
                 deserialize(&slot_meta_bytes).unwrap_or_else(|e| {
-                    panic!("Could not deserialize SlotMeta for slot {}: {:?}", slot, e)
+                    panic!("Could not deserialize SlotMeta for slot {slot}: {e:?}")
                 }),
             )
         }))
@@ -592,6 +480,10 @@ impl Blockstore {
 
         let orphans_iter = self.orphans_iterator(root + 1).unwrap();
         root_forks.chain(orphans_iter.flat_map(move |orphan| NextSlotsIterator::new(orphan, self)))
+    }
+
+    pub fn live_files_metadata(&self) -> Result<Vec<LiveFile>> {
+        self.db.live_files_metadata()
     }
 
     pub fn slot_data_iterator(
@@ -618,11 +510,51 @@ impl Blockstore {
         Ok(slot_iterator.take_while(move |((shred_slot, _), _)| *shred_slot == slot))
     }
 
-    pub fn rooted_slot_iterator(&self, slot: Slot) -> Result<impl Iterator<Item = u64> + '_> {
+    fn prepare_rooted_slot_iterator(
+        &self,
+        slot: Slot,
+        direction: IteratorDirection,
+    ) -> Result<impl Iterator<Item = Slot> + '_> {
         let slot_iterator = self
             .db
-            .iter::<cf::Root>(IteratorMode::From(slot, IteratorDirection::Forward))?;
+            .iter::<cf::Root>(IteratorMode::From(slot, direction))?;
         Ok(slot_iterator.map(move |(rooted_slot, _)| rooted_slot))
+    }
+
+    pub fn rooted_slot_iterator(&self, slot: Slot) -> Result<impl Iterator<Item = Slot> + '_> {
+        self.prepare_rooted_slot_iterator(slot, IteratorDirection::Forward)
+    }
+
+    pub fn reversed_rooted_slot_iterator(
+        &self,
+        slot: Slot,
+    ) -> Result<impl Iterator<Item = Slot> + '_> {
+        self.prepare_rooted_slot_iterator(slot, IteratorDirection::Reverse)
+    }
+
+    /// Determines if we can iterate from `starting_slot` to >= `ending_slot` by full slots
+    /// `starting_slot` is excluded from the `is_full()` check
+    pub fn slot_range_connected(&self, starting_slot: Slot, ending_slot: Slot) -> bool {
+        if starting_slot == ending_slot {
+            return true;
+        }
+
+        let mut next_slots: VecDeque<_> = match self.meta(starting_slot) {
+            Ok(Some(starting_slot_meta)) => starting_slot_meta.next_slots.into(),
+            _ => return false,
+        };
+        while let Some(slot) = next_slots.pop_front() {
+            if let Ok(Some(slot_meta)) = self.meta(slot) {
+                if slot_meta.is_full() {
+                    match slot.cmp(&ending_slot) {
+                        cmp::Ordering::Less => next_slots.extend(slot_meta.next_slots),
+                        _ => return true,
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     fn get_recovery_data_shreds<'a>(
@@ -679,9 +611,10 @@ impl Blockstore {
         index: &mut Index,
         erasure_meta: &ErasureMeta,
         prev_inserted_shreds: &HashMap<ShredId, Shred>,
-        recovered_data_shreds: &mut Vec<Shred>,
+        recovered_shreds: &mut Vec<Shred>,
         data_cf: &LedgerColumn<cf::ShredData>,
         code_cf: &LedgerColumn<cf::ShredCode>,
+        reed_solomon_cache: &ReedSolomonCache,
     ) {
         // Find shreds for this erasure set and try recovery
         let slot = index.slot;
@@ -700,9 +633,9 @@ impl Blockstore {
             code_cf,
         ))
         .collect();
-        if let Ok(mut result) = Shredder::try_recovery(available_shreds) {
+        if let Ok(mut result) = shred::recover(available_shreds, reed_solomon_cache) {
             Self::submit_metrics(slot, erasure_meta, true, "complete".into(), result.len());
-            recovered_data_shreds.append(&mut result);
+            recovered_shreds.append(&mut result);
         } else {
             Self::submit_metrics(slot, erasure_meta, true, "incomplete".into(), 0);
         }
@@ -729,15 +662,42 @@ impl Blockstore {
         );
     }
 
+    /// Collects and reports [`BlockstoreRocksDbColumnFamilyMetrics`] for the
+    /// all the column families.
+    ///
+    /// [`BlockstoreRocksDbColumnFamilyMetrics`]: crate::blockstore_metrics::BlockstoreRocksDbColumnFamilyMetrics
+    pub fn submit_rocksdb_cf_metrics_for_all_cfs(&self) {
+        self.meta_cf.submit_rocksdb_cf_metrics();
+        self.dead_slots_cf.submit_rocksdb_cf_metrics();
+        self.duplicate_slots_cf.submit_rocksdb_cf_metrics();
+        self.erasure_meta_cf.submit_rocksdb_cf_metrics();
+        self.orphans_cf.submit_rocksdb_cf_metrics();
+        self.index_cf.submit_rocksdb_cf_metrics();
+        self.data_shred_cf.submit_rocksdb_cf_metrics();
+        self.code_shred_cf.submit_rocksdb_cf_metrics();
+        self.transaction_status_cf.submit_rocksdb_cf_metrics();
+        self.address_signatures_cf.submit_rocksdb_cf_metrics();
+        self.transaction_memos_cf.submit_rocksdb_cf_metrics();
+        self.transaction_status_index_cf.submit_rocksdb_cf_metrics();
+        self.rewards_cf.submit_rocksdb_cf_metrics();
+        self.blocktime_cf.submit_rocksdb_cf_metrics();
+        self.perf_samples_cf.submit_rocksdb_cf_metrics();
+        self.block_height_cf.submit_rocksdb_cf_metrics();
+        self.program_costs_cf.submit_rocksdb_cf_metrics();
+        self.bank_hash_cf.submit_rocksdb_cf_metrics();
+        self.optimistic_slots_cf.submit_rocksdb_cf_metrics();
+    }
+
     fn try_shred_recovery(
         db: &Database,
         erasure_metas: &HashMap<ErasureSetId, ErasureMeta>,
         index_working_set: &mut HashMap<u64, IndexMetaWorkingSetEntry>,
         prev_inserted_shreds: &HashMap<ShredId, Shred>,
+        reed_solomon_cache: &ReedSolomonCache,
     ) -> Vec<Shred> {
         let data_cf = db.column::<cf::ShredData>();
         let code_cf = db.column::<cf::ShredCode>();
-        let mut recovered_data_shreds = vec![];
+        let mut recovered_shreds = vec![];
         // Recovery rules:
         // 1. Only try recovery around indexes for which new data or coding shreds are received
         // 2. For new data shreds, check if an erasure set exists. If not, don't try recovery
@@ -753,9 +713,10 @@ impl Blockstore {
                         index,
                         erasure_meta,
                         prev_inserted_shreds,
-                        &mut recovered_data_shreds,
+                        &mut recovered_shreds,
                         &data_cf,
                         &code_cf,
+                        reed_solomon_cache,
                     );
                 }
                 ErasureMetaStatus::DataFull => {
@@ -766,25 +727,77 @@ impl Blockstore {
                         slot,
                         erasure_meta,
                         false,
-                        format!("still need: {}", needed),
+                        format!("still need: {needed}"),
                         0,
                     );
                 }
             };
         }
-        recovered_data_shreds
+        recovered_shreds
     }
 
+    /// The main helper function that performs the shred insertion logic
+    /// and updates corresponding meta-data.
+    ///
+    /// This function updates the following column families:
+    ///   - [`cf::DeadSlots`]: mark a shred as "dead" if its meta-data indicates
+    ///     there is no need to replay this shred.  Specifically when both the
+    ///     following conditions satisfy,
+    ///     - We get a new shred N marked as the last shred in the slot S,
+    ///       but N.index() is less than the current slot_meta.received
+    ///       for slot S.
+    ///     - The slot is not currently full
+    ///     It means there's an alternate version of this slot. See
+    ///     `check_insert_data_shred` for more details.
+    ///   - [`cf::ShredData`]: stores data shreds (in check_insert_data_shreds).
+    ///   - [`cf::ShredCode`]: stores coding shreds (in check_insert_coding_shreds).
+    ///   - [`cf::SlotMeta`]: the SlotMeta of the input `shreds` and their related
+    ///     shreds are updated.  Specifically:
+    ///     - `handle_chaining()` updates `cf::SlotMeta` in two ways.  First, it
+    ///       updates the in-memory slot_meta_working_set, which will later be
+    ///       persisted in commit_slot_meta_working_set().  Second, for the newly
+    ///       chained slots (updated inside handle_chaining_for_slot()), it will
+    ///       directly persist their slot-meta into `cf::SlotMeta`.
+    ///     - In `commit_slot_meta_working_set()`, persists everything stored
+    ///       in the in-memory structure slot_meta_working_set, which is updated
+    ///       by both `check_insert_data_shred()` and `handle_chaining()`.
+    ///   - [`cf::Orphans`]: add or remove the ID of a slot to `cf::Orphans`
+    ///     if it becomes / is no longer an orphan slot in `handle_chaining()`.
+    ///   - [`cf::ErasureMeta`]: the associated ErasureMeta of the coding and data
+    ///     shreds inside `shreds` will be updated and committed to
+    ///     `cf::ErasureMeta`.
+    ///   - [`cf::Index`]: stores (slot id, index to the index_working_set_entry)
+    ///     pair to the `cf::Index` column family for each index_working_set_entry
+    ///     which insert did occur in this function call.
+    ///
+    /// Arguments:
+    ///  - `shreds`: the shreds to be inserted.
+    ///  - `is_repaired`: a boolean vector aligned with `shreds` where each
+    ///    boolean indicates whether the corresponding shred is repaired or not.
+    ///  - `leader_schedule`: the leader schedule
+    ///  - `is_trusted`: whether the shreds come from a trusted source. If this
+    ///    is set to true, then the function will skip the shred duplication and
+    ///    integrity checks.
+    ///  - `retransmit_sender`: the sender for transmitting any recovered
+    ///    data shreds.
+    ///  - `handle_duplicate`: a function for handling shreds that have the same slot
+    ///    and index.
+    ///  - `metrics`: the metric for reporting detailed stats
+    ///
+    /// On success, the function returns an Ok result with a vector of
+    /// `CompletedDataSetInfo` and a vector of its corresponding index in the
+    /// input `shreds` vector.
     pub fn insert_shreds_handle_duplicate<F>(
         &self,
         shreds: Vec<Shred>,
         is_repaired: Vec<bool>,
         leader_schedule: Option<&LeaderScheduleCache>,
         is_trusted: bool,
-        retransmit_sender: Option<&Sender<Vec<Shred>>>,
+        retransmit_sender: Option<&Sender<Vec</*shred:*/ Vec<u8>>>>,
         handle_duplicate: &F,
+        reed_solomon_cache: &ReedSolomonCache,
         metrics: &mut BlockstoreInsertionMetrics,
-    ) -> Result<(Vec<CompletedDataSetInfo>, Vec<usize>)>
+    ) -> Result<Vec<CompletedDataSetInfo>>
     where
         F: Fn(Shred),
     {
@@ -793,7 +806,7 @@ impl Blockstore {
         let mut start = Measure::start("Blockstore lock");
         let _lock = self.insert_shreds_lock.lock().unwrap();
         start.stop();
-        metrics.insert_lock_elapsed += start.as_us();
+        metrics.insert_lock_elapsed_us += start.as_us();
 
         let db = &*self.db;
         let mut write_batch = db.batch()?;
@@ -805,17 +818,16 @@ impl Blockstore {
 
         metrics.num_shreds += shreds.len();
         let mut start = Measure::start("Shred insertion");
-        let mut index_meta_time = 0;
+        let mut index_meta_time_us = 0;
         let mut newly_completed_data_sets: Vec<CompletedDataSetInfo> = vec![];
-        let mut inserted_indices = Vec::new();
-        for (i, (shred, is_repaired)) in shreds.into_iter().zip(is_repaired).enumerate() {
+        for (shred, is_repaired) in shreds.into_iter().zip(is_repaired) {
+            let shred_source = if is_repaired {
+                ShredSource::Repaired
+            } else {
+                ShredSource::Turbine
+            };
             match shred.shred_type() {
                 ShredType::Data => {
-                    let shred_source = if is_repaired {
-                        ShredSource::Repaired
-                    } else {
-                        ShredSource::Turbine
-                    };
                     match self.check_insert_data_shred(
                         shred,
                         &mut erasure_metas,
@@ -823,13 +835,19 @@ impl Blockstore {
                         &mut slot_meta_working_set,
                         &mut write_batch,
                         &mut just_inserted_shreds,
-                        &mut index_meta_time,
+                        &mut index_meta_time_us,
                         is_trusted,
                         handle_duplicate,
                         leader_schedule,
                         shred_source,
                     ) {
-                        Err(InsertDataShredError::Exists) => metrics.num_data_shreds_exists += 1,
+                        Err(InsertDataShredError::Exists) => {
+                            if is_repaired {
+                                metrics.num_repaired_data_shreds_exists += 1;
+                            } else {
+                                metrics.num_turbine_data_shreds_exists += 1;
+                            }
+                        }
                         Err(InsertDataShredError::InvalidShred) => {
                             metrics.num_data_shreds_invalid += 1
                         }
@@ -838,8 +856,10 @@ impl Blockstore {
                             error!("blockstore error: {}", err);
                         }
                         Ok(completed_data_sets) => {
+                            if is_repaired {
+                                metrics.num_repair += 1;
+                            }
                             newly_completed_data_sets.extend(completed_data_sets);
-                            inserted_indices.push(i);
                             metrics.num_inserted += 1;
                         }
                     };
@@ -851,10 +871,10 @@ impl Blockstore {
                         &mut index_working_set,
                         &mut write_batch,
                         &mut just_inserted_shreds,
-                        &mut index_meta_time,
+                        &mut index_meta_time_us,
                         handle_duplicate,
                         is_trusted,
-                        is_repaired,
+                        shred_source,
                         metrics,
                     );
                 }
@@ -862,18 +882,22 @@ impl Blockstore {
         }
         start.stop();
 
-        metrics.insert_shreds_elapsed += start.as_us();
+        metrics.insert_shreds_elapsed_us += start.as_us();
         let mut start = Measure::start("Shred recovery");
         if let Some(leader_schedule_cache) = leader_schedule {
-            let recovered_data_shreds = Self::try_shred_recovery(
+            let recovered_shreds = Self::try_shred_recovery(
                 db,
                 &erasure_metas,
                 &mut index_working_set,
                 &just_inserted_shreds,
+                reed_solomon_cache,
             );
 
-            metrics.num_recovered += recovered_data_shreds.len();
-            let recovered_data_shreds: Vec<_> = recovered_data_shreds
+            metrics.num_recovered += recovered_shreds
+                .iter()
+                .filter(|shred| shred.is_data())
+                .count();
+            let recovered_shreds: Vec<_> = recovered_shreds
                 .into_iter()
                 .filter_map(|shred| {
                     let leader =
@@ -882,6 +906,12 @@ impl Blockstore {
                         metrics.num_recovered_failed_sig += 1;
                         return None;
                     }
+                    // Since the data shreds are fully recovered from the
+                    // erasure batch, no need to store coding shreds in
+                    // blockstore.
+                    if shred.is_code() {
+                        return Some(shred);
+                    }
                     match self.check_insert_data_shred(
                         shred.clone(),
                         &mut erasure_metas,
@@ -889,7 +919,7 @@ impl Blockstore {
                         &mut slot_meta_working_set,
                         &mut write_batch,
                         &mut just_inserted_shreds,
-                        &mut index_meta_time,
+                        &mut index_meta_time_us,
                         is_trusted,
                         &handle_duplicate,
                         leader_schedule,
@@ -918,26 +948,31 @@ impl Blockstore {
                 // Always collect recovered-shreds so that above insert code is
                 // executed even if retransmit-sender is None.
                 .collect();
-            if !recovered_data_shreds.is_empty() {
+            if !recovered_shreds.is_empty() {
                 if let Some(retransmit_sender) = retransmit_sender {
-                    let _ = retransmit_sender.send(recovered_data_shreds);
+                    let _ = retransmit_sender.send(
+                        recovered_shreds
+                            .into_iter()
+                            .map(Shred::into_payload)
+                            .collect(),
+                    );
                 }
             }
         }
         start.stop();
-        metrics.shred_recovery_elapsed += start.as_us();
+        metrics.shred_recovery_elapsed_us += start.as_us();
 
         let mut start = Measure::start("Shred recovery");
         // Handle chaining for the members of the slot_meta_working_set that were inserted into,
         // drop the others
         handle_chaining(&self.db, &mut write_batch, &mut slot_meta_working_set)?;
         start.stop();
-        metrics.chaining_elapsed += start.as_us();
+        metrics.chaining_elapsed_us += start.as_us();
 
         let mut start = Measure::start("Commit Working Sets");
         let (should_signal, newly_completed_slots) = commit_slot_meta_working_set(
             &slot_meta_working_set,
-            &self.completed_slots_senders,
+            &self.completed_slots_senders.lock().unwrap(),
             &mut write_batch,
         )?;
 
@@ -951,30 +986,52 @@ impl Blockstore {
             }
         }
         start.stop();
-        metrics.commit_working_sets_elapsed += start.as_us();
+        metrics.commit_working_sets_elapsed_us += start.as_us();
 
         let mut start = Measure::start("Write Batch");
         self.db.write(write_batch)?;
         start.stop();
-        metrics.write_batch_elapsed += start.as_us();
+        metrics.write_batch_elapsed_us += start.as_us();
 
         send_signals(
-            &self.new_shreds_signals,
-            &self.completed_slots_senders,
+            &self.new_shreds_signals.lock().unwrap(),
+            &self.completed_slots_senders.lock().unwrap(),
             should_signal,
             newly_completed_slots,
         );
 
         total_start.stop();
 
-        metrics.total_elapsed += total_start.as_us();
-        metrics.index_meta_time += index_meta_time;
+        metrics.total_elapsed_us += total_start.as_us();
+        metrics.index_meta_time_us += index_meta_time_us;
 
-        Ok((newly_completed_data_sets, inserted_indices))
+        Ok(newly_completed_data_sets)
     }
 
-    /// Range-delete all entries which prefix matches the specified `slot` and
-    /// clear all the related `SlotMeta` except its next_slots.
+    pub fn add_new_shred_signal(&self, s: Sender<bool>) {
+        self.new_shreds_signals.lock().unwrap().push(s);
+    }
+
+    pub fn add_completed_slots_signal(&self, s: CompletedSlotsSender) {
+        self.completed_slots_senders.lock().unwrap().push(s);
+    }
+
+    pub fn get_new_shred_signals_len(&self) -> usize {
+        self.new_shreds_signals.lock().unwrap().len()
+    }
+
+    pub fn get_new_shred_signal(&self, index: usize) -> Option<Sender<bool>> {
+        self.new_shreds_signals.lock().unwrap().get(index).cloned()
+    }
+
+    pub fn drop_signal(&self) {
+        self.new_shreds_signals.lock().unwrap().clear();
+        self.completed_slots_senders.lock().unwrap().clear();
+    }
+
+    /// Range-delete all entries which prefix matches the specified `slot`,
+    /// remove `slot` its' parents SlotMeta next_slots list, and
+    /// clear `slot`'s SlotMeta (except for next_slots).
     ///
     /// This function currently requires `insert_shreds_lock`, as both
     /// `clear_unconfirmed_slot()` and `insert_shreds_handle_duplicate()`
@@ -990,6 +1047,21 @@ impl Blockstore {
             self.run_purge(slot, slot, PurgeType::PrimaryIndex)
                 .expect("Purge database operations failed");
 
+            // Clear this slot as a next slot from parent
+            if let Some(parent_slot) = slot_meta.parent_slot {
+                let mut parent_slot_meta = self
+                    .meta(parent_slot)
+                    .expect("Couldn't fetch from SlotMeta column family")
+                    .expect("Unconfirmed slot should have had parent slot set");
+                // .retain() is a linear scan; however, next_slots should
+                // only contain several elements so this isn't so bad
+                parent_slot_meta
+                    .next_slots
+                    .retain(|&next_slot| next_slot != slot);
+                self.meta_cf
+                    .put(parent_slot, &parent_slot_meta)
+                    .expect("Couldn't insert into SlotMeta column family");
+            }
             // Reinsert parts of `slot_meta` that are important to retain, like the `next_slots`
             // field.
             slot_meta.clear_unconfirmed_slot();
@@ -1009,7 +1081,7 @@ impl Blockstore {
         shreds: Vec<Shred>,
         leader_schedule: Option<&LeaderScheduleCache>,
         is_trusted: bool,
-    ) -> Result<(Vec<CompletedDataSetInfo>, Vec<usize>)> {
+    ) -> Result<Vec<CompletedDataSetInfo>> {
         let shreds_len = shreds.len();
         self.insert_shreds_handle_duplicate(
             shreds,
@@ -1018,15 +1090,9 @@ impl Blockstore {
             is_trusted,
             None,    // retransmit-sender
             &|_| {}, // handle-duplicates
+            &ReedSolomonCache::default(),
             &mut BlockstoreInsertionMetrics::default(),
         )
-    }
-
-    fn erasure_mismatch(shred1: &Shred, shred2: &Shred) -> bool {
-        // TODO should also compare first-coding-index once position field is
-        // populated across cluster.
-        shred1.coding_header.num_coding_shreds != shred2.coding_header.num_coding_shreds
-            || shred1.coding_header.num_data_shreds != shred2.coding_header.num_data_shreds
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1037,10 +1103,10 @@ impl Blockstore {
         index_working_set: &mut HashMap<u64, IndexMetaWorkingSetEntry>,
         write_batch: &mut WriteBatch,
         just_received_shreds: &mut HashMap<ShredId, Shred>,
-        index_meta_time: &mut u64,
+        index_meta_time_us: &mut u64,
         handle_duplicate: &F,
         is_trusted: bool,
-        is_repaired: bool,
+        shred_source: ShredSource,
         metrics: &mut BlockstoreInsertionMetrics,
     ) -> bool
     where
@@ -1050,7 +1116,7 @@ impl Blockstore {
         let shred_index = u64::from(shred.index());
 
         let index_meta_working_set_entry =
-            get_index_meta_entry(&self.db, slot, index_working_set, index_meta_time);
+            get_index_meta_entry(&self.db, slot, index_working_set, index_meta_time_us);
 
         let index_meta = &mut index_meta_working_set_entry.index;
 
@@ -1089,7 +1155,11 @@ impl Blockstore {
             );
             if let Some(conflicting_shred) = conflicting_shred {
                 if self
-                    .store_duplicate_if_not_existing(slot, conflicting_shred, shred.payload.clone())
+                    .store_duplicate_if_not_existing(
+                        slot,
+                        conflicting_shred,
+                        shred.payload().clone(),
+                    )
                     .is_err()
                 {
                     warn!("bad duplicate store..");
@@ -1101,18 +1171,20 @@ impl Blockstore {
             // ToDo: This is a potential slashing condition
             warn!("Received multiple erasure configs for the same erasure set!!!");
             warn!(
-                "Slot: {}, shred index: {}, erasure_set: {:?}, is_duplicate: {}, stored config: {:#?}, new config: {:#?}",
-                slot, shred.index(), erasure_set, self.has_duplicate_shreds_in_slot(slot), erasure_meta.config(), shred.coding_header,
+                "Slot: {}, shred index: {}, erasure_set: {:?}, \
+                is_duplicate: {}, stored config: {:#?}, new shred: {:#?}",
+                slot,
+                shred.index(),
+                erasure_set,
+                self.has_duplicate_shreds_in_slot(slot),
+                erasure_meta.config(),
+                shred,
             );
-
             return false;
         }
 
-        if is_repaired {
-            let mut slots_stats = self.slots_stats.lock().unwrap();
-            let mut e = slots_stats.stats.entry(slot).or_default();
-            e.num_repaired += 1;
-        }
+        self.slots_stats
+            .record_shred(shred.slot(), shred.fec_set_index(), shred_source, None);
 
         // insert coding shred into rocks
         let result = self
@@ -1145,15 +1217,15 @@ impl Blockstore {
             let maybe_shred = self.get_coding_shred(slot, coding_index);
             if let Ok(Some(shred_data)) = maybe_shred {
                 let potential_shred = Shred::new_from_serialized_shred(shred_data).unwrap();
-                if Self::erasure_mismatch(&potential_shred, shred) {
-                    return Some(potential_shred.payload);
+                if shred.erasure_mismatch(&potential_shred).unwrap() {
+                    return Some(potential_shred.into_payload());
                 }
             } else if let Some(potential_shred) = {
                 let key = ShredId::new(slot, u32::try_from(coding_index).unwrap(), ShredType::Code);
                 just_received_shreds.get(&key)
             } {
-                if Self::erasure_mismatch(potential_shred, shred) {
-                    return Some(potential_shred.payload.clone());
+                if shred.erasure_mismatch(potential_shred).unwrap() {
+                    return Some(potential_shred.payload().clone());
                 }
             }
         }
@@ -1189,10 +1261,10 @@ impl Blockstore {
     ///     be committed atomically.
     /// - `just_inserted_data_shreds`: a (slot, shred index within the slot)
     ///     to shred map which maintains which data shreds have been inserted.
-    /// - `index_meta_time`: the time spent on loading or creating the
+    /// - `index_meta_time_us`: the time spent on loading or creating the
     ///     index meta entry from the db.
     /// - `is_trusted`: if false, this function will check whether the
-    ///     input shred is dupliate.
+    ///     input shred is duplicate.
     /// - `handle_duplicate`: the function that handles duplication.
     /// - `leader_schedule`: the leader schedule will be used to check
     ///     whether it is okay to insert the input shred.
@@ -1206,7 +1278,7 @@ impl Blockstore {
         slot_meta_working_set: &mut HashMap<u64, SlotMetaWorkingSetEntry>,
         write_batch: &mut WriteBatch,
         just_inserted_shreds: &mut HashMap<ShredId, Shred>,
-        index_meta_time: &mut u64,
+        index_meta_time_us: &mut u64,
         is_trusted: bool,
         handle_duplicate: &F,
         leader_schedule: Option<&LeaderScheduleCache>,
@@ -1219,7 +1291,7 @@ impl Blockstore {
         let shred_index = u64::from(shred.index());
 
         let index_meta_working_set_entry =
-            get_index_meta_entry(&self.db, slot, index_working_set, index_meta_time);
+            get_index_meta_entry(&self.db, slot, index_working_set, index_meta_time_us);
 
         let index_meta = &mut index_meta_working_set_entry.index;
         let slot_meta_entry = get_slot_meta_entry(
@@ -1259,7 +1331,7 @@ impl Blockstore {
                 just_inserted_shreds,
                 &self.last_root,
                 leader_schedule,
-                shred_source.clone(),
+                shred_source,
             ) {
                 return Err(InsertDataShredError::InvalidShred);
             }
@@ -1285,7 +1357,8 @@ impl Blockstore {
     }
 
     fn should_insert_coding_shred(shred: &Shred, last_root: &RwLock<u64>) -> bool {
-        shred.is_code() && shred.sanitize() && shred.slot() > *last_root.read().unwrap()
+        debug_assert_matches!(shred.sanitize(), Ok(()));
+        shred.is_code() && shred.slot() > *last_root.read().unwrap()
     }
 
     fn insert_coding_shred(
@@ -1299,11 +1372,12 @@ impl Blockstore {
 
         // Assert guaranteed by integrity checks on the shred that happen before
         // `insert_coding_shred` is called
-        assert!(shred.is_code() && shred.sanitize());
+        debug_assert_matches!(shred.sanitize(), Ok(()));
+        assert!(shred.is_code());
 
         // Commit step: commit all changes to the mutable structures at once, or none at all.
         // We don't want only a subset of these changes going through.
-        write_batch.put_bytes::<cf::ShredCode>((slot, shred_index), &shred.payload)?;
+        write_batch.put_bytes::<cf::ShredCode>((slot, shred_index), shred.payload())?;
         index_meta.coding_mut().insert(shred_index);
 
         Ok(())
@@ -1323,7 +1397,7 @@ impl Blockstore {
     ) -> Cow<'a, Vec<u8>> {
         let key = ShredId::new(slot, u32::try_from(index).unwrap(), ShredType::Data);
         if let Some(shred) = just_inserted_shreds.get(&key) {
-            Cow::Borrowed(&shred.payload)
+            Cow::Borrowed(shred.payload())
         } else {
             // If it doesn't exist in the just inserted set, it must exist in
             // the backing store
@@ -1348,42 +1422,7 @@ impl Blockstore {
         } else {
             false
         };
-
-        if shred.data_header.size == 0 {
-            let leader_pubkey = leader_schedule
-                .and_then(|leader_schedule| leader_schedule.slot_leader_at(slot, None));
-
-            datapoint_error!(
-                "blockstore_error",
-                (
-                    "error",
-                    format!(
-                        "Leader {:?}, slot {}: received index {} is empty",
-                        leader_pubkey, slot, shred_index,
-                    ),
-                    String
-                )
-            );
-            return false;
-        }
-        if shred.payload.len() > SHRED_PAYLOAD_SIZE {
-            let leader_pubkey = leader_schedule
-                .and_then(|leader_schedule| leader_schedule.slot_leader_at(slot, None));
-
-            datapoint_error!(
-                "blockstore_error",
-                (
-                    "error",
-                    format!(
-                        "Leader {:?}, slot {}: received index {} shred.payload.len() > SHRED_PAYLOAD_SIZE",
-                        leader_pubkey, slot, shred_index,
-                    ),
-                    String
-                )
-            );
-            return false;
-        }
-
+        debug_assert_matches!(shred.sanitize(), Ok(()));
         // Check that we do not receive shred_index >= than the last_index
         // for the slot
         let last_index = slot_meta.last_index;
@@ -1401,7 +1440,7 @@ impl Blockstore {
                 .store_duplicate_if_not_existing(
                     slot,
                     ending_shred.into_owned(),
-                    shred.payload.clone(),
+                    shred.payload().clone(),
                 )
                 .is_err()
             {
@@ -1413,8 +1452,7 @@ impl Blockstore {
                 (
                     "error",
                     format!(
-                        "Leader {:?}, slot {}: received index {} >= slot.last_index {:?}, shred_source: {:?}",
-                        leader_pubkey, slot, shred_index, last_index, shred_source
+                        "Leader {leader_pubkey:?}, slot {slot}: received index {shred_index} >= slot.last_index {last_index:?}, shred_source: {shred_source:?}"
                     ),
                     String
                 )
@@ -1437,7 +1475,7 @@ impl Blockstore {
                 .store_duplicate_if_not_existing(
                     slot,
                     ending_shred.into_owned(),
-                    shred.payload.clone(),
+                    shred.payload().clone(),
                 )
                 .is_err()
             {
@@ -1465,6 +1503,20 @@ impl Blockstore {
             .parent_slot
             .map(|parent_slot| verify_shred_slots(slot, parent_slot, last_root))
             .unwrap_or_default()
+    }
+
+    /// send slot full timing point to poh_timing_report service
+    fn send_slot_full_timing(&self, slot: Slot) {
+        if let Some(ref sender) = self.shred_timing_point_sender {
+            send_poh_timing_point(
+                sender,
+                SlotPohTimingInfo::new_slot_full_poh_time_point(
+                    slot,
+                    Some(self.last_root()),
+                    solana_sdk::timing::timestamp(),
+                ),
+            );
+        }
     }
 
     fn insert_data_shred(
@@ -1508,12 +1560,7 @@ impl Blockstore {
 
         // Commit step: commit all changes to the mutable structures at once, or none at all.
         // We don't want only a subset of these changes going through.
-        write_batch.put_bytes::<cf::ShredData>(
-            (slot, index),
-            // Payload will be padded out to SHRED_PAYLOAD_SIZE
-            // But only need to store the bytes within data_header.size
-            &shred.payload[..shred.data_header.size as usize],
-        )?;
+        write_batch.put_bytes::<cf::ShredData>((slot, index), shred.bytes_to_store())?;
         data_index.insert(index);
         let newly_completed_data_sets = update_slot_meta(
             last_in_slot,
@@ -1531,63 +1578,31 @@ impl Blockstore {
             end_index,
         })
         .collect();
-        if shred_source == ShredSource::Repaired || shred_source == ShredSource::Recovered {
-            let mut slots_stats = self.slots_stats.lock().unwrap();
-            let mut e = slots_stats.stats.entry(slot_meta.slot).or_default();
-            if shred_source == ShredSource::Repaired {
-                e.num_repaired += 1;
-            }
-            if shred_source == ShredSource::Recovered {
-                e.num_recovered += 1;
-            }
-        }
+
+        self.slots_stats.record_shred(
+            shred.slot(),
+            shred.fec_set_index(),
+            shred_source,
+            Some(slot_meta),
+        );
+
+        // slot is full, send slot full timing to poh_timing_report service.
         if slot_meta.is_full() {
-            let (num_repaired, num_recovered) = {
-                let mut slots_stats = self.slots_stats.lock().unwrap();
-                if let Some(e) = slots_stats.stats.remove(&slot_meta.slot) {
-                    if slots_stats.last_cleanup_ts.elapsed().as_secs() > 30 {
-                        let root = self.last_root();
-                        slots_stats.stats = slots_stats.stats.split_off(&root);
-                        slots_stats.last_cleanup_ts = Instant::now();
-                    }
-                    (e.num_repaired, e.num_recovered)
-                } else {
-                    (0, 0)
-                }
-            };
-            datapoint_info!(
-                "shred_insert_is_full",
-                (
-                    "total_time_ms",
-                    solana_sdk::timing::timestamp() - slot_meta.first_shred_timestamp,
-                    i64
-                ),
-                ("slot", slot_meta.slot, i64),
-                (
-                    "last_index",
-                    slot_meta
-                        .last_index
-                        .and_then(|ix| i64::try_from(ix).ok())
-                        .unwrap_or(-1),
-                    i64
-                ),
-                ("num_repaired", num_repaired, i64),
-                ("num_recovered", num_recovered, i64),
-            );
+            self.send_slot_full_timing(slot);
         }
+
         trace!("inserted shred into slot {:?} and index {:?}", slot, index);
+
         Ok(newly_completed_data_sets)
     }
 
     pub fn get_data_shred(&self, slot: Slot, index: u64) -> Result<Option<Vec<u8>>> {
-        self.data_shred_cf.get_bytes((slot, index)).map(|data| {
-            data.map(|mut d| {
-                // Only data_header.size bytes stored in the blockstore so
-                // pad the payload out to SHRED_PAYLOAD_SIZE so that the
-                // erasure recovery works properly.
-                d.resize(cmp::max(d.len(), SHRED_PAYLOAD_SIZE), 0);
-                d
-            })
+        let shred = self.data_shred_cf.get_bytes((slot, index))?;
+        let shred = shred.map(ShredData::resize_stored_shred).transpose();
+        shred.map_err(|err| {
+            let err = format!("Invalid stored shred: {err}");
+            let err = Box::new(bincode::ErrorKind::Custom(err));
+            BlockstoreError::InvalidShredData(err)
         })
     }
 
@@ -1595,7 +1610,7 @@ impl Blockstore {
         &self,
         slot: Slot,
         start_index: u64,
-    ) -> ShredResult<Vec<Shred>> {
+    ) -> std::result::Result<Vec<Shred>, shred::Error> {
         self.slot_data_iterator(slot, start_index)
             .expect("blockstore couldn't fetch iterator")
             .map(|data| Shred::new_from_serialized_shred(data.1.to_vec()))
@@ -1651,7 +1666,7 @@ impl Blockstore {
         &self,
         slot: Slot,
         start_index: u64,
-    ) -> ShredResult<Vec<Shred>> {
+    ) -> std::result::Result<Vec<Shred>, shred::Error> {
         self.slot_coding_iterator(slot, start_index)
             .expect("blockstore couldn't fetch iterator")
             .map(|code| Shred::new_from_serialized_shred(code.1.to_vec()))
@@ -1668,7 +1683,7 @@ impl Blockstore {
         ticks_per_slot: u64,
         parent: Option<u64>,
         is_full_slot: bool,
-        keypair: &Arc<Keypair>,
+        keypair: &Keypair,
         entries: Vec<Entry>,
         version: u16,
     ) -> Result<usize /*num of data shreds*/> {
@@ -1681,14 +1696,14 @@ impl Blockstore {
         let mut shredder = Shredder::new(current_slot, parent_slot, 0, version).unwrap();
         let mut all_shreds = vec![];
         let mut slot_entries = vec![];
+        let reed_solomon_cache = ReedSolomonCache::default();
         // Find all the entries for start_slot
         for entry in entries.into_iter() {
             if remaining_ticks_in_slot == 0 {
                 current_slot += 1;
                 parent_slot = current_slot - 1;
                 remaining_ticks_in_slot = ticks_per_slot;
-                let mut current_entries = vec![];
-                std::mem::swap(&mut slot_entries, &mut current_entries);
+                let current_entries = std::mem::take(&mut slot_entries);
                 let start_index = {
                     if all_shreds.is_empty() {
                         start_index
@@ -1702,6 +1717,9 @@ impl Blockstore {
                     true,        // is_last_in_slot
                     start_index, // next_shred_index
                     start_index, // next_code_index
+                    true,        // merkle_variant
+                    &reed_solomon_cache,
+                    &mut ProcessShredsStats::default(),
                 );
                 all_shreds.append(&mut data_shreds);
                 all_shreds.append(&mut coding_shreds);
@@ -1725,8 +1743,11 @@ impl Blockstore {
                 keypair,
                 &slot_entries,
                 is_full_slot,
-                0, // next_shred_index
-                0, // next_code_index
+                0,    // next_shred_index
+                0,    // next_code_index
+                true, // merkle_variant
+                &reed_solomon_cache,
+                &mut ProcessShredsStats::default(),
             );
             all_shreds.append(&mut data_shreds);
             all_shreds.append(&mut coding_shreds);
@@ -1745,6 +1766,13 @@ impl Blockstore {
     /// Dangerous. Use with care.
     pub fn put_meta_bytes(&self, slot: Slot, bytes: &[u8]) -> Result<()> {
         self.meta_cf.put_bytes(slot, bytes)
+    }
+
+    /// Manually update the meta for a slot.
+    /// Can interfere with automatic meta update and potentially break chaining.
+    /// Dangerous. Use with care.
+    pub fn put_meta(&self, slot: Slot, meta: &SlotMeta) -> Result<()> {
+        self.put_meta_bytes(slot, &bincode::serialize(meta)?)
     }
 
     // Given a start and end entry index, find all the missing
@@ -1796,10 +1824,8 @@ impl Blockstore {
 
             let upper_index = cmp::min(current_index, end_index);
             // the tick that will be used to figure out the timeout for this hole
-            let reference_tick = u64::from(Shred::reference_tick_from_data(
-                db_iterator.value().expect("couldn't read value"),
-            ));
-
+            let data = db_iterator.value().expect("couldn't read value");
+            let reference_tick = u64::from(shred::layout::get_reference_tick(data).unwrap());
             if ticks_since_first_insert < reference_tick + MAX_TURBINE_DELAY_IN_TICKS {
                 // The higher index holes have not timed out yet
                 break 'outer;
@@ -1852,10 +1878,7 @@ impl Blockstore {
     }
 
     pub fn get_block_time(&self, slot: Slot) -> Result<Option<UnixTimestamp>> {
-        datapoint_info!(
-            "blockstore-rpc-api",
-            ("method", "get_block_time".to_string(), String)
-        );
+        datapoint_info!("blockstore-rpc-api", ("method", "get_block_time", String));
         let _lock = self.check_lowest_cleanup_slot(slot)?;
         self.blocktime_cf.get(slot)
     }
@@ -1865,10 +1888,7 @@ impl Blockstore {
     }
 
     pub fn get_block_height(&self, slot: Slot) -> Result<Option<u64>> {
-        datapoint_info!(
-            "blockstore-rpc-api",
-            ("method", "get_block_height".to_string(), String)
-        );
+        datapoint_info!("blockstore-rpc-api", ("method", "get_block_height", String));
         let _lock = self.check_lowest_cleanup_slot(slot)?;
         self.block_height_cf.get(slot)
     }
@@ -1877,8 +1897,18 @@ impl Blockstore {
         self.block_height_cf.put(slot, &block_height)
     }
 
+    /// The first complete block that is available in the Blockstore ledger
     pub fn get_first_available_block(&self) -> Result<Slot> {
-        let mut root_iterator = self.rooted_slot_iterator(self.lowest_slot())?;
+        let mut root_iterator = self.rooted_slot_iterator(self.lowest_slot_with_genesis())?;
+        let first_root = root_iterator.next().unwrap_or_default();
+        // If the first root is slot 0, it is genesis. Genesis is always complete, so it is correct
+        // to return it as first-available.
+        if first_root == 0 {
+            return Ok(first_root);
+        }
+        // Otherwise, the block at root-index 0 cannot ever be complete, because it is missing its
+        // parent blockhash. A parent blockhash must be calculated from the entries of the previous
+        // block. Therefore, the first available complete block is that at root-index 1.
         Ok(root_iterator.next().unwrap_or_default())
     }
 
@@ -1886,11 +1916,8 @@ impl Blockstore {
         &self,
         slot: Slot,
         require_previous_blockhash: bool,
-    ) -> Result<ConfirmedBlock> {
-        datapoint_info!(
-            "blockstore-rpc-api",
-            ("method", "get_rooted_block".to_string(), String)
-        );
+    ) -> Result<VersionedConfirmedBlock> {
+        datapoint_info!("blockstore-rpc-api", ("method", "get_rooted_block", String));
         let _lock = self.check_lowest_cleanup_slot(slot)?;
 
         if self.is_root(slot) {
@@ -1903,7 +1930,7 @@ impl Blockstore {
         &self,
         slot: Slot,
         require_previous_blockhash: bool,
-    ) -> Result<ConfirmedBlock> {
+    ) -> Result<VersionedConfirmedBlock> {
         let slot_meta_cf = self.db.column::<cf::SlotMeta>();
         let slot_meta = match slot_meta_cf.get(slot)? {
             Some(slot_meta) => slot_meta,
@@ -1918,12 +1945,17 @@ impl Blockstore {
                 let blockhash = slot_entries
                     .last()
                     .map(|entry| entry.hash)
-                    .unwrap_or_else(|| panic!("Rooted slot {:?} must have blockhash", slot));
+                    .unwrap_or_else(|| panic!("Rooted slot {slot:?} must have blockhash"));
                 let slot_transaction_iterator = slot_entries
                     .into_iter()
                     .flat_map(|entry| entry.transactions)
                     .map(|transaction| {
-                        if let Err(err) = transaction.sanitize() {
+                        if let Err(err) = transaction.sanitize(
+                            // Don't enable additional sanitization checks until
+                            // all clusters have activated the static program id
+                            // feature gate so that bigtable upload isn't affected
+                            false, // require_static_program_ids
+                        ) {
                             warn!(
                                 "Blockstore::get_block sanitize failed: {:?}, \
                                 slot: {:?}, \
@@ -1961,7 +1993,7 @@ impl Blockstore {
                 let block_time = self.blocktime_cf.get(slot)?;
                 let block_height = self.block_height_cf.get(slot)?;
 
-                let block = ConfirmedBlock {
+                let block = VersionedConfirmedBlock {
                     previous_blockhash: previous_blockhash.to_string(),
                     blockhash: blockhash.to_string(),
                     // If the slot is full it should have parent_slot populated
@@ -1983,22 +2015,16 @@ impl Blockstore {
         &self,
         slot: Slot,
         iterator: impl Iterator<Item = VersionedTransaction>,
-    ) -> Result<Vec<TransactionWithStatusMeta>> {
+    ) -> Result<Vec<VersionedTransactionWithStatusMeta>> {
         iterator
-            .map(|versioned_tx| {
-                // TODO: add support for versioned transactions
-                if let Some(transaction) = versioned_tx.into_legacy_transaction() {
-                    let signature = transaction.signatures[0];
-                    Ok(TransactionWithStatusMeta {
-                        transaction,
-                        meta: self
-                            .read_transaction_status((signature, slot))
-                            .ok()
-                            .flatten(),
-                    })
-                } else {
-                    Err(BlockstoreError::UnsupportedTransactionVersion)
-                }
+            .map(|transaction| {
+                let signature = transaction.signatures[0];
+                Ok(VersionedTransactionWithStatusMeta {
+                    transaction,
+                    meta: self
+                        .read_transaction_status((signature, slot))?
+                        .ok_or(BlockstoreError::MissingTransactionMetadata)?,
+                })
             })
             .collect()
     }
@@ -2022,8 +2048,8 @@ impl Blockstore {
         )
     }
 
-    /// Toggles the active primary index between `0` and `1`, and clears the stored max-slot of the
-    /// frozen index in preparation for pruning.
+    /// Toggles the active primary index between `0` and `1`, and clears the
+    /// stored max-slot of the frozen index in preparation for pruning.
     fn toggle_transaction_status_index(
         &self,
         batch: &mut WriteBatch,
@@ -2151,6 +2177,11 @@ impl Blockstore {
         self.transaction_memos_cf.put(*signature, &memos)
     }
 
+    /// Acquires the `lowest_cleanup_slot` lock and returns a tuple of the held lock
+    /// and lowest available slot.
+    ///
+    /// The function will return BlockstoreError::SlotCleanedUp if the input
+    /// `slot` has already been cleaned-up.
     fn check_lowest_cleanup_slot(&self, slot: Slot) -> Result<std::sync::RwLockReadGuard<Slot>> {
         // lowest_cleanup_slot is the last slot that was not cleaned up by LedgerCleanupService
         let lowest_cleanup_slot = self.lowest_cleanup_slot.read().unwrap();
@@ -2162,10 +2193,13 @@ impl Blockstore {
         Ok(lowest_cleanup_slot)
     }
 
+    /// Acquires the lock of `lowest_cleanup_slot` and returns the tuple of
+    /// the held lock and the lowest available slot.
+    ///
+    /// This function ensures a consistent result by using lowest_cleanup_slot
+    /// as the lower bound for reading columns that do not employ strong read
+    /// consistency with slot-based delete_range.
     fn ensure_lowest_cleanup_slot(&self) -> (std::sync::RwLockReadGuard<Slot>, Slot) {
-        // Ensures consistent result by using lowest_cleanup_slot as the lower bound
-        // for reading columns that do not employ strong read consistency with slot-based
-        // delete_range
         let lowest_cleanup_slot = self.lowest_cleanup_slot.read().unwrap();
         let lowest_available_slot = (*lowest_cleanup_slot)
             .checked_add(1)
@@ -2223,11 +2257,7 @@ impl Blockstore {
     ) -> Result<Option<(Slot, TransactionStatusMeta)>> {
         datapoint_info!(
             "blockstore-rpc-api",
-            (
-                "method",
-                "get_rooted_transaction_status".to_string(),
-                String
-            )
+            ("method", "get_rooted_transaction_status", String)
         );
         self.get_transaction_status(signature, &[])
     }
@@ -2240,7 +2270,7 @@ impl Blockstore {
     ) -> Result<Option<(Slot, TransactionStatusMeta)>> {
         datapoint_info!(
             "blockstore-rpc-api",
-            ("method", "get_transaction_status".to_string(), String)
+            ("method", "get_transaction_status", String)
         );
         self.get_transaction_status_with_counter(signature, confirmed_unrooted_slots)
             .map(|(status, _)| status)
@@ -2250,10 +2280,10 @@ impl Blockstore {
     pub fn get_rooted_transaction(
         &self,
         signature: Signature,
-    ) -> Result<Option<ConfirmedTransaction>> {
+    ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
         datapoint_info!(
             "blockstore-rpc-api",
-            ("method", "get_rooted_transaction".to_string(), String)
+            ("method", "get_rooted_transaction", String)
         );
         self.get_transaction_with_status(signature, &[])
     }
@@ -2263,10 +2293,10 @@ impl Blockstore {
         &self,
         signature: Signature,
         highest_confirmed_slot: Slot,
-    ) -> Result<Option<ConfirmedTransaction>> {
+    ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
         datapoint_info!(
             "blockstore-rpc-api",
-            ("method", "get_complete_transaction".to_string(), String)
+            ("method", "get_complete_transaction", String)
         );
         let last_root = self.last_root();
         let confirmed_unrooted_slots: Vec<_> =
@@ -2280,26 +2310,20 @@ impl Blockstore {
         &self,
         signature: Signature,
         confirmed_unrooted_slots: &[Slot],
-    ) -> Result<Option<ConfirmedTransaction>> {
-        if let Some((slot, status)) =
+    ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
+        if let Some((slot, meta)) =
             self.get_transaction_status(signature, confirmed_unrooted_slots)?
         {
             let transaction = self
                 .find_transaction_in_slot(slot, signature)?
                 .ok_or(BlockstoreError::TransactionStatusSlotMismatch)?; // Should not happen
 
-            // TODO: support retrieving versioned transactions
-            let transaction = transaction
-                .into_legacy_transaction()
-                .ok_or(BlockstoreError::UnsupportedTransactionVersion)?;
-
             let block_time = self.get_block_time(slot)?;
-            Ok(Some(ConfirmedTransaction {
+            Ok(Some(ConfirmedTransactionWithStatusMeta {
                 slot,
-                transaction: TransactionWithStatusMeta {
-                    transaction,
-                    meta: Some(status),
-                },
+                tx_with_meta: TransactionWithStatusMeta::Complete(
+                    VersionedTransactionWithStatusMeta { transaction, meta },
+                ),
                 block_time,
             }))
         } else {
@@ -2318,7 +2342,9 @@ impl Blockstore {
             .cloned()
             .flat_map(|entry| entry.transactions)
             .map(|transaction| {
-                if let Err(err) = transaction.sanitize() {
+                if let Err(err) = transaction.sanitize(
+                    true, // require_static_program_ids
+                ) {
                     warn!(
                         "Blockstore::find_transaction_in_slot sanitize failed: {:?}, \
                         slot: {:?}, \
@@ -2414,11 +2440,7 @@ impl Blockstore {
     ) -> Result<Vec<Signature>> {
         datapoint_info!(
             "blockstore-rpc-api",
-            (
-                "method",
-                "get_confirmed_signatures_for_address".to_string(),
-                String
-            )
+            ("method", "get_confirmed_signatures_for_address", String)
         );
         self.find_address_signatures(pubkey, start_slot, end_slot)
             .map(|signatures| signatures.iter().map(|(_, signature)| *signature).collect())
@@ -2428,7 +2450,7 @@ impl Blockstore {
         let block = self.get_complete_block(slot, false).map_err(|err| {
             BlockstoreError::Io(IoError::new(
                 ErrorKind::Other,
-                format!("Unable to get block: {}", err),
+                format!("Unable to get block: {err}"),
             ))
         })?;
 
@@ -2460,14 +2482,10 @@ impl Blockstore {
         before: Option<Signature>,
         until: Option<Signature>,
         limit: usize,
-    ) -> Result<Vec<ConfirmedTransactionStatusWithSignature>> {
+    ) -> Result<SignatureInfosForAddress> {
         datapoint_info!(
             "blockstore-rpc-api",
-            (
-                "method",
-                "get_confirmed_signatures_for_address2".to_string(),
-                String
-            )
+            ("method", "get_confirmed_signatures_for_address2", String)
         );
         let last_root = self.last_root();
         let confirmed_unrooted_slots: Vec<_> = AncestorIterator::new_inclusive(highest_slot, self)
@@ -2484,7 +2502,7 @@ impl Blockstore {
                 let transaction_status =
                     self.get_transaction_status(before, &confirmed_unrooted_slots)?;
                 match transaction_status {
-                    None => return Ok(vec![]),
+                    None => return Ok(SignatureInfosForAddress::default()),
                     Some((slot, _)) => {
                         let mut slot_signatures = self.get_sorted_block_signatures(slot)?;
                         if let Some(pos) = slot_signatures.iter().position(|&x| x == before) {
@@ -2546,7 +2564,7 @@ impl Blockstore {
         // Check the active_transaction_status_index to see if it contains slot. If so, start with
         // that index, as it will contain higher slots
         let starting_primary_index = *self.active_transaction_status_index.read().unwrap();
-        let next_primary_index = if starting_primary_index == 0 { 1 } else { 0 };
+        let next_primary_index = u64::from(starting_primary_index == 0);
         let next_max_slot = self
             .transaction_status_index_cf
             .get(next_primary_index)?
@@ -2676,7 +2694,10 @@ impl Blockstore {
             )
         );
 
-        Ok(infos)
+        Ok(SignatureInfosForAddress {
+            infos,
+            found_before: true, // if `before` signature was not found, this method returned early
+        })
     }
 
     pub fn read_rewards(&self, index: Slot) -> Result<Option<Rewards>> {
@@ -2758,24 +2779,56 @@ impl Blockstore {
             .map(|(_, end_index)| u64::from(*end_index) - start_index + 1)
             .unwrap_or(0);
 
-        let entries: Result<Vec<Vec<Entry>>> = PAR_THREAD_POOL.with(|thread_pool| {
-            thread_pool.borrow().install(|| {
+        let entries: Result<Vec<Vec<Entry>>> = if completed_ranges.len() <= 1 {
+            completed_ranges
+                .into_iter()
+                .map(|(start_index, end_index)| {
+                    self.get_entries_in_data_block(slot, start_index, end_index, Some(&slot_meta))
+                })
+                .collect()
+        } else {
+            PAR_THREAD_POOL.install(|| {
                 completed_ranges
-                    .par_iter()
+                    .into_par_iter()
                     .map(|(start_index, end_index)| {
                         self.get_entries_in_data_block(
                             slot,
-                            *start_index,
-                            *end_index,
+                            start_index,
+                            end_index,
                             Some(&slot_meta),
                         )
                     })
                     .collect()
             })
-        });
-
+        };
         let entries: Vec<Entry> = entries?.into_iter().flatten().collect();
         Ok((entries, num_shreds, slot_meta.is_full()))
+    }
+
+    /// Gets accounts used in transactions in the slot range [starting_slot, ending_slot].
+    /// Used by ledger-tool to create a minimized snapshot
+    pub fn get_accounts_used_in_range(
+        &self,
+        starting_slot: Slot,
+        ending_slot: Slot,
+    ) -> DashSet<Pubkey> {
+        let result = DashSet::new();
+
+        (starting_slot..=ending_slot)
+            .into_par_iter()
+            .for_each(|slot| {
+                if let Ok(entries) = self.get_slot_entries(slot, 0) {
+                    entries.par_iter().for_each(|entry| {
+                        entry.transactions.iter().for_each(|tx| {
+                            tx.message.static_account_keys().iter().for_each(|pubkey| {
+                                result.insert(*pubkey);
+                            });
+                        });
+                    });
+                }
+            });
+
+        result
     }
 
     fn get_completed_ranges(
@@ -2828,68 +2881,64 @@ impl Blockstore {
         end_index: u32,
         slot_meta: Option<&SlotMeta>,
     ) -> Result<Vec<Entry>> {
-        let data_shred_cf = self.db.column::<cf::ShredData>();
+        let keys: Vec<(Slot, u64)> = (start_index..=end_index)
+            .map(|index| (slot, u64::from(index)))
+            .collect();
 
-        // Short circuit on first error
-        let data_shreds: Result<Vec<Shred>> = (start_index..=end_index)
-            .map(|i| {
-                data_shred_cf
-                    .get_bytes((slot, u64::from(i)))
-                    .and_then(|serialized_shred| {
-                        if serialized_shred.is_none() {
-                            if let Some(slot_meta) = slot_meta {
+        let data_shreds: Result<Vec<Option<Vec<u8>>>> = self
+            .data_shred_cf
+            .multi_get_bytes(keys)
+            .into_iter()
+            .collect();
+        let data_shreds = data_shreds?;
+
+        let data_shreds: Result<Vec<Shred>> =
+            data_shreds
+                .into_iter()
+                .enumerate()
+                .map(|(idx, shred_bytes)| {
+                    if shred_bytes.is_none() {
+                        if let Some(slot_meta) = slot_meta {
+                            if slot > self.lowest_cleanup_slot() {
                                 panic!(
-                                    "Shred with
-                                    slot: {},
-                                    index: {},
-                                    consumed: {},
-                                    completed_indexes: {:?}
+                                    "Shred with slot: {}, index: {}, consumed: {}, completed_indexes: {:?} \
                                     must exist if shred index was included in a range: {} {}",
                                     slot,
-                                    i,
+                                    idx,
                                     slot_meta.consumed,
                                     slot_meta.completed_data_indexes,
                                     start_index,
                                     end_index
                                 );
-                            } else {
-                                return Err(BlockstoreError::InvalidShredData(Box::new(
-                                    bincode::ErrorKind::Custom(format!(
-                                        "Missing shred for slot {}, index {}",
-                                        slot, i
-                                    )),
-                                )));
                             }
                         }
-
-                        Shred::new_from_serialized_shred(serialized_shred.unwrap()).map_err(|err| {
-                            BlockstoreError::InvalidShredData(Box::new(bincode::ErrorKind::Custom(
-                                format!(
-                                    "Could not reconstruct shred from shred payload: {:?}",
-                                    err
-                                ),
-                            )))
-                        })
+                        return Err(BlockstoreError::InvalidShredData(Box::new(
+                            bincode::ErrorKind::Custom(format!(
+                                "Missing shred for slot {slot}, index {idx}"
+                            )),
+                        )));
+                    }
+                    Shred::new_from_serialized_shred(shred_bytes.unwrap()).map_err(|err| {
+                        BlockstoreError::InvalidShredData(Box::new(bincode::ErrorKind::Custom(
+                            format!("Could not reconstruct shred from shred payload: {err:?}"),
+                        )))
                     })
-            })
-            .collect();
-
+                })
+                .collect();
         let data_shreds = data_shreds?;
         let last_shred = data_shreds.last().unwrap();
         assert!(last_shred.data_complete() || last_shred.last_in_slot());
 
         let deshred_payload = Shredder::deshred(&data_shreds).map_err(|e| {
             BlockstoreError::InvalidShredData(Box::new(bincode::ErrorKind::Custom(format!(
-                "Could not reconstruct data block from constituent shreds, error: {:?}",
-                e
+                "Could not reconstruct data block from constituent shreds, error: {e:?}"
             ))))
         })?;
 
         debug!("{:?} shreds in last FEC set", data_shreds.len(),);
         bincode::deserialize::<Vec<Entry>>(&deshred_payload).map_err(|e| {
             BlockstoreError::InvalidShredData(Box::new(bincode::ErrorKind::Custom(format!(
-                "could not reconstruct entries: {:?}",
-                e
+                "could not reconstruct entries: {e:?}"
             ))))
         })
     }
@@ -2903,34 +2952,24 @@ impl Blockstore {
         }
         let slot_meta = slot_meta.unwrap();
 
-        let entries: Vec<Vec<Entry>> = PAR_THREAD_POOL_ALL_CPUS.with(|thread_pool| {
-            thread_pool.borrow().install(|| {
-                completed_ranges
-                    .par_iter()
-                    .map(|(start_index, end_index)| {
-                        self.get_entries_in_data_block(
-                            slot,
-                            *start_index,
-                            *end_index,
-                            Some(&slot_meta),
-                        )
+        let entries: Vec<Vec<Entry>> = PAR_THREAD_POOL_ALL_CPUS.install(|| {
+            completed_ranges
+                .par_iter()
+                .map(|(start_index, end_index)| {
+                    self.get_entries_in_data_block(slot, *start_index, *end_index, Some(&slot_meta))
                         .unwrap_or_default()
-                    })
-                    .collect()
-            })
+                })
+                .collect()
         });
-
         entries.into_iter().flatten().collect()
     }
 
     // Returns slots connecting to any element of the list `slots`.
     pub fn get_slots_since(&self, slots: &[u64]) -> Result<HashMap<u64, Vec<u64>>> {
-        // Return error if there was a database error during lookup of any of the
-        // slot indexes
         let slot_metas: Result<Vec<Option<SlotMeta>>> =
-            slots.iter().map(|slot| self.meta(*slot)).collect();
-
+            self.meta_cf.multi_get(slots.to_vec()).into_iter().collect();
         let slot_metas = slot_metas?;
+
         let result: HashMap<u64, Vec<u64>> = slots
             .iter()
             .zip(slot_metas)
@@ -2990,6 +3029,31 @@ impl Blockstore {
             .unwrap_or(false)
     }
 
+    pub fn insert_optimistic_slot(
+        &self,
+        slot: Slot,
+        hash: &Hash,
+        timestamp: UnixTimestamp,
+    ) -> Result<()> {
+        let slot_data = OptimisticSlotMetaVersioned::new(*hash, timestamp);
+        self.optimistic_slots_cf.put(slot, &slot_data)
+    }
+
+    pub fn get_latest_optimistic_slots(
+        &self,
+        num: usize,
+    ) -> Result<Vec<(Slot, Hash, UnixTimestamp)>> {
+        Ok(self
+            .db
+            .iter::<cf::OptimisticSlots>(IteratorMode::End)?
+            .take(num)
+            .map(|(slot, data)| {
+                let meta: OptimisticSlotMetaVersioned = deserialize(&data).unwrap();
+                (slot, meta.hash(), meta.timestamp())
+            })
+            .collect())
+    }
+
     pub fn set_duplicate_confirmed_slots_and_hashes(
         &self,
         duplicate_confirmed_slot_hashes: impl Iterator<Item = (Slot, Hash)>,
@@ -3022,6 +3086,22 @@ impl Blockstore {
             *last_root = 0;
         }
         *last_root = cmp::max(max_new_rooted_slot, *last_root);
+        Ok(())
+    }
+
+    pub fn mark_slots_as_if_rooted_normally_at_startup(
+        &self,
+        slots: Vec<(Slot, Option<Hash>)>,
+        with_hash: bool,
+    ) -> Result<()> {
+        self.set_roots(slots.iter().map(|(slot, _hash)| slot))?;
+        if with_hash {
+            self.set_duplicate_confirmed_slots_and_hashes(
+                slots
+                    .into_iter()
+                    .map(|(slot, maybe_hash)| (slot, maybe_hash.unwrap())),
+            )?;
+        }
         Ok(())
     }
 
@@ -3070,17 +3150,15 @@ impl Blockstore {
     // Returns the existing shred if `new_shred` is not equal to the existing shred at the
     // given slot and index as this implies the leader generated two different shreds with
     // the same slot and index
-    pub fn is_shred_duplicate(&self, shred: ShredId, mut payload: Vec<u8>) -> Option<Vec<u8>> {
+    pub fn is_shred_duplicate(&self, shred: ShredId, payload: Vec<u8>) -> Option<Vec<u8>> {
         let (slot, index, shred_type) = shred.unwrap();
         let existing_shred = match shred_type {
             ShredType::Data => self.get_data_shred(slot, index as u64),
             ShredType::Code => self.get_coding_shred(slot, index as u64),
         }
         .expect("fetch from DuplicateSlots column family failed")?;
-        let size = payload.len().max(SHRED_PAYLOAD_SIZE);
-        payload.resize(size, 0u8);
         let new_shred = Shred::new_from_serialized_shred(payload).unwrap();
-        (existing_shred != new_shred.payload).then(|| existing_shred)
+        (existing_shred != *new_shred.payload()).then_some(existing_shred)
     }
 
     pub fn has_duplicate_shreds_in_slot(&self, slot: Slot) -> bool {
@@ -3129,6 +3207,29 @@ impl Blockstore {
         self.last_root()
     }
 
+    fn lowest_slot_with_genesis(&self) -> Slot {
+        for (slot, meta) in self
+            .slot_meta_iterator(0)
+            .expect("unable to iterate over meta")
+        {
+            if meta.received > 0 {
+                return slot;
+            }
+        }
+        // This means blockstore is empty, should never get here aside from right at boot.
+        self.last_root()
+    }
+
+    /// Returns the highest available slot in the blockstore
+    pub fn highest_slot(&self) -> Result<Option<Slot>> {
+        let highest_slot = self
+            .db
+            .iter::<cf::SlotMeta>(IteratorMode::End)?
+            .next()
+            .map(|(slot, _)| slot);
+        Ok(highest_slot)
+    }
+
     pub fn lowest_cleanup_slot(&self) -> Slot {
         *self.lowest_cleanup_slot.read().unwrap()
     }
@@ -3137,11 +3238,30 @@ impl Blockstore {
         self.db.storage_size()
     }
 
+    /// Returns the total physical storage size contributed by all data shreds.
+    ///
+    /// Note that the reported size does not include those recently inserted
+    /// shreds that are still in memory.
+    pub fn total_data_shred_storage_size(&self) -> Result<i64> {
+        let shred_data_cf = self.db.column::<cf::ShredData>();
+        shred_data_cf.get_int_property(RocksProperties::TOTAL_SST_FILES_SIZE)
+    }
+
+    /// Returns the total physical storage size contributed by all coding shreds.
+    ///
+    /// Note that the reported size does not include those recently inserted
+    /// shreds that are still in memory.
+    pub fn total_coding_shred_storage_size(&self) -> Result<i64> {
+        let shred_code_cf = self.db.column::<cf::ShredCode>();
+        shred_code_cf.get_int_property(RocksProperties::TOTAL_SST_FILES_SIZE)
+    }
+
+    /// Returns whether the blockstore has primary (read and write) access
     pub fn is_primary_access(&self) -> bool {
         self.db.is_primary_access()
     }
 
-    pub fn scan_and_fix_roots(&self, exit: &Arc<AtomicBool>) -> Result<()> {
+    pub fn scan_and_fix_roots(&self, exit: &AtomicBool) -> Result<()> {
         let ancestor_iterator = AncestorIterator::new(self.last_root(), self)
             .take_while(|&slot| slot >= self.lowest_cleanup_slot());
 
@@ -3233,11 +3353,11 @@ fn update_slot_meta(
     reference_tick: u8,
     received_data_shreds: &ShredIndex,
 ) -> Vec<(u32, u32)> {
-    let maybe_first_insert = slot_meta.received == 0;
+    let first_insert = slot_meta.received == 0;
     // Index is zero-indexed, while the "received" height starts from 1,
     // so received = index + 1 for the same shred.
-    slot_meta.received = cmp::max((u64::from(index) + 1) as u64, slot_meta.received);
-    if maybe_first_insert && slot_meta.received > 0 {
+    slot_meta.received = cmp::max(u64::from(index) + 1, slot_meta.received);
+    if first_insert {
         // predict the timestamp of what would have been the first shred in this slot
         let slot_time_elapsed = u64::from(reference_tick) * 1000 / DEFAULT_TICKS_PER_SECOND;
         slot_meta.first_shred_timestamp = timestamp() - slot_time_elapsed;
@@ -3260,7 +3380,7 @@ fn get_index_meta_entry<'a>(
     db: &Database,
     slot: Slot,
     index_working_set: &'a mut HashMap<u64, IndexMetaWorkingSetEntry>,
-    index_meta_time: &mut u64,
+    index_meta_time_us: &mut u64,
 ) -> &'a mut IndexMetaWorkingSetEntry {
     let index_cf = db.column::<cf::Index>();
     let mut total_start = Measure::start("Total elapsed");
@@ -3275,7 +3395,7 @@ fn get_index_meta_entry<'a>(
         }
     });
     total_start.stop();
-    *index_meta_time += total_start.as_us();
+    *index_meta_time_us += total_start.as_us();
     res
 }
 
@@ -3332,19 +3452,23 @@ fn get_last_hash<'a>(iterator: impl Iterator<Item = &'a Entry> + 'a) -> Option<H
     iterator.last().map(|entry| entry.hash)
 }
 
-fn is_valid_write_to_slot_0(slot_to_write: u64, parent_slot: Slot, last_root: u64) -> bool {
-    slot_to_write == 0 && last_root == 0 && parent_slot == 0
-}
-
 fn send_signals(
-    new_shreds_signals: &[SyncSender<bool>],
-    completed_slots_senders: &[SyncSender<Vec<u64>>],
+    new_shreds_signals: &[Sender<bool>],
+    completed_slots_senders: &[Sender<Vec<u64>>],
     should_signal: bool,
     newly_completed_slots: Vec<u64>,
 ) {
     if should_signal {
         for signal in new_shreds_signals {
-            let _ = signal.try_send(true);
+            match signal.try_send(true) {
+                Ok(_) => {}
+                Err(TrySendError::Full(_)) => {
+                    trace!("replay wake up signal channel is full.")
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    trace!("replay wake up signal channel is disconnected.")
+                }
+            }
         }
     }
 
@@ -3362,7 +3486,7 @@ fn send_signals(
                     "blockstore_error",
                     (
                         "error",
-                        "Unable to send newly completed slot because channel is full".to_string(),
+                        "Unable to send newly completed slot because channel is full",
                         String
                     ),
                 );
@@ -3390,7 +3514,7 @@ fn send_signals(
 ///    newly completed.
 fn commit_slot_meta_working_set(
     slot_meta_working_set: &HashMap<u64, SlotMetaWorkingSetEntry>,
-    completed_slots_senders: &[SyncSender<Vec<u64>>],
+    completed_slots_senders: &[Sender<Vec<u64>>],
     write_batch: &mut WriteBatch,
 ) -> Result<(bool, Vec<u64>)> {
     let mut should_signal = false;
@@ -3416,10 +3540,16 @@ fn commit_slot_meta_working_set(
     Ok((should_signal, newly_completed_slots))
 }
 
-// 1) Find the slot metadata in the cache of dirty slot metadata we've previously touched,
-// else:
-// 2) Search the database for that slot metadata. If still no luck, then:
-// 3) Create a dummy orphan slot in the database
+/// Returns the `SlotMeta` with the specified `slot_index`.  The resulting
+/// `SlotMeta` could be either from the cache or from the DB.  Specifically,
+/// the function:
+///
+/// 1) Finds the slot metadata in the cache of dirty slot metadata we've
+///    previously touched, otherwise:
+/// 2) Searches the database for that slot metadata. If still no luck, then:
+/// 3) Create a dummy orphan slot in the database.
+///
+/// Also see [`find_slot_meta_in_cached_state`] and [`find_slot_meta_in_db_else_create`].
 fn find_slot_meta_else_create<'a>(
     db: &Database,
     working_set: &'a HashMap<u64, SlotMetaWorkingSetEntry>,
@@ -3434,8 +3564,11 @@ fn find_slot_meta_else_create<'a>(
     }
 }
 
-// Search the database for that slot metadata. If still no luck, then
-// create a dummy orphan slot in the database
+/// A helper function to [`find_slot_meta_else_create`] that searches the
+/// `SlotMeta` based on the specified `slot` in `db` and updates `insert_map`.
+///
+/// If the specified `db` does not contain a matched entry, then it will create
+/// a dummy orphan slot in the database.
 fn find_slot_meta_in_db_else_create(
     db: &Database,
     slot: Slot,
@@ -3452,7 +3585,9 @@ fn find_slot_meta_in_db_else_create(
     Ok(insert_map.get(&slot).unwrap().clone())
 }
 
-// Find the slot metadata in the cache of dirty slot metadata we've previously touched
+/// Returns the `SlotMeta` of the specified `slot` from the two cached states:
+/// `working_set` and `chained_slots`.  If both contain the `SlotMeta`, then
+/// the latest one from the `working_set` will be returned.
 fn find_slot_meta_in_cached_state<'a>(
     working_set: &'a HashMap<u64, SlotMetaWorkingSetEntry>,
     chained_slots: &'a HashMap<u64, Rc<RefCell<SlotMeta>>>,
@@ -3465,7 +3600,25 @@ fn find_slot_meta_in_cached_state<'a>(
     }
 }
 
-// Chaining based on latest discussion here: https://github.com/solana-labs/solana/pull/2253
+/// For each entry in `working_set` whose `did_insert_occur` is true, this
+/// function handles its chaining effect by updating the SlotMeta of both
+/// the slot and its parent slot to reflect the slot descends from the
+/// parent slot.  In addition, when a slot is newly connected, it also
+/// checks whether any of its direct and indirect children slots are connected
+/// or not.
+///
+/// This function may update column families [`cf::SlotMeta`] and
+/// [`cf::Orphans`].
+///
+/// For more information about the chaining, check the previous discussion here:
+/// https://github.com/solana-labs/solana/pull/2253
+///
+/// Arguments:
+/// - `db`: the blockstore db that stores both shreds and their metadata.
+/// - `write_batch`: the write batch which includes all the updates of the
+///   the current write and ensures their atomicity.
+/// - `working_set`: a slot-id to SlotMetaWorkingSetEntry map.  This function
+///   will remove all entries which insertion did not actually occur.
 fn handle_chaining(
     db: &Database,
     write_batch: &mut WriteBatch,
@@ -3481,12 +3634,40 @@ fn handle_chaining(
 
     // Write all the newly changed slots in new_chained_slots to the write_batch
     for (slot, meta) in new_chained_slots.iter() {
-        let meta: &SlotMeta = &RefCell::borrow(&*meta);
+        let meta: &SlotMeta = &RefCell::borrow(meta);
         write_batch.put::<cf::SlotMeta>(*slot, meta)?;
     }
     Ok(())
 }
 
+/// A helper function of handle_chaining which handles the chaining based
+/// on the `SlotMetaWorkingSetEntry` of the specified `slot`.  Specifically,
+/// it handles the following two things:
+///
+/// 1. based on the `SlotMetaWorkingSetEntry` for `slot`, check if `slot`
+/// did not previously have a parent slot but does now.  If `slot` satisfies
+/// this condition, update the Orphan property of both `slot` and its parent
+/// slot based on their current orphan status.  Specifically:
+///  - updates the orphan property of slot to no longer be an orphan because
+///    it has a parent.
+///  - adds the parent to the orphan column family if the parent's parent is
+///    currently unknown.
+///
+/// 2. if the `SlotMetaWorkingSetEntry` for `slot` indicates this slot
+/// is newly connected to a parent slot, then this function will update
+/// the is_connected property of all its direct and indirect children slots.
+///
+/// This function may update column family [`cf::Orphans`] and indirectly
+/// update SlotMeta from its output parameter `new_chained_slots`.
+///
+/// Arguments:
+/// `db`: the underlying db for blockstore
+/// `write_batch`: the write batch which includes all the updates of the
+///   the current write and ensures their atomicity.
+/// `working_set`: the working set which include the specified `slot`
+/// `new_chained_slots`: an output parameter which includes all the slots
+///   which connectivity have been updated.
+/// `slot`: the slot which we want to handle its chaining effect.
 fn handle_chaining_for_slot(
     db: &Database,
     write_batch: &mut WriteBatch,
@@ -3542,14 +3723,14 @@ fn handle_chaining_for_slot(
     // update all child slots with `is_connected` = true because these children are also now newly
     // connected to trunk of the ledger
     let should_propagate_is_connected =
-        is_newly_completed_slot(&RefCell::borrow(&*meta), meta_backup)
-            && RefCell::borrow(&*meta).is_connected;
+        is_newly_completed_slot(&RefCell::borrow(meta), meta_backup)
+            && RefCell::borrow(meta).is_connected();
 
     if should_propagate_is_connected {
         // slot_function returns a boolean indicating whether to explore the children
         // of the input slot
         let slot_function = |slot: &mut SlotMeta| {
-            slot.is_connected = true;
+            slot.set_connected();
 
             // We don't want to set the is_connected flag on the children of non-full
             // slots
@@ -3569,20 +3750,35 @@ fn handle_chaining_for_slot(
     Ok(())
 }
 
+/// Traverse all the direct and indirect children slots and apply the specified
+/// `slot_function`.
+///
+/// Arguments:
+/// `db`: the blockstore db that stores shreds and their metadata.
+/// `slot`: starting slot to traverse.
+/// `slot_meta`: the SlotMeta of the above `slot`.
+/// `working_set`: a slot-id to SlotMetaWorkingSetEntry map which is used
+///   to traverse the graph.
+/// `passed_visited_slots`: all the traversed slots which have passed the
+///   slot_function.  This may also include the input `slot`.
+/// `slot_function`: a function which updates the SlotMeta of the visisted
+///   slots and determine whether to further traverse the children slots of
+///   a given slot.
 fn traverse_children_mut<F>(
     db: &Database,
     slot: Slot,
     slot_meta: &Rc<RefCell<SlotMeta>>,
     working_set: &HashMap<u64, SlotMetaWorkingSetEntry>,
-    new_chained_slots: &mut HashMap<u64, Rc<RefCell<SlotMeta>>>,
+    passed_visisted_slots: &mut HashMap<u64, Rc<RefCell<SlotMeta>>>,
     slot_function: F,
 ) -> Result<()>
 where
     F: Fn(&mut SlotMeta) -> bool,
 {
-    let mut next_slots: Vec<(u64, Rc<RefCell<SlotMeta>>)> = vec![(slot, slot_meta.clone())];
+    let mut next_slots: VecDeque<(u64, Rc<RefCell<SlotMeta>>)> =
+        vec![(slot, slot_meta.clone())].into();
     while !next_slots.is_empty() {
-        let (_, current_slot) = next_slots.pop().unwrap();
+        let (_, current_slot) = next_slots.pop_front().unwrap();
         // Check whether we should explore the children of this slot
         if slot_function(&mut current_slot.borrow_mut()) {
             let current_slot = &RefCell::borrow(&*current_slot);
@@ -3590,10 +3786,10 @@ where
                 let next_slot = find_slot_meta_else_create(
                     db,
                     working_set,
-                    new_chained_slots,
+                    passed_visisted_slots,
                     *next_slot_index,
                 )?;
-                next_slots.push((*next_slot_index, next_slot));
+                next_slots.push_back((*next_slot_index, next_slot));
             }
         }
     }
@@ -3615,7 +3811,9 @@ fn chain_new_slot_to_prev_slot(
     current_slot_meta: &mut SlotMeta,
 ) {
     prev_slot_meta.next_slots.push(current_slot);
-    current_slot_meta.is_connected = prev_slot_meta.is_connected && prev_slot_meta.is_full();
+    if prev_slot_meta.is_connected() && prev_slot_meta.is_full() {
+        current_slot_meta.set_connected();
+    }
 }
 
 fn is_newly_completed_slot(slot_meta: &SlotMeta, backup_slot_meta: &Option<SlotMeta>) -> bool {
@@ -3629,7 +3827,7 @@ fn slot_has_updates(slot_meta: &SlotMeta, slot_meta_backup: &Option<SlotMeta>) -
     // from block 0, which is true iff:
     // 1) The block with index prev_block_index is itself part of the trunk of consecutive blocks
     // starting from block 0,
-    slot_meta.is_connected &&
+    slot_meta.is_connected() &&
         // AND either:
         // 1) The slot didn't exist in the database before, and now we have a consecutive
         // block for that slot
@@ -3646,13 +3844,22 @@ pub fn create_new_ledger(
     ledger_path: &Path,
     genesis_config: &GenesisConfig,
     max_genesis_archive_unpacked_size: u64,
-    access_type: AccessType,
+    column_options: LedgerColumnOptions,
 ) -> Result<Hash> {
     Blockstore::destroy(ledger_path)?;
     genesis_config.write(ledger_path)?;
 
     // Fill slot 0 with ticks that link back to the genesis_config to bootstrap the ledger.
-    let blockstore = Blockstore::open_with_access_type(ledger_path, access_type, None, false)?;
+    let blockstore_dir = column_options.shred_storage_type.blockstore_directory();
+    let blockstore = Blockstore::open_with_options(
+        ledger_path,
+        BlockstoreOptions {
+            access_type: AccessType::Primary,
+            recovery_mode: None,
+            enforce_ulimit_nofile: false,
+            column_options: column_options.clone(),
+        },
+    )?;
     let ticks_per_slot = genesis_config.ticks_per_slot;
     let hashes_per_tick = genesis_config.poh_config.hashes_per_tick.unwrap_or(0);
     let entries = create_ticks(ticks_per_slot, hashes_per_tick, genesis_config.hash());
@@ -3660,15 +3867,16 @@ pub fn create_new_ledger(
     let version = solana_sdk::shred_version::version_from_hash(&last_hash);
 
     let shredder = Shredder::new(0, 0, 0, version).unwrap();
-    let shreds = shredder
-        .entries_to_shreds(
-            &Keypair::new(),
-            &entries,
-            true, // is_last_in_slot
-            0,    // next_shred_index
-            0,    // next_code_index
-        )
-        .0;
+    let (shreds, _) = shredder.entries_to_shreds(
+        &Keypair::new(),
+        &entries,
+        true, // is_last_in_slot
+        0,    // next_shred_index
+        0,    // next_code_index
+        true, // merkle_variant
+        &ReedSolomonCache::default(),
+        &mut ProcessShredsStats::default(),
+    );
     assert!(shreds.last().unwrap().last_in_slot());
 
     blockstore.insert_shreds(shreds, None, false)?;
@@ -3683,7 +3891,7 @@ pub fn create_new_ledger(
         "-C",
         ledger_path.to_str().unwrap(),
         DEFAULT_GENESIS_FILE,
-        "rocksdb",
+        blockstore_dir,
     ];
     let output = std::process::Command::new("tar")
         .args(&args)
@@ -3720,39 +3928,39 @@ pub fn create_new_ledger(
             let mut error_messages = String::new();
 
             fs::rename(
-                &ledger_path.join(DEFAULT_GENESIS_ARCHIVE),
-                ledger_path.join(format!("{}.failed", DEFAULT_GENESIS_ARCHIVE)),
+                ledger_path.join(DEFAULT_GENESIS_ARCHIVE),
+                ledger_path.join(format!("{DEFAULT_GENESIS_ARCHIVE}.failed")),
             )
             .unwrap_or_else(|e| {
-                error_messages += &format!(
-                    "/failed to stash problematic {}: {}",
-                    DEFAULT_GENESIS_ARCHIVE, e
-                )
+                let _ = write!(
+                    &mut error_messages,
+                    "/failed to stash problematic {DEFAULT_GENESIS_ARCHIVE}: {e}"
+                );
             });
             fs::rename(
-                &ledger_path.join(DEFAULT_GENESIS_FILE),
-                ledger_path.join(format!("{}.failed", DEFAULT_GENESIS_FILE)),
+                ledger_path.join(DEFAULT_GENESIS_FILE),
+                ledger_path.join(format!("{DEFAULT_GENESIS_FILE}.failed")),
             )
             .unwrap_or_else(|e| {
-                error_messages += &format!(
-                    "/failed to stash problematic {}: {}",
-                    DEFAULT_GENESIS_FILE, e
-                )
+                let _ = write!(
+                    &mut error_messages,
+                    "/failed to stash problematic {DEFAULT_GENESIS_FILE}: {e}"
+                );
             });
             fs::rename(
-                &ledger_path.join("rocksdb"),
-                ledger_path.join("rocksdb.failed"),
+                ledger_path.join(blockstore_dir),
+                ledger_path.join(format!("{blockstore_dir}.failed")),
             )
             .unwrap_or_else(|e| {
-                error_messages += &format!("/failed to stash problematic rocksdb: {}", e)
+                let _ = write!(
+                    &mut error_messages,
+                    "/failed to stash problematic {blockstore_dir}: {e}"
+                );
             });
 
             return Err(BlockstoreError::Io(IoError::new(
                 ErrorKind::Other,
-                format!(
-                    "Error checking to unpack genesis archive: {}{}",
-                    unpack_err, error_messages
-                ),
+                format!("Error checking to unpack genesis archive: {unpack_err}{error_messages}"),
             )));
         }
     }
@@ -3819,7 +4027,23 @@ macro_rules! create_new_tmp_ledger {
         $crate::blockstore::create_new_ledger_from_name(
             $crate::tmp_ledger_name!(),
             $genesis_config,
-            $crate::blockstore_db::AccessType::PrimaryOnly,
+            $crate::blockstore_options::LedgerColumnOptions::default(),
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! create_new_tmp_ledger_fifo {
+    ($genesis_config:expr) => {
+        $crate::blockstore::create_new_ledger_from_name(
+            $crate::tmp_ledger_name!(),
+            $genesis_config,
+            $crate::blockstore_options::LedgerColumnOptions {
+                shred_storage_type: $crate::blockstore_options::ShredStorageType::RocksFifo(
+                    $crate::blockstore_options::BlockstoreRocksFifoOptions::new_for_tests(),
+                ),
+                ..$crate::blockstore_options::LedgerColumnOptions::default()
+            },
         )
     };
 }
@@ -3830,27 +4054,34 @@ macro_rules! create_new_tmp_ledger_auto_delete {
         $crate::blockstore::create_new_ledger_from_name_auto_delete(
             $crate::tmp_ledger_name!(),
             $genesis_config,
-            $crate::blockstore_db::AccessType::PrimaryOnly,
+            $crate::blockstore_options::LedgerColumnOptions::default(),
         )
     };
 }
 
-pub fn verify_shred_slots(slot: Slot, parent_slot: Slot, last_root: Slot) -> bool {
-    if !is_valid_write_to_slot_0(slot, parent_slot, last_root) {
-        // Check that the parent_slot < slot
-        if parent_slot >= slot {
-            return false;
-        }
+#[macro_export]
+macro_rules! create_new_tmp_ledger_fifo_auto_delete {
+    ($genesis_config:expr) => {
+        $crate::blockstore::create_new_ledger_from_name_auto_delete(
+            $crate::tmp_ledger_name!(),
+            $genesis_config,
+            $crate::blockstore_options::LedgerColumnOptions {
+                shred_storage_type: $crate::blockstore_options::ShredStorageType::RocksFifo(
+                    $crate::blockstore_options::BlockstoreRocksFifoOptions::new_for_tests(),
+                ),
+                ..$crate::blockstore_options::LedgerColumnOptions::default()
+            },
+        )
+    };
+}
 
-        // Ignore shreds that chain to slots before the last root
-        if parent_slot < last_root {
-            return false;
-        }
-
-        // Above two checks guarantee that by this point, slot > last_root
+pub(crate) fn verify_shred_slots(slot: Slot, parent: Slot, root: Slot) -> bool {
+    if slot == 0 && parent == 0 && root == 0 {
+        return true; // valid write to slot zero.
     }
-
-    true
+    // Ignore shreds that chain to slots before the root,
+    // or have invalid parent >= slot.
+    root <= parent && parent < slot
 }
 
 // Same as `create_new_ledger()` but use a temporary ledger name based on the provided `name`
@@ -3860,10 +4091,10 @@ pub fn verify_shred_slots(slot: Slot, parent_slot: Slot, last_root: Slot) -> boo
 pub fn create_new_ledger_from_name(
     name: &str,
     genesis_config: &GenesisConfig,
-    access_type: AccessType,
+    column_options: LedgerColumnOptions,
 ) -> (PathBuf, Hash) {
     let (ledger_path, blockhash) =
-        create_new_ledger_from_name_auto_delete(name, genesis_config, access_type);
+        create_new_ledger_from_name_auto_delete(name, genesis_config, column_options);
     (ledger_path.into_path(), blockhash)
 }
 
@@ -3874,34 +4105,38 @@ pub fn create_new_ledger_from_name(
 pub fn create_new_ledger_from_name_auto_delete(
     name: &str,
     genesis_config: &GenesisConfig,
-    access_type: AccessType,
+    column_options: LedgerColumnOptions,
 ) -> (TempDir, Hash) {
     let ledger_path = get_ledger_path_from_name_auto_delete(name);
     let blockhash = create_new_ledger(
         ledger_path.path(),
         genesis_config,
         MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
-        access_type,
+        column_options,
     )
     .unwrap();
     (ledger_path, blockhash)
 }
 
 pub fn entries_to_test_shreds(
-    entries: Vec<Entry>,
+    entries: &[Entry],
     slot: Slot,
     parent_slot: Slot,
     is_full_slot: bool,
     version: u16,
+    merkle_variant: bool,
 ) -> Vec<Shred> {
     Shredder::new(slot, parent_slot, 0, version)
         .unwrap()
         .entries_to_shreds(
             &Keypair::new(),
-            &entries,
+            entries,
             is_full_slot,
             0, // next_shred_index,
             0, // next_code_index
+            merkle_variant,
+            &ReedSolomonCache::default(),
+            &mut ProcessShredsStats::default(),
         )
         .0
 }
@@ -3911,9 +4146,10 @@ pub fn make_slot_entries(
     slot: Slot,
     parent_slot: Slot,
     num_entries: u64,
+    merkle_variant: bool,
 ) -> (Vec<Shred>, Vec<Entry>) {
     let entries = create_ticks(num_entries, 0, Hash::default());
-    let shreds = entries_to_test_shreds(entries.clone(), slot, parent_slot, true, 0);
+    let shreds = entries_to_test_shreds(&entries, slot, parent_slot, true, 0, merkle_variant);
     (shreds, entries)
 }
 
@@ -3928,12 +4164,110 @@ pub fn make_many_slot_entries(
     for slot in start_slot..start_slot + num_slots {
         let parent_slot = if slot == 0 { 0 } else { slot - 1 };
 
-        let (slot_shreds, slot_entries) = make_slot_entries(slot, parent_slot, entries_per_slot);
+        let (slot_shreds, slot_entries) = make_slot_entries(
+            slot,
+            parent_slot,
+            entries_per_slot,
+            true, // merkle_variant
+        );
         shreds.extend(slot_shreds);
         entries.extend(slot_entries);
     }
 
     (shreds, entries)
+}
+
+// test-only: check that all columns are either empty or start at `min_slot`
+pub fn test_all_empty_or_min(blockstore: &Blockstore, min_slot: Slot) {
+    let condition_met = blockstore
+        .db
+        .iter::<cf::SlotMeta>(IteratorMode::Start)
+        .unwrap()
+        .next()
+        .map(|(slot, _)| slot >= min_slot)
+        .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::Root>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::ShredData>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|((slot, _), _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::ShredCode>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|((slot, _), _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::DeadSlots>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::DuplicateSlots>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::ErasureMeta>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|((slot, _), _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::Orphans>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::Index>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::TransactionStatus>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|((primary_index, _, slot), _)| {
+                slot >= min_slot || (primary_index == 2 && slot == 0)
+            })
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::AddressSignatures>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|((primary_index, _, slot, _), _)| {
+                slot >= min_slot || (primary_index == 2 && slot == 0)
+            })
+            .unwrap_or(true)
+        & blockstore
+            .db
+            .iter::<cf::Rewards>(IteratorMode::Start)
+            .unwrap()
+            .next()
+            .map(|(slot, _)| slot >= min_slot)
+            .unwrap_or(true);
+    assert!(condition_met);
 }
 
 // used for tests only
@@ -3964,7 +4298,12 @@ pub fn make_chaining_slot_entries(
             }
         };
 
-        let result = make_slot_entries(*slot, parent_slot, entries_per_slot);
+        let result = make_slot_entries(
+            *slot,
+            parent_slot,
+            entries_per_slot,
+            true, // merkle_variant
+        );
         slots_shreds_and_entries.push(result);
     }
 
@@ -3980,7 +4319,10 @@ fn adjust_ulimit_nofile(_enforce_ulimit_nofile: bool) -> Result<()> {
 fn adjust_ulimit_nofile(enforce_ulimit_nofile: bool) -> Result<()> {
     // Rocks DB likes to have many open files.  The default open file descriptor limit is
     // usually not enough
-    let desired_nofile = 500000;
+    // AppendVecs and disk Account Index are also heavy users of mmapped files.
+    // This should be kept in sync with published validator instructions.
+    // https://docs.solana.com/running-validator/validator-start#increased-memory-mapped-files-limit
+    let desired_nofile = 1_000_000;
 
     fn get_nofile() -> libc::rlimit {
         let mut nofile = libc::rlimit {
@@ -3994,12 +4336,13 @@ fn adjust_ulimit_nofile(enforce_ulimit_nofile: bool) -> Result<()> {
     }
 
     let mut nofile = get_nofile();
-    if nofile.rlim_cur < desired_nofile {
+    let current = nofile.rlim_cur;
+    if current < desired_nofile {
         nofile.rlim_cur = desired_nofile;
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &nofile) } != 0 {
             error!(
-                "Unable to increase the maximum open file descriptor limit to {}",
-                desired_nofile
+                "Unable to increase the maximum open file descriptor limit to {} from {}",
+                nofile.rlim_cur, current,
             );
 
             if cfg!(target_os = "macos") {
@@ -4024,12 +4367,14 @@ pub mod tests {
     use {
         super::*,
         crate::{
+            blockstore_options::{BlockstoreRocksFifoOptions, ShredStorageType},
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
             leader_schedule::{FixedSchedule, LeaderSchedule},
-            shred::{max_ticks_per_n_shreds, DataShredHeader},
+            shred::{max_ticks_per_n_shreds, ShredFlags},
         },
         assert_matches::assert_matches,
         bincode::serialize,
+        crossbeam_channel::unbounded,
         itertools::Itertools,
         rand::{seq::SliceRandom, thread_rng},
         solana_account_decoder::parse_token::UiTokenAmount,
@@ -4038,14 +4383,18 @@ pub mod tests {
         solana_sdk::{
             hash::{self, hash, Hash},
             instruction::CompiledInstruction,
+            message::v0::LoadedAddresses,
             packet::PACKET_DATA_SIZE,
             pubkey::Pubkey,
             signature::Signature,
             transaction::{Transaction, TransactionError},
+            transaction_context::TransactionReturnData,
         },
         solana_storage_proto::convert::generated,
-        solana_transaction_status::{InnerInstructions, Reward, Rewards, TransactionTokenBalance},
-        std::{sync::mpsc::channel, thread::Builder, time::Duration},
+        solana_transaction_status::{
+            InnerInstruction, InnerInstructions, Reward, Rewards, TransactionTokenBalance,
+        },
+        std::{thread::Builder, time::Duration},
     };
 
     // used for tests only
@@ -4066,6 +4415,21 @@ pub mod tests {
         entries
     }
 
+    fn make_and_insert_slot(blockstore: &Blockstore, slot: Slot, parent_slot: Slot) {
+        let (shreds, _) = make_slot_entries(
+            slot,
+            parent_slot,
+            100,  // num_entries
+            true, // merkle_variant
+        );
+        blockstore.insert_shreds(shreds, None, true).unwrap();
+
+        let meta = blockstore.meta(slot).unwrap().unwrap();
+        assert_eq!(slot, meta.slot);
+        assert!(meta.is_full());
+        assert!(meta.next_slots.is_empty());
+    }
+
     #[test]
     fn test_create_new_ledger() {
         solana_logger::setup();
@@ -4078,6 +4442,38 @@ pub mod tests {
         let entries = blockstore.get_slot_entries(0, 0).unwrap();
 
         assert_eq!(ticks, entries);
+        assert!(Path::new(ledger_path.path())
+            .join(BLOCKSTORE_DIRECTORY_ROCKS_LEVEL)
+            .exists());
+    }
+
+    #[test]
+    fn test_create_new_ledger_with_options_fifo() {
+        solana_logger::setup();
+        let mint_total = 1_000_000_000_000;
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(mint_total);
+        let (ledger_path, _blockhash) = create_new_tmp_ledger_fifo_auto_delete!(&genesis_config);
+        let blockstore = Blockstore::open_with_options(
+            ledger_path.path(),
+            BlockstoreOptions {
+                column_options: LedgerColumnOptions {
+                    shred_storage_type: ShredStorageType::RocksFifo(
+                        BlockstoreRocksFifoOptions::new_for_tests(),
+                    ),
+                    ..LedgerColumnOptions::default()
+                },
+                ..BlockstoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        let ticks = create_ticks(genesis_config.ticks_per_slot, 0, genesis_config.hash());
+        let entries = blockstore.get_slot_entries(0, 0).unwrap();
+
+        assert_eq!(ticks, entries);
+        assert!(Path::new(ledger_path.path())
+            .join(BLOCKSTORE_DIRECTORY_ROCKS_FIFO)
+            .exists());
     }
 
     #[test]
@@ -4086,7 +4482,12 @@ pub mod tests {
         let num_entries = max_ticks_per_n_shreds(1, None) + 1;
         assert!(num_entries > 1);
 
-        let (mut shreds, _) = make_slot_entries(0, 0, num_entries);
+        let (mut shreds, _) = make_slot_entries(
+            0, // slot
+            0, // parent_slot
+            num_entries,
+            true, // merkle_variant
+        );
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -4252,11 +4653,43 @@ pub mod tests {
     }
 
     #[test]
+    fn test_multi_get() {
+        const TEST_PUT_ENTRY_COUNT: usize = 100;
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        // Test meta column family
+        for i in 0..TEST_PUT_ENTRY_COUNT {
+            let k = u64::try_from(i).unwrap();
+            let meta = SlotMeta::new(k, Some(k + 1));
+            blockstore.meta_cf.put(k, &meta).unwrap();
+            let result = blockstore
+                .meta_cf
+                .get(k)
+                .unwrap()
+                .expect("Expected meta object to exist");
+            assert_eq!(result, meta);
+        }
+        let mut keys: Vec<u64> = vec![0; TEST_PUT_ENTRY_COUNT];
+        for (i, key) in keys.iter_mut().enumerate().take(TEST_PUT_ENTRY_COUNT) {
+            *key = u64::try_from(i).unwrap();
+        }
+        let values = blockstore.meta_cf.multi_get(keys);
+        for (i, value) in values.iter().enumerate().take(TEST_PUT_ENTRY_COUNT) {
+            let k = u64::try_from(i).unwrap();
+            assert_eq!(
+                value.as_ref().unwrap().as_ref().unwrap(),
+                &SlotMeta::new(k, Some(k + 1))
+            );
+        }
+    }
+
+    #[test]
     fn test_read_shred_bytes() {
         let slot = 0;
-        let (shreds, _) = make_slot_entries(slot, 0, 100);
+        let (shreds, _) = make_slot_entries(slot, 0, 100, /*merkle_variant:*/ true);
         let num_shreds = shreds.len() as u64;
-        let shred_bufs: Vec<_> = shreds.iter().map(|shred| shred.payload.clone()).collect();
+        let shred_bufs: Vec<_> = shreds.iter().map(Shred::payload).cloned().collect();
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -4310,7 +4743,7 @@ pub mod tests {
     #[test]
     fn test_shred_cleanup_check() {
         let slot = 1;
-        let (shreds, _) = make_slot_entries(slot, 0, 100);
+        let (shreds, _) = make_slot_entries(slot, 0, 100, /*merkle_variant:*/ true);
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -4335,7 +4768,12 @@ pub mod tests {
         let num_entries = max_ticks_per_n_shreds(1, None) + 1;
         assert!(num_entries > 1);
 
-        let (mut shreds, entries) = make_slot_entries(0, 0, num_entries);
+        let (mut shreds, entries) = make_slot_entries(
+            0, // slot
+            0, // parent_slot
+            num_entries,
+            true, // merkle_variant
+        );
         let num_shreds = shreds.len() as u64;
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
@@ -4371,14 +4809,19 @@ pub mod tests {
         assert_eq!(meta.parent_slot, Some(0));
         assert_eq!(meta.last_index, Some(num_shreds - 1));
         assert!(meta.next_slots.is_empty());
-        assert!(meta.is_connected);
+        assert!(meta.is_connected());
     }
 
     #[test]
     fn test_insert_data_shreds_reverse() {
         let num_shreds = 10;
         let num_entries = max_ticks_per_n_shreds(num_shreds, None);
-        let (mut shreds, entries) = make_slot_entries(0, 0, num_entries);
+        let (mut shreds, entries) = make_slot_entries(
+            0, // slot
+            0, // parent_slot
+            num_entries,
+            true, // merkle_variant
+        );
         let num_shreds = shreds.len() as u64;
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
@@ -4397,11 +4840,11 @@ pub mod tests {
             assert_eq!(meta.last_index, Some(num_shreds - 1));
             if i != 0 {
                 assert_eq!(result.len(), 0);
-                assert!(meta.consumed == 0 && meta.received == num_shreds as u64);
+                assert!(meta.consumed == 0 && meta.received == num_shreds);
             } else {
                 assert_eq!(meta.parent_slot, Some(0));
                 assert_eq!(result, entries);
-                assert!(meta.consumed == num_shreds as u64 && meta.received == num_shreds as u64);
+                assert!(meta.consumed == num_shreds && meta.received == num_shreds);
             }
         }
     }
@@ -4452,16 +4895,30 @@ pub mod tests {
     */
 
     #[test]
-    pub fn test_get_slot_entries1() {
+    fn test_get_slot_entries1() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         let entries = create_ticks(8, 0, Hash::default());
-        let shreds = entries_to_test_shreds(entries[0..4].to_vec(), 1, 0, false, 0);
+        let shreds = entries_to_test_shreds(
+            &entries[0..4],
+            1,
+            0,
+            false,
+            0,
+            true, // merkle_variant
+        );
         blockstore
             .insert_shreds(shreds, None, false)
             .expect("Expected successful write of shreds");
 
-        let mut shreds1 = entries_to_test_shreds(entries[4..].to_vec(), 1, 0, false, 0);
+        let mut shreds1 = entries_to_test_shreds(
+            &entries[4..],
+            1,
+            0,
+            false,
+            0,
+            false, // merkle_variant
+        );
         for (i, b) in shreds1.iter_mut().enumerate() {
             b.set_index(8 + i as u32);
         }
@@ -4489,11 +4946,17 @@ pub mod tests {
         for slot in 0..num_slots {
             let entries = create_ticks(slot + 1, 0, Hash::default());
             let last_entry = entries.last().unwrap().clone();
-            let mut shreds =
-                entries_to_test_shreds(entries, slot, slot.saturating_sub(1), false, 0);
+            let mut shreds = entries_to_test_shreds(
+                &entries,
+                slot,
+                slot.saturating_sub(1),
+                false,
+                0,
+                true, // merkle_variant
+            );
             for b in shreds.iter_mut() {
                 b.set_index(index);
-                b.set_slot(slot as u64);
+                b.set_slot(slot);
                 index += 1;
             }
             blockstore
@@ -4509,7 +4972,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_get_slot_entries3() {
+    fn test_get_slot_entries3() {
         // Test inserting/fetching shreds which contain multiple entries per shred
         let ledger_path = get_tmp_ledger_path_auto_delete!();
 
@@ -4523,8 +4986,14 @@ pub mod tests {
         // Write entries
         for slot in 0..num_slots {
             let entries = create_ticks(entries_per_slot, 0, Hash::default());
-            let shreds =
-                entries_to_test_shreds(entries.clone(), slot, slot.saturating_sub(1), false, 0);
+            let shreds = entries_to_test_shreds(
+                &entries,
+                slot,
+                slot.saturating_sub(1),
+                false,
+                0,
+                true, // merkle_variant
+            );
             assert!(shreds.len() as u64 >= shreds_per_slot);
             blockstore
                 .insert_shreds(shreds, None, false)
@@ -4534,7 +5003,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_insert_data_shreds_consecutive() {
+    fn test_insert_data_shreds_consecutive() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         // Create enough entries to ensure there are at least two shreds created
@@ -4544,7 +5013,12 @@ pub mod tests {
             let parent_slot = if i == 0 { 0 } else { i - 1 };
             // Write entries
             let num_entries = min_entries * (i + 1);
-            let (shreds, original_entries) = make_slot_entries(slot, parent_slot, num_entries);
+            let (shreds, original_entries) = make_slot_entries(
+                slot,
+                parent_slot,
+                num_entries,
+                true, // merkle_variant
+            );
 
             let num_shreds = shreds.len() as u64;
             assert!(num_shreds > 1);
@@ -4596,25 +5070,24 @@ pub mod tests {
     fn test_data_set_completed_on_insert() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let BlockstoreSignals { blockstore, .. } =
-            Blockstore::open_with_signal(ledger_path.path(), None, true).unwrap();
+            Blockstore::open_with_signal(ledger_path.path(), BlockstoreOptions::default()).unwrap();
 
         // Create enough entries to fill 2 shreds, only the later one is data complete
         let slot = 0;
         let num_entries = max_ticks_per_n_shreds(1, None) + 1;
         let entries = create_ticks(num_entries, slot, Hash::default());
-        let shreds = entries_to_test_shreds(entries, slot, 0, true, 0);
+        let shreds =
+            entries_to_test_shreds(&entries, slot, 0, true, 0, /*merkle_variant:*/ true);
         let num_shreds = shreds.len();
         assert!(num_shreds > 1);
         assert!(blockstore
             .insert_shreds(shreds[1..].to_vec(), None, false)
             .unwrap()
-            .0
             .is_empty());
         assert_eq!(
             blockstore
                 .insert_shreds(vec![shreds[0].clone()], None, false)
-                .unwrap()
-                .0,
+                .unwrap(),
             vec![CompletedDataSetInfo {
                 slot,
                 start_index: 0,
@@ -4625,24 +5098,27 @@ pub mod tests {
         assert!(blockstore
             .insert_shreds(shreds, None, false)
             .unwrap()
-            .0
             .is_empty());
     }
 
     #[test]
-    pub fn test_new_shreds_signal() {
+    fn test_new_shreds_signal() {
         // Initialize blockstore
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let BlockstoreSignals {
             blockstore,
             ledger_signal_receiver: recvr,
             ..
-        } = Blockstore::open_with_signal(ledger_path.path(), None, true).unwrap();
-        //let blockstore = Arc::new(blockstore);
+        } = Blockstore::open_with_signal(ledger_path.path(), BlockstoreOptions::default()).unwrap();
 
         let entries_per_slot = 50;
         // Create entries for slot 0
-        let (mut shreds, _) = make_slot_entries(0, 0, entries_per_slot);
+        let (mut shreds, _) = make_slot_entries(
+            0, // slot
+            0, // parent_slot
+            entries_per_slot,
+            false, // merkle_variant
+        );
         let shreds_per_slot = shreds.len() as u64;
 
         // Insert second shred, but we're missing the first shred, so no consecutive
@@ -4650,7 +5126,7 @@ pub mod tests {
         blockstore
             .insert_shreds(vec![shreds.remove(1)], None, false)
             .unwrap();
-        let timer = Duration::new(1, 0);
+        let timer = Duration::from_secs(1);
         assert!(recvr.recv_timeout(timer).is_err());
         // Insert first shred, now we've made a consecutive block
         blockstore
@@ -4672,7 +5148,12 @@ pub mod tests {
         let mut shreds = vec![];
         let mut missing_shreds = vec![];
         for slot in 1..num_slots + 1 {
-            let (mut slot_shreds, _) = make_slot_entries(slot, slot - 1, entries_per_slot);
+            let (mut slot_shreds, _) = make_slot_entries(
+                slot,
+                slot - 1, // parent_slot
+                entries_per_slot,
+                false, // merkle_variant
+            );
             let missing_shred = slot_shreds.remove(slot as usize - 1);
             shreds.extend(slot_shreds);
             missing_shreds.push(missing_shred);
@@ -4686,7 +5167,12 @@ pub mod tests {
         // should get no updates
         let shreds: Vec<_> = (1..num_slots + 1)
             .flat_map(|slot| {
-                let (mut shred, _) = make_slot_entries(slot, slot - 1, 1);
+                let (mut shred, _) = make_slot_entries(
+                    slot,
+                    slot - 1, // parent_slot
+                    1,        // num_entries
+                    false,    // merkle_variant
+                );
                 shred[0].set_index(2 * num_slots as u32);
                 shred
             })
@@ -4714,20 +5200,20 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_completed_shreds_signal() {
+    fn test_completed_shreds_signal() {
         // Initialize blockstore
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let BlockstoreSignals {
             blockstore,
             completed_slots_receiver: recvr,
             ..
-        } = Blockstore::open_with_signal(ledger_path.path(), None, true).unwrap();
-        // let blockstore = Arc::new(blockstore);
+        } = Blockstore::open_with_signal(ledger_path.path(), BlockstoreOptions::default()).unwrap();
 
         let entries_per_slot = 10;
 
         // Create shreds for slot 0
-        let (mut shreds, _) = make_slot_entries(0, 0, entries_per_slot);
+        let (mut shreds, _) =
+            make_slot_entries(0, 0, entries_per_slot, /*merkle_variant:*/ true);
 
         let shred0 = shreds.remove(0);
         // Insert all but the first shred in the slot, should not be considered complete
@@ -4740,15 +5226,14 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_completed_shreds_signal_orphans() {
+    fn test_completed_shreds_signal_orphans() {
         // Initialize blockstore
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let BlockstoreSignals {
             blockstore,
             completed_slots_receiver: recvr,
             ..
-        } = Blockstore::open_with_signal(ledger_path.path(), None, true).unwrap();
-        // let blockstore = Arc::new(blockstore);
+        } = Blockstore::open_with_signal(ledger_path.path(), BlockstoreOptions::default()).unwrap();
 
         let entries_per_slot = 10;
         let slots = vec![2, 5, 10];
@@ -4786,15 +5271,14 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_completed_shreds_signal_many() {
+    fn test_completed_shreds_signal_many() {
         // Initialize blockstore
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let BlockstoreSignals {
             blockstore,
             completed_slots_receiver: recvr,
             ..
-        } = Blockstore::open_with_signal(ledger_path.path(), None, true).unwrap();
-        // let blockstore = Arc::new(blockstore);
+        } = Blockstore::open_with_signal(ledger_path.path(), BlockstoreOptions::default()).unwrap();
 
         let entries_per_slot = 10;
         let mut slots = vec![2, 5, 10];
@@ -4804,7 +5288,12 @@ pub mod tests {
         let (shreds0, _) = all_shreds.remove(0);
         let (shreds1, _) = all_shreds.remove(0);
         let (shreds2, _) = all_shreds.remove(0);
-        let (shreds3, _) = make_slot_entries(disconnected_slot, 1, entries_per_slot);
+        let (shreds3, _) = make_slot_entries(
+            disconnected_slot,
+            1, // parent_slot
+            entries_per_slot,
+            true, // merkle_variant
+        );
 
         let mut all_shreds: Vec<_> = vec![shreds0, shreds1, shreds2, shreds3]
             .into_iter()
@@ -4821,7 +5310,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_handle_chaining_basic() {
+    fn test_handle_chaining_basic() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
@@ -4837,54 +5326,54 @@ pub mod tests {
             .drain(shreds_per_slot..2 * shreds_per_slot)
             .collect_vec();
         blockstore.insert_shreds(shreds1, None, false).unwrap();
-        let s1 = blockstore.meta(1).unwrap().unwrap();
-        assert!(s1.next_slots.is_empty());
+        let meta1 = blockstore.meta(1).unwrap().unwrap();
+        assert!(meta1.next_slots.is_empty());
         // Slot 1 is not trunk because slot 0 hasn't been inserted yet
-        assert!(!s1.is_connected);
-        assert_eq!(s1.parent_slot, Some(0));
-        assert_eq!(s1.last_index, Some(shreds_per_slot as u64 - 1));
+        assert!(!meta1.is_connected());
+        assert_eq!(meta1.parent_slot, Some(0));
+        assert_eq!(meta1.last_index, Some(shreds_per_slot as u64 - 1));
 
         // 2) Write to the second slot
         let shreds2 = shreds
             .drain(shreds_per_slot..2 * shreds_per_slot)
             .collect_vec();
         blockstore.insert_shreds(shreds2, None, false).unwrap();
-        let s2 = blockstore.meta(2).unwrap().unwrap();
-        assert!(s2.next_slots.is_empty());
+        let meta2 = blockstore.meta(2).unwrap().unwrap();
+        assert!(meta2.next_slots.is_empty());
         // Slot 2 is not trunk because slot 0 hasn't been inserted yet
-        assert!(!s2.is_connected);
-        assert_eq!(s2.parent_slot, Some(1));
-        assert_eq!(s2.last_index, Some(shreds_per_slot as u64 - 1));
+        assert!(!meta2.is_connected());
+        assert_eq!(meta2.parent_slot, Some(1));
+        assert_eq!(meta2.last_index, Some(shreds_per_slot as u64 - 1));
 
         // Check the first slot again, it should chain to the second slot,
         // but still isn't part of the trunk
-        let s1 = blockstore.meta(1).unwrap().unwrap();
-        assert_eq!(s1.next_slots, vec![2]);
-        assert!(!s1.is_connected);
-        assert_eq!(s1.parent_slot, Some(0));
-        assert_eq!(s1.last_index, Some(shreds_per_slot as u64 - 1));
+        let meta1 = blockstore.meta(1).unwrap().unwrap();
+        assert_eq!(meta1.next_slots, vec![2]);
+        assert!(!meta1.is_connected());
+        assert_eq!(meta1.parent_slot, Some(0));
+        assert_eq!(meta1.last_index, Some(shreds_per_slot as u64 - 1));
 
         // 3) Write to the zeroth slot, check that every slot
         // is now part of the trunk
         blockstore.insert_shreds(shreds, None, false).unwrap();
-        for i in 0..3 {
-            let s = blockstore.meta(i).unwrap().unwrap();
+        for slot in 0..3 {
+            let meta = blockstore.meta(slot).unwrap().unwrap();
             // The last slot will not chain to any other slots
-            if i != 2 {
-                assert_eq!(s.next_slots, vec![i + 1]);
+            if slot != 2 {
+                assert_eq!(meta.next_slots, vec![slot + 1]);
             }
-            if i == 0 {
-                assert_eq!(s.parent_slot, Some(0));
+            if slot == 0 {
+                assert_eq!(meta.parent_slot, Some(0));
             } else {
-                assert_eq!(s.parent_slot, Some(i - 1));
+                assert_eq!(meta.parent_slot, Some(slot - 1));
             }
-            assert_eq!(s.last_index, Some(shreds_per_slot as u64 - 1));
-            assert!(s.is_connected);
+            assert_eq!(meta.last_index, Some(shreds_per_slot as u64 - 1));
+            assert!(meta.is_connected());
         }
     }
 
     #[test]
-    pub fn test_handle_chaining_missing_slots() {
+    fn test_handle_chaining_missing_slots() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
@@ -4903,7 +5392,12 @@ pub mod tests {
                     slot - 1
                 }
             };
-            let (slot_shreds, _) = make_slot_entries(slot, parent_slot, entries_per_slot);
+            let (slot_shreds, _) = make_slot_entries(
+                slot,
+                parent_slot,
+                entries_per_slot,
+                true, // merkle_variant
+            );
             shreds_per_slot = slot_shreds.len();
 
             if slot % 2 == 1 {
@@ -4917,25 +5411,25 @@ pub mod tests {
         blockstore.insert_shreds(slots, None, false).unwrap();
 
         // Check metadata
-        for i in 0..num_slots {
+        for slot in 0..num_slots {
             // If "i" is the index of a slot we just inserted, then next_slots should be empty
             // for slot "i" because no slots chain to that slot, because slot i + 1 is missing.
             // However, if it's a slot we haven't inserted, aka one of the gaps, then one of the
             // slots we just inserted will chain to that gap, so next_slots for that orphan slot
             // won't be empty, but the parent slot is unknown so should equal std::u64::MAX.
-            let s = blockstore.meta(i as u64).unwrap().unwrap();
-            if i % 2 == 0 {
-                assert_eq!(s.next_slots, vec![i as u64 + 1]);
-                assert_eq!(s.parent_slot, None);
+            let meta = blockstore.meta(slot).unwrap().unwrap();
+            if slot % 2 == 0 {
+                assert_eq!(meta.next_slots, vec![slot + 1]);
+                assert_eq!(meta.parent_slot, None);
             } else {
-                assert!(s.next_slots.is_empty());
-                assert_eq!(s.parent_slot, Some(i - 1));
+                assert!(meta.next_slots.is_empty());
+                assert_eq!(meta.parent_slot, Some(slot - 1));
             }
 
-            if i == 0 {
-                assert!(s.is_connected);
+            if slot == 0 {
+                assert!(meta.is_connected());
             } else {
-                assert!(!s.is_connected);
+                assert!(!meta.is_connected());
             }
         }
 
@@ -4944,23 +5438,23 @@ pub mod tests {
             .insert_shreds(missing_slots, None, false)
             .unwrap();
 
-        for i in 0..num_slots {
+        for slot in 0..num_slots {
             // Check that all the slots chain correctly once the missing slots
             // have been filled
-            let s = blockstore.meta(i as u64).unwrap().unwrap();
-            if i != num_slots - 1 {
-                assert_eq!(s.next_slots, vec![i as u64 + 1]);
+            let meta = blockstore.meta(slot).unwrap().unwrap();
+            if slot != num_slots - 1 {
+                assert_eq!(meta.next_slots, vec![slot + 1]);
             } else {
-                assert!(s.next_slots.is_empty());
+                assert!(meta.next_slots.is_empty());
             }
 
-            if i == 0 {
-                assert_eq!(s.parent_slot, Some(0));
+            if slot == 0 {
+                assert_eq!(meta.parent_slot, Some(0));
             } else {
-                assert_eq!(s.parent_slot, Some(i - 1));
+                assert_eq!(meta.parent_slot, Some(slot - 1));
             }
-            assert_eq!(s.last_index, Some(shreds_per_slot as u64 - 1));
-            assert!(s.is_connected);
+            assert_eq!(meta.last_index, Some(shreds_per_slot as u64 - 1));
+            assert!(meta.is_connected());
         }
     }
 
@@ -4993,29 +5487,26 @@ pub mod tests {
         }
 
         // Check metadata
-        for i in 0..num_slots {
-            let s = blockstore.meta(i as u64).unwrap().unwrap();
+        for slot in 0..num_slots {
+            let meta = blockstore.meta(slot).unwrap().unwrap();
             // The last slot will not chain to any other slots
-            if i as u64 != num_slots - 1 {
-                assert_eq!(s.next_slots, vec![i as u64 + 1]);
+            if slot != num_slots - 1 {
+                assert_eq!(meta.next_slots, vec![slot + 1]);
             } else {
-                assert!(s.next_slots.is_empty());
+                assert!(meta.next_slots.is_empty());
             }
 
-            if i == 0 {
-                assert_eq!(s.parent_slot, Some(0));
+            // Ensure that each slot has their parent correct
+            // Additionally, slot 0 should be the only connected slot
+            if slot == 0 {
+                assert_eq!(meta.parent_slot, Some(0));
+                assert!(meta.is_connected());
             } else {
-                assert_eq!(s.parent_slot, Some(i - 1));
+                assert_eq!(meta.parent_slot, Some(slot - 1));
+                assert!(!meta.is_connected());
             }
 
-            assert_eq!(s.last_index, Some(shreds_per_slot as u64 - 1));
-
-            // Other than slot 0, no slots should be part of the trunk
-            if i != 0 {
-                assert!(!s.is_connected);
-            } else {
-                assert!(s.is_connected);
-            }
+            assert_eq!(meta.last_index, Some(shreds_per_slot as u64 - 1));
         }
 
         // Iteratively finish every 3rd slot, and check that all slots up to and including
@@ -5025,26 +5516,26 @@ pub mod tests {
                 let shred = missing_shreds.remove(0);
                 blockstore.insert_shreds(vec![shred], None, false).unwrap();
 
-                for i in 0..num_slots {
-                    let s = blockstore.meta(i as u64).unwrap().unwrap();
-                    if i != num_slots - 1 {
-                        assert_eq!(s.next_slots, vec![i as u64 + 1]);
+                for slot in 0..num_slots {
+                    let meta = blockstore.meta(slot).unwrap().unwrap();
+                    if slot != num_slots - 1 {
+                        assert_eq!(meta.next_slots, vec![slot + 1]);
                     } else {
-                        assert!(s.next_slots.is_empty());
+                        assert!(meta.next_slots.is_empty());
                     }
-                    if i <= slot_index as u64 + 3 {
-                        assert!(s.is_connected);
+                    if slot <= slot_index + 3 {
+                        assert!(meta.is_connected());
                     } else {
-                        assert!(!s.is_connected);
-                    }
-
-                    if i == 0 {
-                        assert_eq!(s.parent_slot, Some(0));
-                    } else {
-                        assert_eq!(s.parent_slot, Some(i - 1));
+                        assert!(!meta.is_connected());
                     }
 
-                    assert_eq!(s.last_index, Some(shreds_per_slot as u64 - 1));
+                    if slot == 0 {
+                        assert_eq!(meta.parent_slot, Some(0));
+                    } else {
+                        assert_eq!(meta.parent_slot, Some(slot - 1));
+                    }
+
+                    assert_eq!(meta.last_index, Some(shreds_per_slot as u64 - 1));
                 }
             }
         }
@@ -5115,7 +5606,7 @@ pub mod tests {
                 let slot_meta = blockstore.meta(slot).unwrap().unwrap();
                 assert_eq!(slot_meta.consumed, entries_per_slot);
                 assert_eq!(slot_meta.received, entries_per_slot);
-                assert!(slot_meta.is_connected);
+                assert!(slot_meta.is_connected());
                 let slot_parent = {
                     if slot == 0 {
                         0
@@ -5150,7 +5641,54 @@ pub mod tests {
         }
     */
     #[test]
-    pub fn test_get_slots_since() {
+    fn test_slot_range_connected_chain() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        let num_slots = 3;
+        for slot in 1..=num_slots {
+            make_and_insert_slot(&blockstore, slot, slot.saturating_sub(1));
+        }
+
+        assert!(blockstore.slot_range_connected(1, 3));
+        assert!(!blockstore.slot_range_connected(1, 4)); // slot 4 does not exist
+    }
+
+    #[test]
+    fn test_slot_range_connected_disconnected() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        make_and_insert_slot(&blockstore, 1, 0);
+        make_and_insert_slot(&blockstore, 2, 1);
+        make_and_insert_slot(&blockstore, 4, 2);
+
+        assert!(blockstore.slot_range_connected(1, 3)); // Slot 3 does not exist, but we can still replay this range to slot 4
+        assert!(blockstore.slot_range_connected(1, 4));
+    }
+
+    #[test]
+    fn test_slot_range_connected_same_slot() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        assert!(blockstore.slot_range_connected(54, 54));
+    }
+
+    #[test]
+    fn test_slot_range_connected_starting_slot_not_full() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        make_and_insert_slot(&blockstore, 5, 4);
+        make_and_insert_slot(&blockstore, 6, 5);
+
+        assert!(!blockstore.meta(4).unwrap().unwrap().is_full());
+        assert!(blockstore.slot_range_connected(4, 6));
+    }
+
+    #[test]
+    fn test_get_slots_since() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
@@ -5229,8 +5767,8 @@ pub mod tests {
 
         // Write some slot that also chains to existing slots and orphan,
         // nothing should change
-        let (shred4, _) = make_slot_entries(4, 0, 1);
-        let (shred5, _) = make_slot_entries(5, 1, 1);
+        let (shred4, _) = make_slot_entries(4, 0, 1, /*merkle_variant:*/ true);
+        let (shred5, _) = make_slot_entries(5, 1, 1, /*merkle_variant:*/ true);
         blockstore.insert_shreds(shred4, None, false).unwrap();
         blockstore.insert_shreds(shred5, None, false).unwrap();
         assert_eq!(
@@ -5269,7 +5807,8 @@ pub mod tests {
                 }
             };
 
-            let (mut shred, entry) = make_slot_entries(slot, parent_slot, 1);
+            let (mut shred, entry) =
+                make_slot_entries(slot, parent_slot, 1, /*merkle_variant:*/ false);
             num_shreds_per_slot = shred.len() as u64;
             shred
                 .iter_mut()
@@ -5321,7 +5860,8 @@ pub mod tests {
         // Create enough entries to ensure there are at least two shreds created
         let num_entries = max_ticks_per_n_shreds(1, None) + 1;
         let entries = create_ticks(num_entries, 0, Hash::default());
-        let mut shreds = entries_to_test_shreds(entries, slot, 0, true, 0);
+        let mut shreds =
+            entries_to_test_shreds(&entries, slot, 0, true, 0, /*merkle_variant:*/ false);
         let num_shreds = shreds.len();
         assert!(num_shreds > 1);
         for (i, s) in shreds.iter_mut().enumerate() {
@@ -5410,9 +5950,8 @@ pub mod tests {
                     slot,
                     (i * gap) as u32,
                     0,
-                    None,
-                    false,
-                    false,
+                    &[],
+                    ShredFlags::empty(),
                     i as u8,
                     0,
                     (i * gap) as u32,
@@ -5460,7 +5999,8 @@ pub mod tests {
         );
 
         let entries = create_ticks(100, 0, Hash::default());
-        let mut shreds = entries_to_test_shreds(entries, slot, 0, true, 0);
+        let mut shreds =
+            entries_to_test_shreds(&entries, slot, 0, true, 0, /*merkle_variant:*/ false);
         assert!(shreds.len() > 2);
         shreds.drain(2..);
 
@@ -5491,7 +6031,7 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_no_missing_shred_indexes() {
+    fn test_no_missing_shred_indexes() {
         let slot = 0;
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -5499,7 +6039,8 @@ pub mod tests {
         // Write entries
         let num_entries = 10;
         let entries = create_ticks(num_entries, 0, Hash::default());
-        let shreds = entries_to_test_shreds(entries, slot, 0, true, 0);
+        let shreds =
+            entries_to_test_shreds(&entries, slot, 0, true, 0, /*merkle_variant:*/ true);
         let num_shreds = shreds.len();
 
         blockstore.insert_shreds(shreds, None, false).unwrap();
@@ -5516,9 +6057,24 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_should_insert_data_shred() {
+    fn test_verify_shred_slots() {
+        // verify_shred_slots(slot, parent, root)
+        assert!(verify_shred_slots(0, 0, 0));
+        assert!(verify_shred_slots(2, 1, 0));
+        assert!(verify_shred_slots(2, 1, 1));
+        assert!(!verify_shred_slots(2, 3, 0));
+        assert!(!verify_shred_slots(2, 2, 0));
+        assert!(!verify_shred_slots(2, 3, 3));
+        assert!(!verify_shred_slots(2, 2, 2));
+        assert!(!verify_shred_slots(2, 1, 3));
+        assert!(!verify_shred_slots(2, 3, 4));
+        assert!(!verify_shred_slots(2, 2, 3));
+    }
+
+    #[test]
+    fn test_should_insert_data_shred() {
         solana_logger::setup();
-        let (mut shreds, _) = make_slot_entries(0, 0, 200);
+        let (mut shreds, _) = make_slot_entries(0, 0, 200, /*merkle_variant:*/ false);
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
@@ -5530,31 +6086,22 @@ pub mod tests {
             .unwrap();
 
         let slot_meta = blockstore.meta(0).unwrap().unwrap();
-        // Corrupt shred by making it too large
-        let mut shred5 = shreds[5].clone();
-        shred5.payload.push(10);
-        shred5.data_header.size = shred5.payload.len() as u16;
-        assert!(!blockstore.should_insert_data_shred(
-            &shred5,
-            &slot_meta,
-            &HashMap::new(),
-            &last_root,
-            None,
-            ShredSource::Turbine
-        ));
+        let shred5 = shreds[5].clone();
 
         // Ensure that an empty shred (one with no data) would get inserted. Such shreds
         // may be used as signals (broadcast does so to indicate a slot was interrupted)
         // Reuse shred5's header values to avoid a false negative result
-        let mut empty_shred = Shred::new_from_data(
-            shred5.common_header.slot,
-            shred5.common_header.index,
-            shred5.data_header.parent_offset,
-            None, // data
-            true, // is_last_data
-            true, // is_last_in_slot
-            0,    // reference_tick
-            shred5.common_header.version,
+        let empty_shred = Shred::new_from_data(
+            shred5.slot(),
+            shred5.index(),
+            {
+                let parent_offset = shred5.slot() - shred5.parent().unwrap();
+                parent_offset as u16
+            },
+            &[], // data
+            ShredFlags::LAST_SHRED_IN_SLOT,
+            0, // reference_tick
+            shred5.version(),
             shred5.fec_set_index(),
         );
         assert!(blockstore.should_insert_data_shred(
@@ -5565,16 +6112,6 @@ pub mod tests {
             None,
             ShredSource::Repaired,
         ));
-        empty_shred.data_header.size = 0;
-        assert!(!blockstore.should_insert_data_shred(
-            &empty_shred,
-            &slot_meta,
-            &HashMap::new(),
-            &last_root,
-            None,
-            ShredSource::Recovered,
-        ));
-
         // Trying to insert another "is_last" shred with index < the received index should fail
         // skip over shred 7
         blockstore
@@ -5622,8 +6159,8 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_is_data_shred_present() {
-        let (shreds, _) = make_slot_entries(0, 0, 200);
+    fn test_is_data_shred_present() {
+        let (shreds, _) = make_slot_entries(0, 0, 200, /*merkle_variant:*/ true);
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         let index_cf = &blockstore.index_cf;
@@ -5656,38 +6193,39 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_check_insert_coding_shred() {
+    fn test_check_insert_coding_shred() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
         let slot = 1;
-        let (shred, coding) = Shredder::new_coding_shred_header(
-            slot, 11, // index
-            11, // fec_set_index
-            11, // num_data_shreds
-            11, // num_coding_shreds
-            8,  // position
-            0,  // version
+        let coding_shred = Shred::new_from_parity_shard(
+            slot,
+            11,  // index
+            &[], // parity_shard
+            11,  // fec_set_index
+            11,  // num_data_shreds
+            11,  // num_coding_shreds
+            8,   // position
+            0,   // version
         );
-        let coding_shred = Shred::new_empty_from_header(shred, DataShredHeader::default(), coding);
 
         let mut erasure_metas = HashMap::new();
         let mut index_working_set = HashMap::new();
         let mut just_received_shreds = HashMap::new();
         let mut write_batch = blockstore.db.batch().unwrap();
-        let mut index_meta_time = 0;
+        let mut index_meta_time_us = 0;
         assert!(blockstore.check_insert_coding_shred(
             coding_shred.clone(),
             &mut erasure_metas,
             &mut index_working_set,
             &mut write_batch,
             &mut just_received_shreds,
-            &mut index_meta_time,
+            &mut index_meta_time_us,
             &|_shred| {
                 panic!("no dupes");
             },
             false,
-            false,
+            ShredSource::Turbine,
             &mut BlockstoreInsertionMetrics::default(),
         ));
 
@@ -5700,34 +6238,34 @@ pub mod tests {
             &mut index_working_set,
             &mut write_batch,
             &mut just_received_shreds,
-            &mut index_meta_time,
+            &mut index_meta_time_us,
             &|_shred| {
                 counter.fetch_add(1, Ordering::Relaxed);
             },
             false,
-            false,
+            ShredSource::Turbine,
             &mut BlockstoreInsertionMetrics::default(),
         ));
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    pub fn test_should_insert_coding_shred() {
+    fn test_should_insert_coding_shred() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         let last_root = RwLock::new(0);
 
         let slot = 1;
-        let (mut shred, coding) = Shredder::new_coding_shred_header(
-            slot, 11, // index
-            11, // fec_set_index
-            11, // num_data_shreds
-            11, // num_coding_shreds
-            8,  // position
-            0,  // version
+        let mut coding_shred = Shred::new_from_parity_shard(
+            slot,
+            11,  // index
+            &[], // parity_shard
+            11,  // fec_set_index
+            11,  // num_data_shreds
+            11,  // num_coding_shreds
+            8,   // position
+            0,   // version
         );
-        let coding_shred =
-            Shred::new_empty_from_header(shred.clone(), DataShredHeader::default(), coding.clone());
 
         // Insert a good coding shred
         assert!(Blockstore::should_insert_coding_shred(
@@ -5749,107 +6287,16 @@ pub mod tests {
             ));
         }
 
-        shred.index += 1;
-
         // Establish a baseline that works
-        {
-            let coding_shred = Shred::new_empty_from_header(
-                shred.clone(),
-                DataShredHeader::default(),
-                coding.clone(),
-            );
-            assert!(Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-        }
-
-        // Trying to insert a shred with index < position should fail
-        {
-            let mut coding_shred = Shred::new_empty_from_header(
-                shred.clone(),
-                DataShredHeader::default(),
-                coding.clone(),
-            );
-            let index = coding_shred.index() - coding_shred.fec_set_index() - 1;
-            coding_shred.set_index(index as u32);
-
-            assert!(!Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-        }
-
-        // Trying to insert shred with num_coding == 0 should fail
-        {
-            let mut coding_shred = Shred::new_empty_from_header(
-                shred.clone(),
-                DataShredHeader::default(),
-                coding.clone(),
-            );
-            coding_shred.coding_header.num_coding_shreds = 0;
-            assert!(!Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-        }
-
-        // Trying to insert shred with pos >= num_coding should fail
-        {
-            let mut coding_shred = Shred::new_empty_from_header(
-                shred.clone(),
-                DataShredHeader::default(),
-                coding.clone(),
-            );
-            let num_coding_shreds = coding_shred.index() - coding_shred.fec_set_index();
-            coding_shred.coding_header.num_coding_shreds = num_coding_shreds as u16;
-            assert!(!Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-        }
-
-        // Trying to insert with set_index with num_coding that would imply the last shred
-        // has index > u32::MAX should fail
-        {
-            let mut coding_shred = Shred::new_empty_from_header(
-                shred.clone(),
-                DataShredHeader::default(),
-                coding.clone(),
-            );
-            coding_shred.common_header.fec_set_index = std::u32::MAX - 1;
-            coding_shred.coding_header.num_data_shreds = 2;
-            coding_shred.coding_header.num_coding_shreds = 3;
-            coding_shred.coding_header.position = 1;
-            coding_shred.common_header.index = std::u32::MAX - 1;
-            assert!(!Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-
-            coding_shred.coding_header.num_coding_shreds = 2000;
-            assert!(!Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-
-            // Decreasing the number of num_coding_shreds will put it within the allowed limit
-            coding_shred.coding_header.num_coding_shreds = 2;
-            assert!(Blockstore::should_insert_coding_shred(
-                &coding_shred,
-                &last_root
-            ));
-
-            // Insertion should succeed
-            blockstore
-                .insert_shreds(vec![coding_shred], None, false)
-                .unwrap();
-        }
+        coding_shred.set_index(coding_shred.index() + 1);
+        assert!(Blockstore::should_insert_coding_shred(
+            &coding_shred,
+            &last_root
+        ));
 
         // Trying to insert value into slot <= than last root should fail
         {
-            let mut coding_shred =
-                Shred::new_empty_from_header(shred, DataShredHeader::default(), coding);
+            let mut coding_shred = coding_shred.clone();
             coding_shred.set_slot(*last_root.read().unwrap());
             assert!(!Blockstore::should_insert_coding_shred(
                 &coding_shred,
@@ -5859,9 +6306,9 @@ pub mod tests {
     }
 
     #[test]
-    pub fn test_insert_multiple_is_last() {
+    fn test_insert_multiple_is_last() {
         solana_logger::setup();
-        let (shreds, _) = make_slot_entries(0, 0, 20);
+        let (shreds, _) = make_slot_entries(0, 0, 20, /*merkle_variant:*/ true);
         let num_shreds = shreds.len() as u64;
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -5874,7 +6321,7 @@ pub mod tests {
         assert_eq!(slot_meta.last_index, Some(num_shreds - 1));
         assert!(slot_meta.is_full());
 
-        let (shreds, _) = make_slot_entries(0, 0, 22);
+        let (shreds, _) = make_slot_entries(0, 0, 22, /*merkle_variant:*/ true);
         blockstore.insert_shreds(shreds, None, false).unwrap();
         let slot_meta = blockstore.meta(0).unwrap().unwrap();
 
@@ -6027,7 +6474,8 @@ pub mod tests {
         let num_ticks = 8;
         let entries = create_ticks(num_ticks, 0, Hash::default());
         let slot = 1;
-        let shreds = entries_to_test_shreds(entries, slot, 0, false, 0);
+        let shreds =
+            entries_to_test_shreds(&entries, slot, 0, false, 0, /*merkle_variant:*/ true);
         let next_shred_index = shreds.len();
         blockstore
             .insert_shreds(shreds, None, false)
@@ -6042,9 +6490,8 @@ pub mod tests {
             slot,
             next_shred_index as u32,
             1,
-            Some(&[1, 1, 1]),
-            true,
-            true,
+            &[1, 1, 1],
+            ShredFlags::LAST_SHRED_IN_SLOT,
             0,
             0,
             next_shred_index as u32,
@@ -6062,7 +6509,7 @@ pub mod tests {
     fn test_no_insert_but_modify_slot_meta() {
         // This tests correctness of the SlotMeta in various cases in which a shred
         // that gets filtered out by checks
-        let (shreds0, _) = make_slot_entries(0, 0, 200);
+        let (shreds0, _) = make_slot_entries(0, 0, 200, /*merkle_variant:*/ true);
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
@@ -6074,8 +6521,8 @@ pub mod tests {
         // Insert a repetitive shred for slot 's', should get ignored, but also
         // insert shreds that chains to 's', should see the update in the SlotMeta
         // for 's'.
-        let (mut shreds2, _) = make_slot_entries(2, 0, 200);
-        let (mut shreds3, _) = make_slot_entries(3, 0, 200);
+        let (mut shreds2, _) = make_slot_entries(2, 0, 200, /*merkle_variant:*/ true);
+        let (mut shreds3, _) = make_slot_entries(3, 0, 200, /*merkle_variant:*/ true);
         shreds2.push(shreds0[1].clone());
         shreds3.insert(0, shreds0[1].clone());
         blockstore.insert_shreds(shreds2, None, false).unwrap();
@@ -6092,7 +6539,7 @@ pub mod tests {
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
         // Make shred for slot 1
-        let (shreds1, _) = make_slot_entries(1, 0, 1);
+        let (shreds1, _) = make_slot_entries(1, 0, 1, /*merkle_variant:*/ true);
         let last_root = 100;
 
         blockstore.set_roots(std::iter::once(&last_root)).unwrap();
@@ -6111,13 +6558,66 @@ pub mod tests {
     }
 
     #[test]
+    fn test_get_first_available_block() {
+        let mint_total = 1_000_000_000_000;
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(mint_total);
+        let (ledger_path, _blockhash) = create_new_tmp_ledger_auto_delete!(&genesis_config);
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+        assert_eq!(blockstore.get_first_available_block().unwrap(), 0);
+        assert_eq!(blockstore.lowest_slot_with_genesis(), 0);
+        assert_eq!(blockstore.lowest_slot(), 0);
+        for slot in 1..4 {
+            let entries = make_slot_entries_with_transactions(100);
+            let shreds = entries_to_test_shreds(
+                &entries,
+                slot,
+                slot - 1, // parent_slot
+                true,     // is_full_slot
+                0,        // version
+                true,     // merkle_variant
+            );
+            blockstore.insert_shreds(shreds, None, false).unwrap();
+            blockstore.set_roots(vec![slot].iter()).unwrap();
+        }
+        assert_eq!(blockstore.get_first_available_block().unwrap(), 0);
+        assert_eq!(blockstore.lowest_slot_with_genesis(), 0);
+        assert_eq!(blockstore.lowest_slot(), 1);
+
+        blockstore.purge_slots(0, 1, PurgeType::CompactionFilter);
+        assert_eq!(blockstore.get_first_available_block().unwrap(), 3);
+        assert_eq!(blockstore.lowest_slot_with_genesis(), 2);
+        assert_eq!(blockstore.lowest_slot(), 2);
+    }
+
+    #[test]
     fn test_get_rooted_block() {
         let slot = 10;
         let entries = make_slot_entries_with_transactions(100);
         let blockhash = get_last_hash(entries.iter()).unwrap();
-        let shreds = entries_to_test_shreds(entries.clone(), slot, slot - 1, true, 0);
-        let more_shreds = entries_to_test_shreds(entries.clone(), slot + 1, slot, true, 0);
-        let unrooted_shreds = entries_to_test_shreds(entries.clone(), slot + 2, slot + 1, true, 0);
+        let shreds = entries_to_test_shreds(
+            &entries,
+            slot,
+            slot - 1, // parent_slot
+            true,     // is_full_slot
+            0,        // version
+            true,     // merkle_variant
+        );
+        let more_shreds = entries_to_test_shreds(
+            &entries,
+            slot + 1,
+            slot, // parent_slot
+            true, // is_full_slot
+            0,    // version
+            true, // merkle_variant
+        );
+        let unrooted_shreds = entries_to_test_shreds(
+            &entries,
+            slot + 2,
+            slot + 1, // parent_slot
+            true,     // is_full_slot
+            0,        // version
+            true,     // merkle_variant
+        );
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         blockstore.insert_shreds(shreds, None, false).unwrap();
@@ -6134,23 +6634,19 @@ pub mod tests {
             .put_meta_bytes(slot - 1, &serialize(&parent_meta).unwrap())
             .unwrap();
 
-        let expected_transactions: Vec<TransactionWithStatusMeta> = entries
+        let expected_transactions: Vec<VersionedTransactionWithStatusMeta> = entries
             .iter()
             .cloned()
             .filter(|entry| !entry.is_tick())
             .flat_map(|entry| entry.transactions)
             .map(|transaction| {
-                transaction
-                    .into_legacy_transaction()
-                    .expect("versioned transactions not supported")
-            })
-            .map(|transaction| {
                 let mut pre_balances: Vec<u64> = vec![];
                 let mut post_balances: Vec<u64> = vec![];
-                for (i, _account_key) in transaction.message.account_keys.iter().enumerate() {
+                for i in 0..transaction.message.static_account_keys().len() {
                     pre_balances.push(i as u64 * 10);
                     post_balances.push(i as u64 * 11);
                 }
+                let compute_units_consumed = Some(12345);
                 let signature = transaction.signatures[0];
                 let status = TransactionStatusMeta {
                     status: Ok(()),
@@ -6162,6 +6658,9 @@ pub mod tests {
                     pre_token_balances: Some(vec![]),
                     post_token_balances: Some(vec![]),
                     rewards: Some(vec![]),
+                    loaded_addresses: LoadedAddresses::default(),
+                    return_data: Some(TransactionReturnData::default()),
+                    compute_units_consumed,
                 }
                 .into();
                 blockstore
@@ -6178,6 +6677,9 @@ pub mod tests {
                     pre_token_balances: Some(vec![]),
                     post_token_balances: Some(vec![]),
                     rewards: Some(vec![]),
+                    loaded_addresses: LoadedAddresses::default(),
+                    return_data: Some(TransactionReturnData::default()),
+                    compute_units_consumed,
                 }
                 .into();
                 blockstore
@@ -6194,15 +6696,18 @@ pub mod tests {
                     pre_token_balances: Some(vec![]),
                     post_token_balances: Some(vec![]),
                     rewards: Some(vec![]),
+                    loaded_addresses: LoadedAddresses::default(),
+                    return_data: Some(TransactionReturnData::default()),
+                    compute_units_consumed,
                 }
                 .into();
                 blockstore
                     .transaction_status_cf
                     .put_protobuf((0, signature, slot + 2), &status)
                     .unwrap();
-                TransactionWithStatusMeta {
+                VersionedTransactionWithStatusMeta {
                     transaction,
-                    meta: Some(TransactionStatusMeta {
+                    meta: TransactionStatusMeta {
                         status: Ok(()),
                         fee: 42,
                         pre_balances,
@@ -6212,27 +6717,31 @@ pub mod tests {
                         pre_token_balances: Some(vec![]),
                         post_token_balances: Some(vec![]),
                         rewards: Some(vec![]),
-                    }),
+                        loaded_addresses: LoadedAddresses::default(),
+                        return_data: Some(TransactionReturnData::default()),
+                        compute_units_consumed,
+                    },
                 }
             })
             .collect();
 
         // Even if marked as root, a slot that is empty of entries should return an error
-        let confirmed_block_err = blockstore.get_rooted_block(slot - 1, true).unwrap_err();
-        assert_matches!(confirmed_block_err, BlockstoreError::SlotUnavailable);
+        assert_matches!(
+            blockstore.get_rooted_block(slot - 1, true),
+            Err(BlockstoreError::SlotUnavailable)
+        );
 
         // The previous_blockhash of `expected_block` is default because its parent slot is a root,
         // but empty of entries (eg. snapshot root slots). This now returns an error.
-        let confirmed_block_err = blockstore.get_rooted_block(slot, true).unwrap_err();
         assert_matches!(
-            confirmed_block_err,
-            BlockstoreError::ParentEntriesUnavailable
+            blockstore.get_rooted_block(slot, true),
+            Err(BlockstoreError::ParentEntriesUnavailable)
         );
 
         // Test if require_previous_blockhash is false
         let confirmed_block = blockstore.get_rooted_block(slot, false).unwrap();
         assert_eq!(confirmed_block.transactions.len(), 100);
-        let expected_block = ConfirmedBlock {
+        let expected_block = VersionedConfirmedBlock {
             transactions: expected_transactions.clone(),
             parent_slot: slot - 1,
             blockhash: blockhash.to_string(),
@@ -6246,7 +6755,7 @@ pub mod tests {
         let confirmed_block = blockstore.get_rooted_block(slot + 1, true).unwrap();
         assert_eq!(confirmed_block.transactions.len(), 100);
 
-        let mut expected_block = ConfirmedBlock {
+        let mut expected_block = VersionedConfirmedBlock {
             transactions: expected_transactions.clone(),
             parent_slot: slot,
             blockhash: blockhash.to_string(),
@@ -6263,7 +6772,7 @@ pub mod tests {
         let complete_block = blockstore.get_complete_block(slot + 2, true).unwrap();
         assert_eq!(complete_block.transactions.len(), 100);
 
-        let mut expected_complete_block = ConfirmedBlock {
+        let mut expected_complete_block = VersionedConfirmedBlock {
             transactions: expected_transactions,
             parent_slot: slot + 1,
             blockhash: blockhash.to_string(),
@@ -6313,12 +6822,25 @@ pub mod tests {
         let post_balances_vec = vec![3, 2, 1];
         let inner_instructions_vec = vec![InnerInstructions {
             index: 0,
-            instructions: vec![CompiledInstruction::new(1, &(), vec![0])],
+            instructions: vec![InnerInstruction {
+                instruction: CompiledInstruction::new(1, &(), vec![0]),
+                stack_height: Some(2),
+            }],
         }];
         let log_messages_vec = vec![String::from("Test message\n")];
         let pre_token_balances_vec = vec![];
         let post_token_balances_vec = vec![];
         let rewards_vec = vec![];
+        let test_loaded_addresses = LoadedAddresses {
+            writable: vec![Pubkey::new_unique()],
+            readonly: vec![Pubkey::new_unique()],
+        };
+        let test_return_data = TransactionReturnData {
+            program_id: Pubkey::new_unique(),
+            data: vec![1, 2, 3],
+        };
+        let compute_units_consumed_1 = Some(3812649u64);
+        let compute_units_consumed_2 = Some(42u64);
 
         // result not found
         assert!(transaction_status_cf
@@ -6337,6 +6859,9 @@ pub mod tests {
             pre_token_balances: Some(pre_token_balances_vec.clone()),
             post_token_balances: Some(post_token_balances_vec.clone()),
             rewards: Some(rewards_vec.clone()),
+            loaded_addresses: test_loaded_addresses.clone(),
+            return_data: Some(test_return_data.clone()),
+            compute_units_consumed: compute_units_consumed_1,
         }
         .into();
         assert!(transaction_status_cf
@@ -6354,6 +6879,9 @@ pub mod tests {
             pre_token_balances,
             post_token_balances,
             rewards,
+            loaded_addresses,
+            return_data,
+            compute_units_consumed,
         } = transaction_status_cf
             .get_protobuf_or_bincode::<StoredTransactionStatusMeta>((0, Signature::default(), 0))
             .unwrap()
@@ -6369,6 +6897,9 @@ pub mod tests {
         assert_eq!(pre_token_balances.unwrap(), pre_token_balances_vec);
         assert_eq!(post_token_balances.unwrap(), post_token_balances_vec);
         assert_eq!(rewards.unwrap(), rewards_vec);
+        assert_eq!(loaded_addresses, test_loaded_addresses);
+        assert_eq!(return_data.unwrap(), test_return_data);
+        assert_eq!(compute_units_consumed, compute_units_consumed_1);
 
         // insert value
         let status = TransactionStatusMeta {
@@ -6381,6 +6912,9 @@ pub mod tests {
             pre_token_balances: Some(pre_token_balances_vec.clone()),
             post_token_balances: Some(post_token_balances_vec.clone()),
             rewards: Some(rewards_vec.clone()),
+            loaded_addresses: test_loaded_addresses.clone(),
+            return_data: Some(test_return_data.clone()),
+            compute_units_consumed: compute_units_consumed_2,
         }
         .into();
         assert!(transaction_status_cf
@@ -6398,6 +6932,9 @@ pub mod tests {
             pre_token_balances,
             post_token_balances,
             rewards,
+            loaded_addresses,
+            return_data,
+            compute_units_consumed,
         } = transaction_status_cf
             .get_protobuf_or_bincode::<StoredTransactionStatusMeta>((
                 0,
@@ -6419,6 +6956,9 @@ pub mod tests {
         assert_eq!(pre_token_balances.unwrap(), pre_token_balances_vec);
         assert_eq!(post_token_balances.unwrap(), post_token_balances_vec);
         assert_eq!(rewards.unwrap(), rewards_vec);
+        assert_eq!(loaded_addresses, test_loaded_addresses);
+        assert_eq!(return_data.unwrap(), test_return_data);
+        assert_eq!(compute_units_consumed, compute_units_consumed_2);
     }
 
     #[test]
@@ -6646,6 +7186,9 @@ pub mod tests {
             pre_token_balances: Some(vec![]),
             post_token_balances: Some(vec![]),
             rewards: Some(vec![]),
+            loaded_addresses: LoadedAddresses::default(),
+            return_data: Some(TransactionReturnData::default()),
+            compute_units_consumed: Some(42u64),
         }
         .into();
 
@@ -6816,10 +7359,7 @@ pub mod tests {
         assert_eq!(counter, 2);
     }
 
-    fn do_test_lowest_cleanup_slot_and_special_cfs(
-        simulate_compaction: bool,
-        simulate_ledger_cleanup_service: bool,
-    ) {
+    fn do_test_lowest_cleanup_slot_and_special_cfs(simulate_ledger_cleanup_service: bool) {
         solana_logger::setup();
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
@@ -6840,6 +7380,9 @@ pub mod tests {
             pre_token_balances: Some(vec![]),
             post_token_balances: Some(vec![]),
             rewards: Some(vec![]),
+            loaded_addresses: LoadedAddresses::default(),
+            return_data: Some(TransactionReturnData::default()),
+            compute_units_consumed: Some(42u64),
         }
         .into();
 
@@ -6932,20 +7475,12 @@ pub mod tests {
         assert_eq!(are_missing, (false, false, false));
         assert_existing_always();
 
-        if simulate_compaction {
-            blockstore.set_max_expired_slot(lowest_cleanup_slot);
-            // force compaction filters to run across whole key range.
-            blockstore
-                .compact_storage(Slot::min_value(), Slot::max_value())
-                .unwrap();
-        }
-
         if simulate_ledger_cleanup_service {
             *blockstore.lowest_cleanup_slot.write().unwrap() = lowest_cleanup_slot;
         }
 
         let are_missing = check_for_missing();
-        if simulate_compaction || simulate_ledger_cleanup_service {
+        if simulate_ledger_cleanup_service {
             // ... when either simulation (or both) is effective, we should observe to be missing
             // consistently
             assert_eq!(are_missing, (true, true, true));
@@ -6957,64 +7492,60 @@ pub mod tests {
     }
 
     #[test]
-    fn test_lowest_cleanup_slot_and_special_cfs_with_compact_with_ledger_cleanup_service_simulation(
-    ) {
-        do_test_lowest_cleanup_slot_and_special_cfs(true, true);
+    fn test_lowest_cleanup_slot_and_special_cfs_with_ledger_cleanup_service_simulation() {
+        do_test_lowest_cleanup_slot_and_special_cfs(true);
     }
 
     #[test]
-    fn test_lowest_cleanup_slot_and_special_cfs_with_compact_without_ledger_cleanup_service_simulation(
-    ) {
-        do_test_lowest_cleanup_slot_and_special_cfs(true, false);
-    }
-
-    #[test]
-    fn test_lowest_cleanup_slot_and_special_cfs_without_compact_with_ledger_cleanup_service_simulation(
-    ) {
-        do_test_lowest_cleanup_slot_and_special_cfs(false, true);
-    }
-
-    #[test]
-    fn test_lowest_cleanup_slot_and_special_cfs_without_compact_without_ledger_cleanup_service_simulation(
-    ) {
-        do_test_lowest_cleanup_slot_and_special_cfs(false, false);
+    fn test_lowest_cleanup_slot_and_special_cfs_without_ledger_cleanup_service_simulation() {
+        do_test_lowest_cleanup_slot_and_special_cfs(false);
     }
 
     #[test]
     fn test_get_rooted_transaction() {
         let slot = 2;
         let entries = make_slot_entries_with_transactions(5);
-        let shreds = entries_to_test_shreds(entries.clone(), slot, slot - 1, true, 0);
+        let shreds = entries_to_test_shreds(
+            &entries,
+            slot,
+            slot - 1, // parent_slot
+            true,     // is_full_slot
+            0,        // version
+            true,     // merkle_variant
+        );
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         blockstore.insert_shreds(shreds, None, false).unwrap();
         blockstore.set_roots(vec![slot - 1, slot].iter()).unwrap();
 
-        let expected_transactions: Vec<TransactionWithStatusMeta> = entries
+        let expected_transactions: Vec<VersionedTransactionWithStatusMeta> = entries
             .iter()
             .cloned()
             .filter(|entry| !entry.is_tick())
             .flat_map(|entry| entry.transactions)
-            .map(|tx| {
-                tx.into_legacy_transaction()
-                    .expect("versioned transactions not supported")
-            })
             .map(|transaction| {
                 let mut pre_balances: Vec<u64> = vec![];
                 let mut post_balances: Vec<u64> = vec![];
-                for (i, _account_key) in transaction.message.account_keys.iter().enumerate() {
+                for i in 0..transaction.message.static_account_keys().len() {
                     pre_balances.push(i as u64 * 10);
                     post_balances.push(i as u64 * 11);
                 }
                 let inner_instructions = Some(vec![InnerInstructions {
                     index: 0,
-                    instructions: vec![CompiledInstruction::new(1, &(), vec![0])],
+                    instructions: vec![InnerInstruction {
+                        instruction: CompiledInstruction::new(1, &(), vec![0]),
+                        stack_height: Some(2),
+                    }],
                 }]);
                 let log_messages = Some(vec![String::from("Test message\n")]);
                 let pre_token_balances = Some(vec![]);
                 let post_token_balances = Some(vec![]);
                 let rewards = Some(vec![]);
                 let signature = transaction.signatures[0];
+                let return_data = Some(TransactionReturnData {
+                    program_id: Pubkey::new_unique(),
+                    data: vec![1, 2, 3],
+                });
                 let status = TransactionStatusMeta {
                     status: Ok(()),
                     fee: 42,
@@ -7025,15 +7556,18 @@ pub mod tests {
                     pre_token_balances: pre_token_balances.clone(),
                     post_token_balances: post_token_balances.clone(),
                     rewards: rewards.clone(),
+                    loaded_addresses: LoadedAddresses::default(),
+                    return_data: return_data.clone(),
+                    compute_units_consumed: Some(42),
                 }
                 .into();
                 blockstore
                     .transaction_status_cf
                     .put_protobuf((0, signature, slot), &status)
                     .unwrap();
-                TransactionWithStatusMeta {
+                VersionedTransactionWithStatusMeta {
                     transaction,
-                    meta: Some(TransactionStatusMeta {
+                    meta: TransactionStatusMeta {
                         status: Ok(()),
                         fee: 42,
                         pre_balances,
@@ -7043,18 +7577,21 @@ pub mod tests {
                         pre_token_balances,
                         post_token_balances,
                         rewards,
-                    }),
+                        loaded_addresses: LoadedAddresses::default(),
+                        return_data,
+                        compute_units_consumed: Some(42),
+                    },
                 }
             })
             .collect();
 
-        for transaction in expected_transactions.clone() {
-            let signature = transaction.transaction.signatures[0];
+        for tx_with_meta in expected_transactions.clone() {
+            let signature = tx_with_meta.transaction.signatures[0];
             assert_eq!(
                 blockstore.get_rooted_transaction(signature).unwrap(),
-                Some(ConfirmedTransaction {
+                Some(ConfirmedTransactionWithStatusMeta {
                     slot,
-                    transaction: transaction.clone(),
+                    tx_with_meta: TransactionWithStatusMeta::Complete(tx_with_meta.clone()),
                     block_time: None
                 })
             );
@@ -7062,9 +7599,9 @@ pub mod tests {
                 blockstore
                     .get_complete_transaction(signature, slot + 1)
                     .unwrap(),
-                Some(ConfirmedTransaction {
+                Some(ConfirmedTransactionWithStatusMeta {
                     slot,
-                    transaction,
+                    tx_with_meta: TransactionWithStatusMeta::Complete(tx_with_meta),
                     block_time: None
                 })
             );
@@ -7072,7 +7609,7 @@ pub mod tests {
 
         blockstore.run_purge(0, 2, PurgeType::PrimaryIndex).unwrap();
         *blockstore.lowest_cleanup_slot.write().unwrap() = slot;
-        for TransactionWithStatusMeta { transaction, .. } in expected_transactions {
+        for VersionedTransactionWithStatusMeta { transaction, .. } in expected_transactions {
             let signature = transaction.signatures[0];
             assert_eq!(blockstore.get_rooted_transaction(signature).unwrap(), None,);
             assert_eq!(
@@ -7091,33 +7628,43 @@ pub mod tests {
 
         let slot = 2;
         let entries = make_slot_entries_with_transactions(5);
-        let shreds = entries_to_test_shreds(entries.clone(), slot, slot - 1, true, 0);
+        let shreds = entries_to_test_shreds(
+            &entries,
+            slot,
+            slot - 1, // parent_slot
+            true,     // is_full_slot
+            0,        // version
+            true,     // merkle_variant
+        );
         blockstore.insert_shreds(shreds, None, false).unwrap();
 
-        let expected_transactions: Vec<TransactionWithStatusMeta> = entries
+        let expected_transactions: Vec<VersionedTransactionWithStatusMeta> = entries
             .iter()
             .cloned()
             .filter(|entry| !entry.is_tick())
             .flat_map(|entry| entry.transactions)
-            .map(|tx| {
-                tx.into_legacy_transaction()
-                    .expect("versioned transactions not supported")
-            })
             .map(|transaction| {
                 let mut pre_balances: Vec<u64> = vec![];
                 let mut post_balances: Vec<u64> = vec![];
-                for (i, _account_key) in transaction.message.account_keys.iter().enumerate() {
+                for i in 0..transaction.message.static_account_keys().len() {
                     pre_balances.push(i as u64 * 10);
                     post_balances.push(i as u64 * 11);
                 }
                 let inner_instructions = Some(vec![InnerInstructions {
                     index: 0,
-                    instructions: vec![CompiledInstruction::new(1, &(), vec![0])],
+                    instructions: vec![InnerInstruction {
+                        instruction: CompiledInstruction::new(1, &(), vec![0]),
+                        stack_height: Some(2),
+                    }],
                 }]);
                 let log_messages = Some(vec![String::from("Test message\n")]);
                 let pre_token_balances = Some(vec![]);
                 let post_token_balances = Some(vec![]);
                 let rewards = Some(vec![]);
+                let return_data = Some(TransactionReturnData {
+                    program_id: Pubkey::new_unique(),
+                    data: vec![1, 2, 3],
+                });
                 let signature = transaction.signatures[0];
                 let status = TransactionStatusMeta {
                     status: Ok(()),
@@ -7129,15 +7676,18 @@ pub mod tests {
                     pre_token_balances: pre_token_balances.clone(),
                     post_token_balances: post_token_balances.clone(),
                     rewards: rewards.clone(),
+                    loaded_addresses: LoadedAddresses::default(),
+                    return_data: return_data.clone(),
+                    compute_units_consumed: Some(42u64),
                 }
                 .into();
                 blockstore
                     .transaction_status_cf
                     .put_protobuf((0, signature, slot), &status)
                     .unwrap();
-                TransactionWithStatusMeta {
+                VersionedTransactionWithStatusMeta {
                     transaction,
-                    meta: Some(TransactionStatusMeta {
+                    meta: TransactionStatusMeta {
                         status: Ok(()),
                         fee: 42,
                         pre_balances,
@@ -7147,20 +7697,23 @@ pub mod tests {
                         pre_token_balances,
                         post_token_balances,
                         rewards,
-                    }),
+                        loaded_addresses: LoadedAddresses::default(),
+                        return_data,
+                        compute_units_consumed: Some(42u64),
+                    },
                 }
             })
             .collect();
 
-        for transaction in expected_transactions.clone() {
-            let signature = transaction.transaction.signatures[0];
+        for tx_with_meta in expected_transactions.clone() {
+            let signature = tx_with_meta.transaction.signatures[0];
             assert_eq!(
                 blockstore
                     .get_complete_transaction(signature, slot)
                     .unwrap(),
-                Some(ConfirmedTransaction {
+                Some(ConfirmedTransactionWithStatusMeta {
                     slot,
-                    transaction,
+                    tx_with_meta: TransactionWithStatusMeta::Complete(tx_with_meta),
                     block_time: None
                 })
             );
@@ -7169,7 +7722,7 @@ pub mod tests {
 
         blockstore.run_purge(0, 2, PurgeType::PrimaryIndex).unwrap();
         *blockstore.lowest_cleanup_slot.write().unwrap() = slot;
-        for TransactionWithStatusMeta { transaction, .. } in expected_transactions {
+        for VersionedTransactionWithStatusMeta { transaction, .. } in expected_transactions {
             let signature = transaction.signatures[0];
             assert_eq!(
                 blockstore
@@ -7216,8 +7769,6 @@ pub mod tests {
                 )
                 .unwrap();
         }
-        // Purge to freeze index 0
-        blockstore.run_purge(0, 1, PurgeType::PrimaryIndex).unwrap();
         let slot1 = 20;
         for x in 5..9 {
             let signature = Signature::new(&[x; 64]);
@@ -7366,8 +7917,6 @@ pub mod tests {
                 )
                 .unwrap();
         }
-        // Purge to freeze index 0
-        blockstore.run_purge(0, 1, PurgeType::PrimaryIndex).unwrap();
         for x in 7..9 {
             let signature = Signature::new(&[x; 64]);
             blockstore
@@ -7425,6 +7974,9 @@ pub mod tests {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
+        let (shreds, _) = make_slot_entries(1, 0, 4, /*merkle_variant:*/ true);
+        blockstore.insert_shreds(shreds, None, false).unwrap();
+
         fn make_slot_entries_with_transaction_addresses(addresses: &[Pubkey]) -> Vec<Entry> {
             let mut entries: Vec<Entry> = Vec::new();
             for address in addresses {
@@ -7449,24 +8001,24 @@ pub mod tests {
             let entries = make_slot_entries_with_transaction_addresses(&[
                 address0, address1, address0, address1,
             ]);
-            let shreds = entries_to_test_shreds(entries.clone(), slot, slot - 1, true, 0);
+            let shreds = entries_to_test_shreds(
+                &entries,
+                slot,
+                slot - 1, // parent_slot
+                true,     // is_full_slot
+                0,        // version
+                true,     // merkle_variant
+            );
             blockstore.insert_shreds(shreds, None, false).unwrap();
 
-            for (i, entry) in entries.into_iter().enumerate() {
-                if slot == 4 && i == 2 {
-                    // Purge to freeze index 0 and write address-signatures in new primary index
-                    blockstore.run_purge(0, 1, PurgeType::PrimaryIndex).unwrap();
-                }
-                for tx in entry.transactions {
-                    let transaction = tx
-                        .into_legacy_transaction()
-                        .expect("versioned transactions not supported");
+            for entry in entries.into_iter() {
+                for transaction in entry.transactions {
                     assert_eq!(transaction.signatures.len(), 1);
                     blockstore
                         .write_transaction_status(
                             slot,
                             transaction.signatures[0],
-                            transaction.message.account_keys.iter().collect(),
+                            transaction.message.static_account_keys().iter().collect(),
                             vec![],
                             TransactionStatusMeta::default(),
                         )
@@ -7480,20 +8032,18 @@ pub mod tests {
             let entries = make_slot_entries_with_transaction_addresses(&[
                 address0, address1, address0, address1,
             ]);
-            let shreds = entries_to_test_shreds(entries.clone(), slot, 8, true, 0);
+            let shreds =
+                entries_to_test_shreds(&entries, slot, 8, true, 0, /*merkle_variant:*/ true);
             blockstore.insert_shreds(shreds, None, false).unwrap();
 
             for entry in entries.into_iter() {
-                for tx in entry.transactions {
-                    let transaction = tx
-                        .into_legacy_transaction()
-                        .expect("versioned transactions not supported");
+                for transaction in entry.transactions {
                     assert_eq!(transaction.signatures.len(), 1);
                     blockstore
                         .write_transaction_status(
                             slot,
                             transaction.signatures[0],
-                            transaction.message.account_keys.iter().collect(),
+                            transaction.message.static_account_keys().iter().collect(),
                             vec![],
                             TransactionStatusMeta::default(),
                         )
@@ -7509,7 +8059,7 @@ pub mod tests {
         let highest_confirmed_root = 8;
 
         // Fetch all rooted signatures for address 0 at once...
-        let all0 = blockstore
+        let sig_infos = blockstore
             .get_confirmed_signatures_for_address2(
                 address0,
                 highest_confirmed_root,
@@ -7518,6 +8068,8 @@ pub mod tests {
                 usize::MAX,
             )
             .unwrap();
+        assert!(sig_infos.found_before);
+        let all0 = sig_infos.infos;
         assert_eq!(all0.len(), 12);
 
         // Fetch all rooted signatures for address 1 at once...
@@ -7529,12 +8081,13 @@ pub mod tests {
                 None,
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         assert_eq!(all1.len(), 12);
 
         // Fetch all signatures for address 0 individually
         for i in 0..all0.len() {
-            let results = blockstore
+            let sig_infos = blockstore
                 .get_confirmed_signatures_for_address2(
                     address0,
                     highest_confirmed_root,
@@ -7547,8 +8100,10 @@ pub mod tests {
                     1,
                 )
                 .unwrap();
+            assert!(sig_infos.found_before);
+            let results = sig_infos.infos;
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], all0[i], "Unexpected result for {}", i);
+            assert_eq!(results[0], all0[i], "Unexpected result for {i}");
         }
         // Fetch all signatures for address 0 individually using `until`
         for i in 0..all0.len() {
@@ -7568,12 +8123,13 @@ pub mod tests {
                     },
                     10,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], all0[i], "Unexpected result for {}", i);
+            assert_eq!(results[0], all0[i], "Unexpected result for {i}");
         }
 
-        assert!(blockstore
+        let sig_infos = blockstore
             .get_confirmed_signatures_for_address2(
                 address0,
                 highest_confirmed_root,
@@ -7581,8 +8137,9 @@ pub mod tests {
                 None,
                 1,
             )
-            .unwrap()
-            .is_empty());
+            .unwrap();
+        assert!(sig_infos.found_before);
+        assert!(sig_infos.infos.is_empty());
 
         assert!(blockstore
             .get_confirmed_signatures_for_address2(
@@ -7593,6 +8150,7 @@ pub mod tests {
                 2,
             )
             .unwrap()
+            .infos
             .is_empty());
 
         // Fetch all signatures for address 0, three at a time
@@ -7610,7 +8168,8 @@ pub mod tests {
                     None,
                     3,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 3);
             assert_eq!(results[0], all0[i]);
             assert_eq!(results[1], all0[i + 1]);
@@ -7632,7 +8191,8 @@ pub mod tests {
                     None,
                     2,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].slot, results[1].slot);
             assert!(results[0].signature >= results[1].signature);
@@ -7641,7 +8201,7 @@ pub mod tests {
         }
 
         // A search for address 0 with `before` and/or `until` signatures from address1 should also work
-        let results = blockstore
+        let sig_infos = blockstore
             .get_confirmed_signatures_for_address2(
                 address0,
                 highest_confirmed_root,
@@ -7650,6 +8210,8 @@ pub mod tests {
                 usize::MAX,
             )
             .unwrap();
+        assert!(sig_infos.found_before);
+        let results = sig_infos.infos;
         // The exact number of results returned is variable, based on the sort order of the
         // random signatures that are generated
         assert!(!results.is_empty());
@@ -7662,7 +8224,8 @@ pub mod tests {
                 Some(all1[4].signature),
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         assert!(results2.len() < results.len());
 
         // Duplicate all tests using confirmed signatures
@@ -7677,7 +8240,8 @@ pub mod tests {
                 None,
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         assert_eq!(all0.len(), 14);
 
         // Fetch all signatures for address 1 at once...
@@ -7689,7 +8253,8 @@ pub mod tests {
                 None,
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         assert_eq!(all1.len(), 14);
 
         // Fetch all signatures for address 0 individually
@@ -7706,9 +8271,10 @@ pub mod tests {
                     None,
                     1,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], all0[i], "Unexpected result for {}", i);
+            assert_eq!(results[0], all0[i], "Unexpected result for {i}");
         }
         // Fetch all signatures for address 0 individually using `until`
         for i in 0..all0.len() {
@@ -7728,9 +8294,10 @@ pub mod tests {
                     },
                     10,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0], all0[i], "Unexpected result for {}", i);
+            assert_eq!(results[0], all0[i], "Unexpected result for {i}");
         }
 
         assert!(blockstore
@@ -7742,6 +8309,7 @@ pub mod tests {
                 1,
             )
             .unwrap()
+            .infos
             .is_empty());
 
         assert!(blockstore
@@ -7753,6 +8321,7 @@ pub mod tests {
                 2,
             )
             .unwrap()
+            .infos
             .is_empty());
 
         // Fetch all signatures for address 0, three at a time
@@ -7770,7 +8339,8 @@ pub mod tests {
                     None,
                     3,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             if i < 12 {
                 assert_eq!(results.len(), 3);
                 assert_eq!(results[2], all0[i + 2]);
@@ -7796,7 +8366,8 @@ pub mod tests {
                     None,
                     2,
                 )
-                .unwrap();
+                .unwrap()
+                .infos;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].slot, results[1].slot);
             assert!(results[0].signature >= results[1].signature);
@@ -7813,7 +8384,8 @@ pub mod tests {
                 None,
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         // The exact number of results returned is variable, based on the sort order of the
         // random signatures that are generated
         assert!(!results.is_empty());
@@ -7826,8 +8398,26 @@ pub mod tests {
                 Some(all1[4].signature),
                 usize::MAX,
             )
-            .unwrap();
+            .unwrap()
+            .infos;
         assert!(results2.len() < results.len());
+
+        // Remove signature
+        blockstore
+            .address_signatures_cf
+            .delete((0, address0, 2, all0[0].signature))
+            .unwrap();
+        let sig_infos = blockstore
+            .get_confirmed_signatures_for_address2(
+                address0,
+                highest_confirmed_root,
+                Some(all0[0].signature),
+                None,
+                usize::MAX,
+            )
+            .unwrap();
+        assert!(!sig_infos.found_before);
+        assert!(sig_infos.infos.is_empty());
     }
 
     #[test]
@@ -7876,6 +8466,9 @@ pub mod tests {
                 pre_token_balances: Some(vec![]),
                 post_token_balances: Some(vec![]),
                 rewards: Some(vec![]),
+                loaded_addresses: LoadedAddresses::default(),
+                return_data: Some(TransactionReturnData::default()),
+                compute_units_consumed: None,
             }
             .into();
             transaction_status_cf
@@ -7883,6 +8476,16 @@ pub mod tests {
                 .unwrap();
             transactions.push(transaction.into());
         }
+
+        let map_result =
+            blockstore.map_transactions_to_statuses(slot, transactions.clone().into_iter());
+        assert!(map_result.is_ok());
+        let map = map_result.unwrap();
+        assert_eq!(map.len(), 4);
+        for (x, m) in map.iter().enumerate() {
+            assert_eq!(m.meta.fee, x as u64);
+        }
+
         // Push transaction that will not have matching status, as a test case
         transactions.push(
             Transaction::new_with_compiled_instructions(
@@ -7895,14 +8498,9 @@ pub mod tests {
             .into(),
         );
 
-        let map_result = blockstore.map_transactions_to_statuses(slot, transactions.into_iter());
-        assert!(map_result.is_ok());
-        let map = map_result.unwrap();
-        assert_eq!(map.len(), 5);
-        for (x, m) in map.iter().take(4).enumerate() {
-            assert_eq!(m.meta.as_ref().unwrap().fee, x as u64);
-        }
-        assert_eq!(map[4].meta, None);
+        let map_result =
+            blockstore.map_transactions_to_statuses(slot, transactions.clone().into_iter());
+        assert_matches!(map_result, Err(BlockstoreError::MissingTransactionMetadata));
     }
 
     #[test]
@@ -7940,14 +8538,36 @@ pub mod tests {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
-        for i in 0..10 {
-            let slot = i;
-            let (shreds, _) = make_slot_entries(slot, 0, 1);
+        assert_eq!(blockstore.lowest_slot(), 0);
+
+        for slot in 0..10 {
+            let (shreds, _) = make_slot_entries(slot, 0, 1, /*merkle_variant:*/ true);
             blockstore.insert_shreds(shreds, None, false).unwrap();
         }
         assert_eq!(blockstore.lowest_slot(), 1);
         blockstore.run_purge(0, 5, PurgeType::PrimaryIndex).unwrap();
         assert_eq!(blockstore.lowest_slot(), 6);
+    }
+
+    #[test]
+    fn test_highest_slot() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        assert_eq!(blockstore.highest_slot().unwrap(), None);
+
+        for slot in 0..10 {
+            let (shreds, _) = make_slot_entries(slot, 0, 1, /*merkle_variant:*/ true);
+            blockstore.insert_shreds(shreds, None, false).unwrap();
+            assert_eq!(blockstore.highest_slot().unwrap(), Some(slot));
+        }
+        blockstore
+            .run_purge(5, 10, PurgeType::PrimaryIndex)
+            .unwrap();
+        assert_eq!(blockstore.highest_slot().unwrap(), Some(4));
+
+        blockstore.run_purge(0, 4, PurgeType::PrimaryIndex).unwrap();
+        assert_eq!(blockstore.highest_slot().unwrap(), None);
     }
 
     #[test]
@@ -7962,10 +8582,7 @@ pub mod tests {
         blockstore
             .insert_shreds(coding_shreds, Some(&leader_schedule_cache), false)
             .unwrap();
-        let shred_bufs: Vec<_> = data_shreds
-            .iter()
-            .map(|shred| shred.payload.clone())
-            .collect();
+        let shred_bufs: Vec<_> = data_shreds.iter().map(Shred::payload).cloned().collect();
 
         // Check all the data shreds were recovered
         for (s, buf) in data_shreds.iter().zip(shred_bufs) {
@@ -8132,6 +8749,9 @@ pub mod tests {
             true, // is_last_in_slot
             0,    // next_shred_index
             0,    // next_code_index
+            true, // merkle_variant
+            &ReedSolomonCache::default(),
+            &mut ProcessShredsStats::default(),
         );
 
         let genesis_config = create_genesis_config(2).genesis_config;
@@ -8141,7 +8761,6 @@ pub mod tests {
             leader_schedule: Arc::new(LeaderSchedule::new_from_schedule(vec![
                 leader_keypair.pubkey()
             ])),
-            start_epoch: 0,
         };
         leader_schedule_cache.set_fixed_leader_schedule(Some(fixed_schedule));
 
@@ -8186,6 +8805,7 @@ pub mod tests {
         let entries1 = make_slot_entries_with_transactions(1);
         let entries2 = make_slot_entries_with_transactions(1);
         let leader_keypair = Arc::new(Keypair::new());
+        let reed_solomon_cache = ReedSolomonCache::default();
         let shredder = Shredder::new(slot, 0, 0, 0).unwrap();
         let (shreds, _) = shredder.entries_to_shreds(
             &leader_keypair,
@@ -8193,6 +8813,9 @@ pub mod tests {
             true, // is_last_in_slot
             0,    // next_shred_index
             0,    // next_code_index,
+            true, // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
         );
         let (duplicate_shreds, _) = shredder.entries_to_shreds(
             &leader_keypair,
@@ -8200,6 +8823,9 @@ pub mod tests {
             true, // is_last_in_slot
             0,    // next_shred_index
             0,    // next_code_index
+            true, // merkle_variant
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
         );
         let shred = shreds[0].clone();
         let duplicate_shred = duplicate_shreds[0].clone();
@@ -8219,20 +8845,24 @@ pub mod tests {
         assert_eq!(
             blockstore.is_shred_duplicate(
                 ShredId::new(slot, /*index:*/ 0, duplicate_shred.shred_type()),
-                duplicate_shred.payload.clone(),
+                duplicate_shred.payload().clone(),
             ),
-            Some(shred.payload.to_vec())
+            Some(shred.payload().clone())
         );
         assert!(blockstore
             .is_shred_duplicate(
                 ShredId::new(slot, /*index:*/ 0, non_duplicate_shred.shred_type()),
-                non_duplicate_shred.payload,
+                non_duplicate_shred.into_payload(),
             )
             .is_none());
 
         // Store a duplicate shred
         blockstore
-            .store_duplicate_slot(slot, shred.payload.clone(), duplicate_shred.payload.clone())
+            .store_duplicate_slot(
+                slot,
+                shred.payload().clone(),
+                duplicate_shred.payload().clone(),
+            )
             .unwrap();
 
         // Slot is now marked as duplicate
@@ -8240,8 +8870,8 @@ pub mod tests {
 
         // Check ability to fetch the duplicates
         let duplicate_proof = blockstore.get_duplicate_slot(slot).unwrap();
-        assert_eq!(duplicate_proof.shred1, shred.payload);
-        assert_eq!(duplicate_proof.shred2, duplicate_shred.payload);
+        assert_eq!(duplicate_proof.shred1, *shred.payload());
+        assert_eq!(duplicate_proof.shred2, *duplicate_shred.payload());
     }
 
     #[test]
@@ -8285,6 +8915,47 @@ pub mod tests {
             .get_data_shred(unconfirmed_slot, 0)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_clear_unconfirmed_slot_and_insert_again() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        let confirmed_slot = 7;
+        let unconfirmed_slot = 8;
+        let slots = vec![confirmed_slot, unconfirmed_slot];
+
+        let shreds: Vec<_> = make_chaining_slot_entries(&slots, 1)
+            .into_iter()
+            .flat_map(|x| x.0)
+            .collect();
+        assert_eq!(shreds.len(), 2);
+
+        // Save off unconfirmed_slot for later, just one shred at shreds[1]
+        let unconfirmed_slot_shreds = vec![shreds[1].clone()];
+        assert_eq!(unconfirmed_slot_shreds[0].slot(), unconfirmed_slot);
+
+        // Insert into slot 9
+        blockstore.insert_shreds(shreds, None, false).unwrap();
+
+        // Purge the slot
+        blockstore.clear_unconfirmed_slot(unconfirmed_slot);
+        assert!(!blockstore.is_dead(unconfirmed_slot));
+        assert!(blockstore
+            .get_data_shred(unconfirmed_slot, 0)
+            .unwrap()
+            .is_none());
+
+        // Re-add unconfirmed_slot and confirm that confirmed_slot only has
+        // unconfirmed_slot in next_slots once
+        blockstore
+            .insert_shreds(unconfirmed_slot_shreds, None, false)
+            .unwrap();
+        assert_eq!(
+            blockstore.meta(confirmed_slot).unwrap().unwrap().next_slots,
+            vec![unconfirmed_slot]
+        );
     }
 
     #[test]
@@ -8408,6 +9079,7 @@ pub mod tests {
                     ui_amount_string: "1.1".to_string(),
                 },
                 owner: Pubkey::new_unique().to_string(),
+                program_id: Pubkey::new_unique().to_string(),
             }]),
             post_token_balances: Some(vec![TransactionTokenBalance {
                 account_index: 0,
@@ -8419,6 +9091,7 @@ pub mod tests {
                     ui_amount_string: "1.1".to_string(),
                 },
                 owner: Pubkey::new_unique().to_string(),
+                program_id: Pubkey::new_unique().to_string(),
             }]),
             rewards: Some(vec![Reward {
                 pubkey: "My11111111111111111111111111111111111111111".to_string(),
@@ -8427,8 +9100,14 @@ pub mod tests {
                 reward_type: Some(RewardType::Rent),
                 commission: None,
             }]),
+            loaded_addresses: LoadedAddresses::default(),
+            return_data: Some(TransactionReturnData {
+                program_id: Pubkey::new_unique(),
+                data: vec![1, 2, 3],
+            }),
+            compute_units_consumed: Some(23456),
         };
-        let deprecated_status: StoredTransactionStatusMeta = status.clone().into();
+        let deprecated_status: StoredTransactionStatusMeta = status.clone().try_into().unwrap();
         let protobuf_status: generated::TransactionStatusMeta = status.into();
 
         for slot in 0..2 {
@@ -8460,26 +9139,6 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn test_remove_shred_data_complete_flag() {
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
-
-        let (mut shreds, entries) = make_slot_entries(0, 0, 1);
-
-        // Remove the data complete flag from the last shred
-        shreds[0].unset_data_complete();
-
-        blockstore.insert_shreds(shreds, None, false).unwrap();
-
-        // Check that the `data_complete` flag was unset in the stored shred, but the
-        // `last_in_slot` flag is set.
-        let stored_shred = &blockstore.get_data_shreds_for_slot(0, 0).unwrap()[0];
-        assert!(!stored_shred.data_complete());
-        assert!(stored_shred.last_in_slot());
-        assert_eq!(entries, blockstore.get_any_valid_slot_entries(0, 0));
-    }
-
     fn make_large_tx_entry(num_txs: usize) -> Entry {
         let txs: Vec<_> = (0..num_txs)
             .into_iter()
@@ -8500,19 +9159,29 @@ pub mod tests {
         let parent = 0;
         let num_txs = 20;
         let entry = make_large_tx_entry(num_txs);
-        let shreds = entries_to_test_shreds(vec![entry], slot, parent, true, 0);
+        let shreds = entries_to_test_shreds(
+            &[entry],
+            slot,
+            parent,
+            true,  // is_full_slot
+            0,     // version
+            false, // merkle_variant
+        );
         assert!(shreds.len() > 1);
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
+        let reed_solomon_cache = ReedSolomonCache::default();
         let coding1 = Shredder::generate_coding_shreds(
-            &shreds, false, // is_last_in_slot
-            0,     // next_code_index
+            &shreds,
+            0, // next_code_index
+            &reed_solomon_cache,
         );
         let coding2 = Shredder::generate_coding_shreds(
-            &shreds, true, // is_last_in_slot
-            0,    // next_code_index
+            &shreds,
+            1, // next_code_index
+            &reed_solomon_cache,
         );
         for shred in &shreds {
             info!("shred {:?}", shred);
@@ -8533,37 +9202,14 @@ pub mod tests {
     }
 
     #[test]
-    fn test_large_num_coding() {
-        solana_logger::setup();
-        let slot = 1;
-        let (_data_shreds, mut coding_shreds, leader_schedule_cache) =
-            setup_erasure_shreds(slot, 0, 100);
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
-
-        coding_shreds[1].coding_header.num_coding_shreds = u16::MAX;
-        blockstore
-            .insert_shreds(
-                vec![coding_shreds[1].clone()],
-                Some(&leader_schedule_cache),
-                false,
-            )
-            .unwrap();
-
-        // Check no coding shreds are inserted
-        let res = blockstore.get_coding_shreds_for_slot(slot, 0).unwrap();
-        assert!(res.is_empty());
-    }
-
-    #[test]
-    pub fn test_insert_data_shreds_same_slot_last_index() {
+    fn test_insert_data_shreds_same_slot_last_index() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
         // Create enough entries to ensure there are at least two shreds created
         let num_unique_entries = max_ticks_per_n_shreds(1, None) + 1;
-        let (mut original_shreds, original_entries) = make_slot_entries(0, 0, num_unique_entries);
+        let (mut original_shreds, original_entries) =
+            make_slot_entries(0, 0, num_unique_entries, /*merkle_variant:*/ true);
 
         // Discard first shred, so that the slot is not full
         assert!(original_shreds.len() > 1);
@@ -8586,7 +9232,14 @@ pub mod tests {
             assert!(!blockstore.is_full(0));
         }
 
-        let duplicate_shreds = entries_to_test_shreds(original_entries.clone(), 0, 0, true, 0);
+        let duplicate_shreds = entries_to_test_shreds(
+            &original_entries,
+            0,    // slot
+            0,    // parent_slot
+            true, // is_full_slot
+            0,    // version
+            true, // merkle_variant
+        );
         let num_shreds = duplicate_shreds.len() as u64;
         blockstore
             .insert_shreds(duplicate_shreds, None, false)
@@ -8608,7 +9261,8 @@ pub mod tests {
         let num_shreds = 2;
         let num_entries = max_ticks_per_n_shreds(num_shreds, None);
         let slot = 1;
-        let (mut shreds, _) = make_slot_entries(slot, 0, num_entries);
+        let (mut shreds, _) =
+            make_slot_entries(slot, 0, num_entries, /*merkle_variant:*/ false);
 
         // Mark both as last shred
         shreds[0].set_last_in_slot();
@@ -8629,7 +9283,8 @@ pub mod tests {
 
         let setup_test_shreds = |slot: Slot| -> Vec<Shred> {
             let num_entries = max_ticks_per_n_shreds(num_shreds, None);
-            let (mut shreds, _) = make_slot_entries(slot, 0, num_entries);
+            let (mut shreds, _) =
+                make_slot_entries(slot, 0, num_entries, /*merkle_variant:*/ false);
             shreds[smaller_last_shred_index].set_last_in_slot();
             shreds[larger_last_shred_index].set_last_in_slot();
             shreds
@@ -8680,7 +9335,7 @@ pub mod tests {
             if i <= smaller_last_shred_index as u64 {
                 assert_eq!(
                     blockstore.get_data_shred(slot, i).unwrap().unwrap(),
-                    shreds[i as usize].payload
+                    *shreds[i as usize].payload()
                 );
             } else {
                 assert!(blockstore.get_data_shred(slot, i).unwrap().is_none());
@@ -8693,11 +9348,14 @@ pub mod tests {
 
         // Case 2: Inserting a duplicate with an even smaller last shred index should not
         // mark the slot as dead since the Slotmeta is full.
-        let mut even_smaller_last_shred_duplicate = shreds[smaller_last_shred_index - 1].clone();
-        even_smaller_last_shred_duplicate.set_last_in_slot();
-        // Flip a byte to create a duplicate shred
-        even_smaller_last_shred_duplicate.payload[0] =
-            std::u8::MAX - even_smaller_last_shred_duplicate.payload[0];
+        let even_smaller_last_shred_duplicate = {
+            let mut payload = shreds[smaller_last_shred_index - 1].payload().clone();
+            // Flip a byte to create a duplicate shred
+            payload[0] = std::u8::MAX - payload[0];
+            let mut shred = Shred::new_from_serialized_shred(payload).unwrap();
+            shred.set_last_in_slot();
+            shred
+        };
         assert!(blockstore
             .is_shred_duplicate(
                 ShredId::new(
@@ -8705,7 +9363,7 @@ pub mod tests {
                     even_smaller_last_shred_duplicate.index(),
                     ShredType::Data
                 ),
-                even_smaller_last_shred_duplicate.payload.clone(),
+                even_smaller_last_shred_duplicate.payload().clone(),
             )
             .is_some());
         blockstore
@@ -8716,7 +9374,7 @@ pub mod tests {
             if i <= smaller_last_shred_index as u64 {
                 assert_eq!(
                     blockstore.get_data_shred(slot, i).unwrap().unwrap(),
-                    shreds[i as usize].payload
+                    *shreds[i as usize].payload()
                 );
             } else {
                 assert!(blockstore.get_data_shred(slot, i).unwrap().is_none());
@@ -8752,7 +9410,7 @@ pub mod tests {
                         .get_data_shred(slot, shred_index)
                         .unwrap()
                         .unwrap(),
-                    shred_to_check.payload
+                    *shred_to_check.payload()
                 );
             } else {
                 assert!(blockstore
@@ -8783,7 +9441,7 @@ pub mod tests {
                         .get_data_shred(slot, shred_index)
                         .unwrap()
                         .unwrap(),
-                    shred_to_check.payload
+                    *shred_to_check.payload()
                 );
             } else {
                 assert!(blockstore
@@ -8800,7 +9458,8 @@ pub mod tests {
             let num_shreds = 10;
             let middle_shred_index = 5;
             let num_entries = max_ticks_per_n_shreds(num_shreds, None);
-            let (shreds, _) = make_slot_entries(slot, 0, num_entries);
+            let (shreds, _) =
+                make_slot_entries(slot, 0, num_entries, /*merkle_variant:*/ false);
 
             // Reverse shreds so that last shred gets inserted first and sets meta.received
             let mut shreds: Vec<Shred> = shreds.into_iter().rev().collect();
@@ -8816,9 +9475,9 @@ pub mod tests {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         {
             let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
-            let (slot_sender, slot_receiver) = channel();
-            let (shred_sender, shred_receiver) = channel::<Vec<Shred>>();
-            let (signal_sender, signal_receiver) = channel();
+            let (slot_sender, slot_receiver) = unbounded();
+            let (shred_sender, shred_receiver) = unbounded::<Vec<Shred>>();
+            let (signal_sender, signal_receiver) = unbounded();
 
             let t_entry_getter = {
                 let blockstore = blockstore.clone();
@@ -8877,7 +9536,7 @@ pub mod tests {
                 // Check that each thread processed their task before continuing
                 for _ in 1..=2 {
                     let res = signal_receiver.recv().unwrap();
-                    assert!(res.is_ok(), "race condition: {:?}", res);
+                    assert!(res.is_ok(), "race condition: {res:?}");
                 }
             }
 

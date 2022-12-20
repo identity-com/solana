@@ -5,6 +5,7 @@ use {
             log_instruction_custom_error, CliCommand, CliCommandInfo, CliConfig, CliError,
             ProcessResult,
         },
+        compute_unit_price::WithComputeUnitPrice,
         memo::WithMemo,
         nonce::check_nonce_account,
         spend_utils::{resolve_spend_tx_and_check_account_balances, SpendAmount},
@@ -12,6 +13,7 @@ use {
     },
     clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
     solana_clap_utils::{
+        compute_unit_price::{compute_unit_price_arg, COMPUTE_UNIT_PRICE_ARG},
         fee_payer::{fee_payer_arg, FEE_PAYER_ARG},
         input_parsers::*,
         input_validators::*,
@@ -24,18 +26,18 @@ use {
         return_signers_with_config, CliEpochVotingHistory, CliLockout, CliVoteAccount,
         ReturnSignersConfig,
     },
-    solana_client::{
-        blockhash_query::BlockhashQuery, nonce_utils, rpc_client::RpcClient,
-        rpc_config::RpcGetVoteAccountsConfig,
-    },
     solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client_api::config::RpcGetVoteAccountsConfig,
+    solana_rpc_client_nonce_utils::blockhash_query::BlockhashQuery,
     solana_sdk::{
         account::Account, commitment_config::CommitmentConfig, message::Message,
         native_token::lamports_to_sol, pubkey::Pubkey, system_instruction::SystemError,
         transaction::Transaction,
     },
     solana_vote_program::{
-        vote_instruction::{self, withdraw, VoteError},
+        vote_error::VoteError,
+        vote_instruction::{self, withdraw},
         vote_state::{VoteAuthorize, VoteInit, VoteState},
     },
     std::sync::Arc,
@@ -110,6 +112,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-authorize-voter")
@@ -140,6 +143,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-authorize-withdrawer")
@@ -170,6 +174,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-authorize-voter-checked")
@@ -202,6 +207,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-authorize-withdrawer-checked")
@@ -234,6 +240,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-update-validator")
@@ -267,6 +274,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-update-commission")
@@ -300,6 +308,7 @@ impl VoteSubCommands for App<'_, '_> {
                 .nonce_args(false)
                 .arg(fee_payer_arg())
                 .arg(memo_arg())
+                .arg(compute_unit_price_arg())
         )
         .subcommand(
             SubCommand::with_name("vote-account")
@@ -372,7 +381,8 @@ impl VoteSubCommands for App<'_, '_> {
                 .offline_args()
                 .nonce_args(false)
                 .arg(fee_payer_arg())
-                .arg(memo_arg()
+                .arg(memo_arg())
+                .arg(compute_unit_price_arg()
             )
         )
         .subcommand(
@@ -401,7 +411,8 @@ impl VoteSubCommands for App<'_, '_> {
                         .help("Authorized withdrawer [default: cli config keypair]"),
                 )
                 .arg(fee_payer_arg())
-                .arg(memo_arg()
+                .arg(memo_arg())
+                .arg(compute_unit_price_arg()
             )
         )
     }
@@ -429,6 +440,7 @@ pub fn parse_create_vote_account(
     let (nonce_authority, nonce_authority_pubkey) =
         signer_of(matches, NONCE_AUTHORITY_ARG.name, wallet_manager)?;
     let (fee_payer, fee_payer_pubkey) = signer_of(matches, FEE_PAYER_ARG.name, wallet_manager)?;
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     if !allow_unsafe {
         if authorized_withdrawer == vote_account_pubkey.unwrap() {
@@ -469,6 +481,7 @@ pub fn parse_create_vote_account(
             nonce_authority: signer_info.index_of(nonce_authority_pubkey).unwrap(),
             memo,
             fee_payer: signer_info.index_of(fee_payer_pubkey).unwrap(),
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -493,6 +506,7 @@ pub fn parse_vote_authorize(
     let (nonce_authority, nonce_authority_pubkey) =
         signer_of(matches, NONCE_AUTHORITY_ARG.name, wallet_manager)?;
     let (fee_payer, fee_payer_pubkey) = signer_of(matches, FEE_PAYER_ARG.name, wallet_manager)?;
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     let mut bulk_signers = vec![fee_payer, authorized];
 
@@ -528,6 +542,7 @@ pub fn parse_vote_authorize(
             } else {
                 None
             },
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -553,6 +568,7 @@ pub fn parse_vote_update_validator(
     let (nonce_authority, nonce_authority_pubkey) =
         signer_of(matches, NONCE_AUTHORITY_ARG.name, wallet_manager)?;
     let (fee_payer, fee_payer_pubkey) = signer_of(matches, FEE_PAYER_ARG.name, wallet_manager)?;
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     let mut bulk_signers = vec![fee_payer, authorized_withdrawer, new_identity_account];
     if nonce_account.is_some() {
@@ -573,6 +589,7 @@ pub fn parse_vote_update_validator(
             nonce_authority: signer_info.index_of(nonce_authority_pubkey).unwrap(),
             memo,
             fee_payer: signer_info.index_of(fee_payer_pubkey).unwrap(),
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -597,6 +614,7 @@ pub fn parse_vote_update_commission(
     let (nonce_authority, nonce_authority_pubkey) =
         signer_of(matches, NONCE_AUTHORITY_ARG.name, wallet_manager)?;
     let (fee_payer, fee_payer_pubkey) = signer_of(matches, FEE_PAYER_ARG.name, wallet_manager)?;
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     let mut bulk_signers = vec![fee_payer, authorized_withdrawer];
     if nonce_account.is_some() {
@@ -617,6 +635,7 @@ pub fn parse_vote_update_commission(
             nonce_authority: signer_info.index_of(nonce_authority_pubkey).unwrap(),
             memo,
             fee_payer: signer_info.index_of(fee_payer_pubkey).unwrap(),
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -672,6 +691,7 @@ pub fn parse_withdraw_from_vote_account(
     let (nonce_authority, nonce_authority_pubkey) =
         signer_of(matches, NONCE_AUTHORITY_ARG.name, wallet_manager)?;
     let (fee_payer, fee_payer_pubkey) = signer_of(matches, FEE_PAYER_ARG.name, wallet_manager)?;
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     let mut bulk_signers = vec![fee_payer, withdraw_authority];
     if nonce_account.is_some() {
@@ -693,6 +713,7 @@ pub fn parse_withdraw_from_vote_account(
             nonce_authority: signer_info.index_of(nonce_authority_pubkey).unwrap(),
             memo,
             fee_payer: signer_info.index_of(fee_payer_pubkey).unwrap(),
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -718,6 +739,7 @@ pub fn parse_close_vote_account(
         wallet_manager,
     )?;
     let memo = matches.value_of(MEMO_ARG.name).map(String::from);
+    let compute_unit_price = value_of(matches, COMPUTE_UNIT_PRICE_ARG.name);
 
     Ok(CliCommandInfo {
         command: CliCommand::CloseVoteAccount {
@@ -726,6 +748,7 @@ pub fn parse_close_vote_account(
             withdraw_authority: signer_info.index_of(withdraw_authority_pubkey).unwrap(),
             memo,
             fee_payer: signer_info.index_of(fee_payer_pubkey).unwrap(),
+            compute_unit_price,
         },
         signers: signer_info.signers,
     })
@@ -748,6 +771,7 @@ pub fn process_create_vote_account(
     nonce_authority: SignerIndex,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let vote_account = config.signers[vote_account];
     let vote_account_pubkey = vote_account.pubkey();
@@ -794,6 +818,7 @@ pub fn process_create_vote_account(
                 lamports,
             )
             .with_memo(memo)
+            .with_compute_unit_price(compute_unit_price)
         } else {
             vote_instruction::create_account(
                 &config.signers[0].pubkey(),
@@ -802,6 +827,7 @@ pub fn process_create_vote_account(
                 lamports,
             )
             .with_memo(memo)
+            .with_compute_unit_price(compute_unit_price)
         };
         if let Some(nonce_account) = &nonce_account {
             Message::new_with_nonce(
@@ -834,11 +860,10 @@ pub fn process_create_vote_account(
         {
             if let Some(vote_account) = response.value {
                 let err_msg = if vote_account.owner == solana_vote_program::id() {
-                    format!("Vote account {} already exists", vote_account_address)
+                    format!("Vote account {vote_account_address} already exists")
                 } else {
                     format!(
-                        "Account {} already exists and is not a vote account",
-                        vote_account_address
+                        "Account {vote_account_address} already exists and is not a vote account"
                     )
                 };
                 return Err(CliError::BadParameter(err_msg).into());
@@ -846,7 +871,7 @@ pub fn process_create_vote_account(
         }
 
         if let Some(nonce_account) = &nonce_account {
-            let nonce_account = nonce_utils::get_account_with_commitment(
+            let nonce_account = solana_rpc_client_nonce_utils::get_account_with_commitment(
                 rpc_client,
                 nonce_account,
                 config.commitment,
@@ -888,6 +913,7 @@ pub fn process_vote_authorize(
     nonce_authority: SignerIndex,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let authorized = config.signers[authorized];
     let new_authorized_signer = new_authorized.map(|index| config.signers[index]);
@@ -909,12 +935,14 @@ pub fn process_vote_authorize(
                             "Invalid vote account state; no authorized voters found".to_string(),
                         )
                     })?;
-                check_current_authority(&current_authorized_voter, &authorized.pubkey())?;
+                check_current_authority(
+                    &[current_authorized_voter, vote_state.authorized_withdrawer],
+                    &authorized.pubkey(),
+                )?;
                 if let Some(signer) = new_authorized_signer {
                     if signer.is_interactive() {
                         return Err(CliError::BadParameter(format!(
-                            "invalid new authorized vote signer {:?}. Interactive vote signers not supported",
-                            new_authorized_pubkey
+                            "invalid new authorized vote signer {new_authorized_pubkey:?}. Interactive vote signers not supported"
                         )).into());
                     }
                 }
@@ -926,7 +954,7 @@ pub fn process_vote_authorize(
                 (new_authorized_pubkey, "new_authorized_pubkey".to_string()),
             )?;
             if let Some(vote_state) = vote_state {
-                check_current_authority(&vote_state.authorized_withdrawer, &authorized.pubkey())?
+                check_current_authority(&[vote_state.authorized_withdrawer], &authorized.pubkey())?
             }
         }
     }
@@ -946,7 +974,9 @@ pub fn process_vote_authorize(
             vote_authorize,        // vote or withdraw
         )
     };
-    let ixs = vec![vote_ix].with_memo(memo);
+    let ixs = vec![vote_ix]
+        .with_memo(memo)
+        .with_compute_unit_price(compute_unit_price);
 
     let recent_blockhash = blockhash_query.get_blockhash(rpc_client, config.commitment)?;
 
@@ -977,7 +1007,7 @@ pub fn process_vote_authorize(
     } else {
         tx.try_sign(&config.signers, recent_blockhash)?;
         if let Some(nonce_account) = &nonce_account {
-            let nonce_account = nonce_utils::get_account_with_commitment(
+            let nonce_account = solana_rpc_client_nonce_utils::get_account_with_commitment(
                 rpc_client,
                 nonce_account,
                 config.commitment,
@@ -1009,6 +1039,7 @@ pub fn process_vote_update_validator(
     nonce_authority: SignerIndex,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let authorized_withdrawer = config.signers[withdraw_authority];
     let new_identity_account = config.signers[new_identity_account];
@@ -1023,7 +1054,8 @@ pub fn process_vote_update_validator(
         &authorized_withdrawer.pubkey(),
         &new_identity_pubkey,
     )]
-    .with_memo(memo);
+    .with_memo(memo)
+    .with_compute_unit_price(compute_unit_price);
     let nonce_authority = config.signers[nonce_authority];
     let fee_payer = config.signers[fee_payer];
 
@@ -1051,7 +1083,7 @@ pub fn process_vote_update_validator(
     } else {
         tx.try_sign(&config.signers, recent_blockhash)?;
         if let Some(nonce_account) = &nonce_account {
-            let nonce_account = nonce_utils::get_account_with_commitment(
+            let nonce_account = solana_rpc_client_nonce_utils::get_account_with_commitment(
                 rpc_client,
                 nonce_account,
                 config.commitment,
@@ -1083,6 +1115,7 @@ pub fn process_vote_update_commission(
     nonce_authority: SignerIndex,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let authorized_withdrawer = config.signers[withdraw_authority];
     let recent_blockhash = blockhash_query.get_blockhash(rpc_client, config.commitment)?;
@@ -1091,7 +1124,8 @@ pub fn process_vote_update_commission(
         &authorized_withdrawer.pubkey(),
         commission,
     )]
-    .with_memo(memo);
+    .with_memo(memo)
+    .with_compute_unit_price(compute_unit_price);
     let nonce_authority = config.signers[nonce_authority];
     let fee_payer = config.signers[fee_payer];
 
@@ -1118,7 +1152,7 @@ pub fn process_vote_update_commission(
     } else {
         tx.try_sign(&config.signers, recent_blockhash)?;
         if let Some(nonce_account) = &nonce_account {
-            let nonce_account = nonce_utils::get_account_with_commitment(
+            let nonce_account = solana_rpc_client_nonce_utils::get_account_with_commitment(
                 rpc_client,
                 nonce_account,
                 config.commitment,
@@ -1136,7 +1170,7 @@ pub fn process_vote_update_commission(
     }
 }
 
-fn get_vote_account(
+pub(crate) fn get_vote_account(
     rpc_client: &RpcClient,
     vote_account_pubkey: &Pubkey,
     commitment_config: CommitmentConfig,
@@ -1145,13 +1179,12 @@ fn get_vote_account(
         .get_account_with_commitment(vote_account_pubkey, commitment_config)?
         .value
         .ok_or_else(|| {
-            CliError::RpcRequestError(format!("{:?} account does not exist", vote_account_pubkey))
+            CliError::RpcRequestError(format!("{vote_account_pubkey:?} account does not exist"))
         })?;
 
     if vote_account.owner != solana_vote_program::id() {
         return Err(CliError::RpcRequestError(format!(
-            "{:?} is not a vote account",
-            vote_account_pubkey
+            "{vote_account_pubkey:?} is not a vote account"
         ))
         .into());
     }
@@ -1200,7 +1233,7 @@ pub fn process_show_vote_account(
             match crate::stake::fetch_epoch_rewards(rpc_client, vote_account_address, num_epochs) {
                 Ok(rewards) => Some(rewards),
                 Err(error) => {
-                    eprintln!("Failed to fetch epoch rewards: {:?}", error);
+                    eprintln!("Failed to fetch epoch rewards: {error:?}");
                     None
                 }
             }
@@ -1239,6 +1272,7 @@ pub fn process_withdraw_from_vote_account(
     nonce_authority: SignerIndex,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let withdraw_authority = config.signers[withdraw_authority];
     let recent_blockhash = blockhash_query.get_blockhash(rpc_client, config.commitment)?;
@@ -1253,7 +1287,8 @@ pub fn process_withdraw_from_vote_account(
             lamports,
             destination_account_pubkey,
         )]
-        .with_memo(memo);
+        .with_memo(memo)
+        .with_compute_unit_price(compute_unit_price);
 
         if let Some(nonce_account) = &nonce_account {
             Message::new_with_nonce(
@@ -1307,7 +1342,7 @@ pub fn process_withdraw_from_vote_account(
     } else {
         tx.try_sign(&config.signers, recent_blockhash)?;
         if let Some(nonce_account) = &nonce_account {
-            let nonce_account = nonce_utils::get_account_with_commitment(
+            let nonce_account = solana_rpc_client_nonce_utils::get_account_with_commitment(
                 rpc_client,
                 nonce_account,
                 config.commitment,
@@ -1333,6 +1368,7 @@ pub fn process_close_vote_account(
     destination_account_pubkey: &Pubkey,
     memo: Option<&String>,
     fee_payer: SignerIndex,
+    compute_unit_price: Option<&u64>,
 ) -> ProcessResult {
     let vote_account_status =
         rpc_client.get_vote_accounts_with_config(RpcGetVoteAccountsConfig {
@@ -1348,8 +1384,7 @@ pub fn process_close_vote_account(
     {
         if vote_account.activated_stake != 0 {
             return Err(format!(
-                "Cannot close a vote account with active stake: {}",
-                vote_account_pubkey
+                "Cannot close a vote account with active stake: {vote_account_pubkey}"
             )
             .into());
         }
@@ -1367,7 +1402,8 @@ pub fn process_close_vote_account(
         current_balance,
         destination_account_pubkey,
     )]
-    .with_memo(memo);
+    .with_memo(memo)
+    .with_compute_unit_price(compute_unit_price);
 
     let message = Message::new(&ixs, Some(&fee_payer.pubkey()));
     let mut tx = Transaction::new_unsigned(message);
@@ -1387,7 +1423,7 @@ mod tests {
     use {
         super::*,
         crate::{clap_app::get_clap_app, cli::parse_command},
-        solana_client::blockhash_query,
+        solana_rpc_client_nonce_utils::blockhash_query,
         solana_sdk::{
             hash::Hash,
             signature::{read_keypair_file, write_keypair, Keypair, Signer},
@@ -1419,7 +1455,7 @@ mod tests {
         let default_signer = DefaultSigner::new("", &default_keypair_file);
 
         let blockhash = Hash::default();
-        let blockhash_string = format!("{}", blockhash);
+        let blockhash_string = format!("{blockhash}");
         let nonce_account = Pubkey::new_unique();
 
         // Test VoteAuthorize SubCommand
@@ -1446,6 +1482,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 0,
                     new_authorized: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -1478,6 +1515,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 1,
                     new_authorized: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1512,6 +1550,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 1,
                     new_authorized: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1560,6 +1599,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 1,
                     new_authorized: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     Presigner::new(&pubkey2, &sig2).into(),
@@ -1596,6 +1636,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 0,
                     new_authorized: Some(1),
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1627,6 +1668,7 @@ mod tests {
                     fee_payer: 0,
                     authorized: 1,
                     new_authorized: Some(2),
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1680,6 +1722,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1713,6 +1756,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1753,6 +1797,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1805,6 +1850,7 @@ mod tests {
                     nonce_authority: 3,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1847,6 +1893,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1885,6 +1932,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1915,6 +1963,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1945,6 +1994,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -1976,6 +2026,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2004,6 +2055,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2037,6 +2089,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -2075,6 +2128,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&withdraw_authority_file).unwrap().into()],
             }
@@ -2115,6 +2169,7 @@ mod tests {
                     nonce_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![Presigner::new(&withdraw_authority.pubkey(), &authorized_sig).into(),],
             }
@@ -2136,6 +2191,7 @@ mod tests {
                     withdraw_authority: 0,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2162,6 +2218,39 @@ mod tests {
                     withdraw_authority: 1,
                     memo: None,
                     fee_payer: 0,
+                    compute_unit_price: None,
+                },
+                signers: vec![
+                    read_keypair_file(&default_keypair_file).unwrap().into(),
+                    read_keypair_file(&withdraw_authority_file).unwrap().into()
+                ],
+            }
+        );
+
+        // Test CloseVoteAccount subcommand with authority w/ ComputeUnitPrice
+        let withdraw_authority = Keypair::new();
+        let (withdraw_authority_file, mut tmp_file) = make_tmp_file();
+        write_keypair(&withdraw_authority, tmp_file.as_file_mut()).unwrap();
+        let test_close_vote_account = test_commands.clone().get_matches_from(vec![
+            "test",
+            "close-vote-account",
+            &keypair_file,
+            &pubkey_string,
+            "--authorized-withdrawer",
+            &withdraw_authority_file,
+            "--with-compute-unit-price",
+            "99",
+        ]);
+        assert_eq!(
+            parse_command(&test_close_vote_account, &default_signer, &mut None).unwrap(),
+            CliCommandInfo {
+                command: CliCommand::CloseVoteAccount {
+                    vote_account_pubkey: read_keypair_file(&keypair_file).unwrap().pubkey(),
+                    destination_account_pubkey: pubkey,
+                    withdraw_authority: 1,
+                    memo: None,
+                    fee_payer: 0,
+                    compute_unit_price: Some(99),
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),

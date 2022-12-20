@@ -1,13 +1,16 @@
 //! The `sendmmsg` module provides sendmmsg() API implementation
 
 #[cfg(target_os = "linux")]
+#[allow(deprecated)]
+use nix::sys::socket::InetAddr;
+#[cfg(target_os = "linux")]
 use {
     itertools::izip,
     libc::{iovec, mmsghdr, sockaddr_in, sockaddr_in6, sockaddr_storage},
-    nix::sys::socket::InetAddr,
     std::os::unix::io::AsRawFd,
 };
 use {
+    solana_sdk::transport::TransportError,
     std::{
         borrow::Borrow,
         io,
@@ -22,6 +25,12 @@ pub enum SendPktsError {
     /// IO Error during send: first error, num failed packets
     #[error("IO Error, some packets could not be sent")]
     IoError(io::Error, usize),
+}
+
+impl From<SendPktsError> for TransportError {
+    fn from(err: SendPktsError) -> Self {
+        Self::Custom(format!("{err:?}"))
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -67,6 +76,7 @@ fn mmsghdr_for_packet(
     hdr.msg_hdr.msg_iovlen = 1;
     hdr.msg_hdr.msg_name = addr as *mut _ as *mut _;
 
+    #[allow(deprecated)]
     match InetAddr::from_std(dest) {
         InetAddr::V4(dest) => {
             unsafe {
@@ -84,12 +94,12 @@ fn mmsghdr_for_packet(
 }
 
 #[cfg(target_os = "linux")]
-fn sendmmsg_retry(sock: &UdpSocket, hdrs: &mut Vec<mmsghdr>) -> Result<(), SendPktsError> {
+fn sendmmsg_retry(sock: &UdpSocket, hdrs: &mut [mmsghdr]) -> Result<(), SendPktsError> {
     let sock_fd = sock.as_raw_fd();
     let mut total_sent = 0;
     let mut erropt = None;
 
-    let mut pkts = &mut hdrs[..];
+    let mut pkts = &mut *hdrs;
     while !pkts.is_empty() {
         let npkts = match unsafe { libc::sendmmsg(sock_fd, &mut pkts[0], pkts.len() as u32, 0) } {
             -1 => {
@@ -124,7 +134,8 @@ where
 {
     let size = packets.len();
     #[allow(clippy::uninit_assumed_init)]
-    let mut iovs = vec![unsafe { std::mem::MaybeUninit::uninit().assume_init() }; size];
+    let iovec = std::mem::MaybeUninit::<iovec>::uninit();
+    let mut iovs = vec![unsafe { iovec.assume_init() }; size];
     let mut addrs = vec![unsafe { std::mem::zeroed() }; size];
     let mut hdrs = vec![unsafe { std::mem::zeroed() }; size];
     for ((pkt, dest), hdr, iov, addr) in izip!(packets, &mut hdrs, &mut iovs, &mut addrs) {
@@ -175,7 +186,7 @@ mod tests {
         assert_eq!(sent, Some(()));
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap();
         assert_eq!(32, recv);
     }
 
@@ -206,11 +217,11 @@ mod tests {
         assert_eq!(sent, Some(()));
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap();
         assert_eq!(16, recv);
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader2, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader2, &mut packets[..]).unwrap();
         assert_eq!(16, recv);
     }
 
@@ -234,26 +245,26 @@ mod tests {
 
         let sent = multi_target_send(
             &sender,
-            &packet.data[..packet.meta.size],
+            packet.data(..).unwrap(),
             &[&addr, &addr2, &addr3, &addr4],
         )
         .ok();
         assert_eq!(sent, Some(()));
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader, &mut packets[..]).unwrap();
         assert_eq!(1, recv);
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader2, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader2, &mut packets[..]).unwrap();
         assert_eq!(1, recv);
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader3, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader3, &mut packets[..]).unwrap();
         assert_eq!(1, recv);
 
         let mut packets = vec![Packet::default(); 32];
-        let recv = recv_mmsg(&reader4, &mut packets[..]).unwrap().1;
+        let recv = recv_mmsg(&reader4, &mut packets[..]).unwrap();
         assert_eq!(1, recv);
     }
 

@@ -13,7 +13,7 @@ Test failed during step:
 ${STEP}
 
 Failure occured when running the following command:
-$(eval echo "$@")"
+$*"
   fi
 
 # shellcheck disable=SC2034
@@ -22,6 +22,9 @@ $(eval echo "$@")"
     upload_results_to_slack
   fi
 
+  if [[ "$UPLOAD_RESULTS_TO_DISCORD" = "true" ]]; then
+    upload_results_to_discord
+  fi
 
   (
     execution_step "Collecting Logfiles from Nodes"
@@ -157,6 +160,7 @@ function launch_testnet() {
     wait_for_max_stake "$BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD"
   fi
 
+  echo "NUMBER_OF_CLIENT_NODES is : &NUMBER_OF_CLIENT_NODES"
   if [[ $NUMBER_OF_CLIENT_NODES -gt 0 ]]; then
     execution_step "Starting ${NUMBER_OF_CLIENT_NODES} client nodes"
     "${REPO_ROOT}"/net/net.sh startclients "$maybeClientOptions" "$CLIENT_OPTIONS"
@@ -248,7 +252,7 @@ STEP=
 execution_step "Initialize Environment"
 
 [[ -n $TESTNET_TAG ]] || TESTNET_TAG=${CLOUD_PROVIDER}-testnet-automation
-[[ -n $INFLUX_HOST ]] || INFLUX_HOST=https://metrics.solana.com:8086
+[[ -n $INFLUX_HOST ]] || INFLUX_HOST=https://internal-metrics.solana.com:8086
 [[ -n $BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD ]] || BOOTSTRAP_VALIDATOR_MAX_STAKE_THRESHOLD=66
 [[ -n $SKIP_PERF_RESULTS ]] || SKIP_PERF_RESULTS=false
 

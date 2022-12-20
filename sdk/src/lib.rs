@@ -7,7 +7,21 @@ extern crate self as solana_sdk;
 
 #[cfg(feature = "full")]
 pub use signer::signers;
-pub use solana_program::*;
+// These solana_program imports could be *-imported, but that causes a bunch of
+// confusing duplication in the docs due to a rustdoc bug. #26211
+#[cfg(not(target_os = "solana"))]
+pub use solana_program::program_stubs;
+pub use solana_program::{
+    account_info, address_lookup_table_account, alt_bn128, blake3, borsh, bpf_loader,
+    bpf_loader_deprecated, bpf_loader_upgradeable, clock, config, custom_heap_default,
+    custom_panic_default, debug_account_data, declare_deprecated_sysvar_id, declare_sysvar_id,
+    decode_error, ed25519_program, epoch_schedule, fee_calculator, impl_sysvar_get, incinerator,
+    instruction, keccak, lamports, loader_instruction, loader_upgradeable_instruction, message,
+    msg, native_token, nonce, program, program_error, program_memory, program_option, program_pack,
+    rent, sanitize, sdk_ids, secp256k1_program, secp256k1_recover, serialize_utils, short_vec,
+    slot_hashes, slot_history, stake, stake_history, syscalls, system_instruction, system_program,
+    sysvar, unchecked_div_by_const, vote, wasm_bindgen,
+};
 
 pub mod account;
 pub mod account_utils;
@@ -21,23 +35,27 @@ pub mod ed25519_instruction;
 pub mod entrypoint;
 pub mod entrypoint_deprecated;
 pub mod epoch_info;
+pub mod example_mocks;
 pub mod exit;
 pub mod feature;
 pub mod feature_set;
+pub mod fee;
 pub mod genesis_config;
 pub mod hard_forks;
 pub mod hash;
 pub mod inflation;
-pub mod keyed_account;
 pub mod log;
 pub mod native_loader;
 pub mod nonce_account;
+pub mod offchain_message;
 pub mod packet;
 pub mod poh_config;
 pub mod precompiles;
 pub mod program_utils;
 pub mod pubkey;
+pub mod quic;
 pub mod recent_blockhashes_account;
+pub mod reward_type;
 pub mod rpc_port;
 pub mod secp256k1_instruction;
 pub mod shred_version;
@@ -46,6 +64,7 @@ pub mod signer;
 pub mod system_transaction;
 pub mod timing;
 pub mod transaction;
+pub mod transaction_context;
 pub mod transport;
 pub mod wasm;
 
@@ -103,6 +122,15 @@ macro_rules! program_stubs {
     () => {};
 }
 
+/// Convenience macro for `AddAssign` with saturating arithmetic.
+/// Replace by `std::num::Saturating` once stable
+#[macro_export]
+macro_rules! saturating_add_assign {
+    ($i:expr, $v:expr) => {{
+        $i = $i.saturating_add($v)
+    }};
+}
+
 #[macro_use]
 extern crate serde_derive;
 pub extern crate bs58;
@@ -110,3 +138,18 @@ extern crate log as logger;
 
 #[macro_use]
 extern crate solana_frozen_abi_macro;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_saturating_add_assign() {
+        let mut i = 0u64;
+        let v = 1;
+        saturating_add_assign!(i, v);
+        assert_eq!(i, 1);
+
+        i = u64::MAX;
+        saturating_add_assign!(i, v);
+        assert_eq!(i, u64::MAX);
+    }
+}

@@ -4,9 +4,10 @@
 //! unstable and may change in future releases.
 
 use {
-    crate::{rpc_client::RpcClient, rpc_config::RpcProgramAccountsConfig, rpc_response::Response},
-    bincode::{serialize_into, serialized_size},
+    crate::{connection_cache::ConnectionCache, tpu_connection::TpuConnection},
     log::*,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client_api::{config::RpcProgramAccountsConfig, response::Response},
     solana_sdk::{
         account::Account,
         client::{AsyncClient, Client, SyncClient},
@@ -17,151 +18,70 @@ use {
         hash::Hash,
         instruction::Instruction,
         message::Message,
-        packet::PACKET_DATA_SIZE,
         pubkey::Pubkey,
         signature::{Keypair, Signature, Signer},
         signers::Signers,
         system_instruction,
         timing::duration_as_ms,
-        transaction::{self, Transaction},
+        transaction::{self, Transaction, VersionedTransaction},
         transport::Result as TransportResult,
     },
+    solana_thin_client::thin_client::temporary_pub::*,
     std::{
         io,
-        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
-        sync::{
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-            RwLock,
-        },
+        net::SocketAddr,
+        sync::Arc,
         time::{Duration, Instant},
     },
 };
 
-struct ClientOptimizer {
-    cur_index: AtomicUsize,
-    experiment_index: AtomicUsize,
-    experiment_done: AtomicBool,
-    times: RwLock<Vec<u64>>,
-    num_clients: usize,
-}
-
-fn min_index(array: &[u64]) -> (u64, usize) {
-    let mut min_time = std::u64::MAX;
-    let mut min_index = 0;
-    for (i, time) in array.iter().enumerate() {
-        if *time < min_time {
-            min_time = *time;
-            min_index = i;
-        }
-    }
-    (min_time, min_index)
-}
-
-impl ClientOptimizer {
-    fn new(num_clients: usize) -> Self {
-        Self {
-            cur_index: AtomicUsize::new(0),
-            experiment_index: AtomicUsize::new(0),
-            experiment_done: AtomicBool::new(false),
-            times: RwLock::new(vec![std::u64::MAX; num_clients]),
-            num_clients,
-        }
-    }
-
-    fn experiment(&self) -> usize {
-        if self.experiment_index.load(Ordering::Relaxed) < self.num_clients {
-            let old = self.experiment_index.fetch_add(1, Ordering::Relaxed);
-            if old < self.num_clients {
-                old
-            } else {
-                self.best()
-            }
-        } else {
-            self.best()
-        }
-    }
-
-    fn report(&self, index: usize, time_ms: u64) {
-        if self.num_clients > 1
-            && (!self.experiment_done.load(Ordering::Relaxed) || time_ms == std::u64::MAX)
-        {
-            trace!(
-                "report {} with {} exp: {}",
-                index,
-                time_ms,
-                self.experiment_index.load(Ordering::Relaxed)
-            );
-
-            self.times.write().unwrap()[index] = time_ms;
-
-            if index == (self.num_clients - 1) || time_ms == std::u64::MAX {
-                let times = self.times.read().unwrap();
-                let (min_time, min_index) = min_index(&times);
-                trace!(
-                    "done experimenting min: {} time: {} times: {:?}",
-                    min_index,
-                    min_time,
-                    times
-                );
-
-                // Only 1 thread should grab the num_clients-1 index, so this should be ok.
-                self.cur_index.store(min_index, Ordering::Relaxed);
-                self.experiment_done.store(true, Ordering::Relaxed);
-            }
-        }
-    }
-
-    fn best(&self) -> usize {
-        self.cur_index.load(Ordering::Relaxed)
-    }
-}
-
 /// An object for querying and sending transactions to the network.
 pub struct ThinClient {
-    transactions_socket: UdpSocket,
-    tpu_addrs: Vec<SocketAddr>,
     rpc_clients: Vec<RpcClient>,
+    tpu_addrs: Vec<SocketAddr>,
     optimizer: ClientOptimizer,
+    connection_cache: Arc<ConnectionCache>,
 }
 
 impl ThinClient {
     /// Create a new ThinClient that will interface with the Rpc at `rpc_addr` using TCP
-    /// and the Tpu at `tpu_addr` over `transactions_socket` using UDP.
-    pub fn new(rpc_addr: SocketAddr, tpu_addr: SocketAddr, transactions_socket: UdpSocket) -> Self {
-        Self::new_from_client(
-            tpu_addr,
-            transactions_socket,
-            RpcClient::new_socket(rpc_addr),
-        )
+    /// and the Tpu at `tpu_addr` over `transactions_socket` using Quic or UDP
+    /// (currently hardcoded to UDP)
+    pub fn new(
+        rpc_addr: SocketAddr,
+        tpu_addr: SocketAddr,
+        connection_cache: Arc<ConnectionCache>,
+    ) -> Self {
+        Self::new_from_client(RpcClient::new_socket(rpc_addr), tpu_addr, connection_cache)
     }
 
     pub fn new_socket_with_timeout(
         rpc_addr: SocketAddr,
         tpu_addr: SocketAddr,
-        transactions_socket: UdpSocket,
         timeout: Duration,
+        connection_cache: Arc<ConnectionCache>,
     ) -> Self {
         let rpc_client = RpcClient::new_socket_with_timeout(rpc_addr, timeout);
-        Self::new_from_client(tpu_addr, transactions_socket, rpc_client)
+        Self::new_from_client(rpc_client, tpu_addr, connection_cache)
     }
 
     fn new_from_client(
-        tpu_addr: SocketAddr,
-        transactions_socket: UdpSocket,
         rpc_client: RpcClient,
+        tpu_addr: SocketAddr,
+        connection_cache: Arc<ConnectionCache>,
     ) -> Self {
         Self {
-            transactions_socket,
-            tpu_addrs: vec![tpu_addr],
             rpc_clients: vec![rpc_client],
+            tpu_addrs: vec![tpu_addr],
             optimizer: ClientOptimizer::new(0),
+            connection_cache,
         }
     }
 
     pub fn new_from_addrs(
         rpc_addrs: Vec<SocketAddr>,
         tpu_addrs: Vec<SocketAddr>,
-        transactions_socket: UdpSocket,
+        connection_cache: Arc<ConnectionCache>,
     ) -> Self {
         assert!(!rpc_addrs.is_empty());
         assert_eq!(rpc_addrs.len(), tpu_addrs.len());
@@ -169,10 +89,10 @@ impl ThinClient {
         let rpc_clients: Vec<_> = rpc_addrs.into_iter().map(RpcClient::new_socket).collect();
         let optimizer = ClientOptimizer::new(rpc_clients.len());
         Self {
-            transactions_socket,
-            tpu_addrs,
             rpc_clients,
+            tpu_addrs,
             optimizer,
+            connection_cache,
         }
     }
 
@@ -180,7 +100,7 @@ impl ThinClient {
         &self.tpu_addrs[self.optimizer.best()]
     }
 
-    fn rpc_client(&self) -> &RpcClient {
+    pub fn rpc_client(&self) -> &RpcClient {
         &self.rpc_clients[self.optimizer.best()]
     }
 
@@ -205,7 +125,6 @@ impl ThinClient {
         self.send_and_confirm_transaction(&[keypair], transaction, tries, 0)
     }
 
-    /// Retry sending a signed Transaction to the server for processing
     pub fn send_and_confirm_transaction<T: Signers>(
         &self,
         keypairs: &T,
@@ -215,18 +134,17 @@ impl ThinClient {
     ) -> TransportResult<Signature> {
         for x in 0..tries {
             let now = Instant::now();
-            let mut buf = vec![0; serialized_size(&transaction).unwrap() as usize];
-            let mut wr = std::io::Cursor::new(&mut buf[..]);
             let mut num_confirmed = 0;
             let mut wait_time = MAX_PROCESSING_AGE;
-            serialize_into(&mut wr, &transaction)
-                .expect("serialize Transaction in pub fn transfer_signed");
             // resend the same transaction until the transaction has no chance of succeeding
+            let wire_transaction =
+                bincode::serialize(&transaction).expect("transaction serialization failed");
             while now.elapsed().as_secs() < wait_time as u64 {
                 if num_confirmed == 0 {
+                    let conn = self.connection_cache.get_connection(self.tpu_addr());
                     // Send the transaction if there has been no confirmation (e.g. the first time)
-                    self.transactions_socket
-                        .send_to(&buf[..], &self.tpu_addr())?;
+                    #[allow(clippy::needless_borrow)]
+                    conn.send_wire_transaction(&wire_transaction)?;
                 }
 
                 if let Ok(confirmed_blocks) = self.poll_for_signature_confirmation(
@@ -251,7 +169,7 @@ impl ThinClient {
         }
         Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("retry_transfer failed in {} retries", tries),
+            format!("retry_transfer failed in {tries} retries"),
         )
         .into())
     }
@@ -459,7 +377,7 @@ impl SyncClient for ThinClient {
             .map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::Other,
-                    format!("send_transaction failed with error {:?}", err),
+                    format!("send_transaction failed with error {err:?}"),
                 )
             })?;
         Ok(status)
@@ -476,7 +394,7 @@ impl SyncClient for ThinClient {
             .map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::Other,
-                    format!("send_transaction failed with error {:?}", err),
+                    format!("send_transaction failed with error {err:?}"),
                 )
             })?;
         Ok(status)
@@ -496,7 +414,7 @@ impl SyncClient for ThinClient {
             .map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::Other,
-                    format!("send_transaction failed with error {:?}", err),
+                    format!("send_transaction failed with error {err:?}"),
                 )
             })?;
         Ok(slot)
@@ -608,83 +526,21 @@ impl SyncClient for ThinClient {
 }
 
 impl AsyncClient for ThinClient {
-    fn async_send_transaction(&self, transaction: Transaction) -> TransportResult<Signature> {
-        let mut buf = vec![0; serialized_size(&transaction).unwrap() as usize];
-        let mut wr = std::io::Cursor::new(&mut buf[..]);
-        serialize_into(&mut wr, &transaction)
-            .expect("serialize Transaction in pub fn transfer_signed");
-        assert!(buf.len() < PACKET_DATA_SIZE);
-        self.transactions_socket
-            .send_to(&buf[..], &self.tpu_addr())?;
+    fn async_send_versioned_transaction(
+        &self,
+        transaction: VersionedTransaction,
+    ) -> TransportResult<Signature> {
+        let conn = self.connection_cache.get_connection(self.tpu_addr());
+        conn.serialize_and_send_transaction(&transaction)?;
         Ok(transaction.signatures[0])
     }
-    fn async_send_message<T: Signers>(
+
+    fn async_send_versioned_transaction_batch(
         &self,
-        keypairs: &T,
-        message: Message,
-        recent_blockhash: Hash,
-    ) -> TransportResult<Signature> {
-        let transaction = Transaction::new(keypairs, message, recent_blockhash);
-        self.async_send_transaction(transaction)
-    }
-    fn async_send_instruction(
-        &self,
-        keypair: &Keypair,
-        instruction: Instruction,
-        recent_blockhash: Hash,
-    ) -> TransportResult<Signature> {
-        let message = Message::new(&[instruction], Some(&keypair.pubkey()));
-        self.async_send_message(&[keypair], message, recent_blockhash)
-    }
-    fn async_transfer(
-        &self,
-        lamports: u64,
-        keypair: &Keypair,
-        pubkey: &Pubkey,
-        recent_blockhash: Hash,
-    ) -> TransportResult<Signature> {
-        let transfer_instruction =
-            system_instruction::transfer(&keypair.pubkey(), pubkey, lamports);
-        self.async_send_instruction(keypair, transfer_instruction, recent_blockhash)
-    }
-}
-
-pub fn create_client((rpc, tpu): (SocketAddr, SocketAddr), range: (u16, u16)) -> ThinClient {
-    let (_, transactions_socket) =
-        solana_net_utils::bind_in_range(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), range).unwrap();
-    ThinClient::new(rpc, tpu, transactions_socket)
-}
-
-pub fn create_client_with_timeout(
-    (rpc, tpu): (SocketAddr, SocketAddr),
-    range: (u16, u16),
-    timeout: Duration,
-) -> ThinClient {
-    let (_, transactions_socket) =
-        solana_net_utils::bind_in_range(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), range).unwrap();
-    ThinClient::new_socket_with_timeout(rpc, tpu, transactions_socket, timeout)
-}
-
-#[cfg(test)]
-mod tests {
-    use {super::*, rayon::prelude::*};
-
-    #[test]
-    fn test_client_optimizer() {
-        solana_logger::setup();
-
-        const NUM_CLIENTS: usize = 5;
-        let optimizer = ClientOptimizer::new(NUM_CLIENTS);
-        (0..NUM_CLIENTS).into_par_iter().for_each(|_| {
-            let index = optimizer.experiment();
-            optimizer.report(index, (NUM_CLIENTS - index) as u64);
-        });
-
-        let index = optimizer.experiment();
-        optimizer.report(index, 50);
-        assert_eq!(optimizer.best(), NUM_CLIENTS - 1);
-
-        optimizer.report(optimizer.best(), std::u64::MAX);
-        assert_eq!(optimizer.best(), NUM_CLIENTS - 2);
+        batch: Vec<VersionedTransaction>,
+    ) -> TransportResult<()> {
+        let conn = self.connection_cache.get_connection(self.tpu_addr());
+        conn.par_serialize_and_send_transaction_batch(&batch[..])?;
+        Ok(())
     }
 }

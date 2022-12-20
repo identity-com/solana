@@ -6,7 +6,7 @@ use std::{
 };
 
 /// The SDK's stake history with clone-on-write semantics
-#[derive(Default, Clone, PartialEq, Debug, Deserialize, Serialize, AbiExample)]
+#[derive(Default, Clone, PartialEq, Eq, Debug, Deserialize, Serialize, AbiExample)]
 pub struct StakeHistory(Arc<StakeHistoryInner>);
 
 impl Deref for StakeHistory {
@@ -27,8 +27,7 @@ type StakeHistoryInner = solana_sdk::stake_history::StakeHistory;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_sdk::stake_history::StakeHistoryEntry;
+    use {super::*, solana_sdk::stake_history::StakeHistoryEntry};
 
     fn rand_stake_history_entry() -> StakeHistoryEntry {
         StakeHistoryEntry {

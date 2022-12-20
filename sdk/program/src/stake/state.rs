@@ -4,7 +4,6 @@ use {
         clock::{Clock, Epoch, UnixTimestamp},
         instruction::InstructionError,
         pubkey::Pubkey,
-        rent::Rent,
         stake::{
             config::Config,
             instruction::{LockupArgs, StakeError},
@@ -74,8 +73,9 @@ impl Default for StakeState {
 }
 
 impl StakeState {
-    pub fn get_rent_exempt_reserve(rent: &Rent) -> u64 {
-        rent.minimum_balance(std::mem::size_of::<StakeState>())
+    /// The fixed number of bytes used to serialize each stake account
+    pub const fn size_of() -> usize {
+        200 // see test_size_of
     }
 
     pub fn stake(&self) -> Option<Stake> {
@@ -113,7 +113,7 @@ impl StakeState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy, AbiExample)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, AbiExample)]
 pub enum StakeAuthorize {
     Staker,
     Withdrawer,
@@ -125,6 +125,7 @@ pub enum StakeAuthorize {
     Serialize,
     Deserialize,
     PartialEq,
+    Eq,
     Clone,
     Copy,
     AbiExample,
@@ -159,6 +160,7 @@ impl Lockup {
     Serialize,
     Deserialize,
     PartialEq,
+    Eq,
     Clone,
     Copy,
     AbiExample,
@@ -238,6 +240,7 @@ impl Authorized {
     Serialize,
     Deserialize,
     PartialEq,
+    Eq,
     Clone,
     Copy,
     AbiExample,
@@ -256,28 +259,17 @@ impl Meta {
         &mut self,
         lockup: &LockupArgs,
         signers: &HashSet<Pubkey>,
-        clock: Option<&Clock>,
+        clock: &Clock,
     ) -> Result<(), InstructionError> {
-        match clock {
-            None => {
-                // pre-stake_program_v4 behavior: custodian can set lockups at any time
-                if !signers.contains(&self.lockup.custodian) {
-                    return Err(InstructionError::MissingRequiredSignature);
-                }
+        // post-stake_program_v4 behavior:
+        // * custodian can update the lockup while in force
+        // * withdraw authority can set a new lockup
+        if self.lockup.is_in_force(clock, None) {
+            if !signers.contains(&self.lockup.custodian) {
+                return Err(InstructionError::MissingRequiredSignature);
             }
-            Some(clock) => {
-                // post-stake_program_v4 behavior:
-                // * custodian can update the lockup while in force
-                // * withdraw authority can set a new lockup
-                //
-                if self.lockup.is_in_force(clock, None) {
-                    if !signers.contains(&self.lockup.custodian) {
-                        return Err(InstructionError::MissingRequiredSignature);
-                    }
-                } else if !signers.contains(&self.authorized.withdrawer) {
-                    return Err(InstructionError::MissingRequiredSignature);
-                }
-            }
+        } else if !signers.contains(&self.authorized.withdrawer) {
+            return Err(InstructionError::MissingRequiredSignature);
         }
         if let Some(unix_timestamp) = lockup.unix_timestamp {
             self.lockup.unix_timestamp = unix_timestamp;
@@ -289,24 +281,6 @@ impl Meta {
             self.lockup.custodian = custodian;
         }
         Ok(())
-    }
-
-    pub fn rewrite_rent_exempt_reserve(
-        &mut self,
-        rent: &Rent,
-        data_len: usize,
-    ) -> Option<(u64, u64)> {
-        let corrected_rent_exempt_reserve = rent.minimum_balance(data_len);
-        if corrected_rent_exempt_reserve != self.rent_exempt_reserve {
-            // We forcibly update rent_excempt_reserve even
-            // if rent_exempt_reserve > account_balance, hoping user might restore
-            // rent_exempt status by depositing.
-            let (old, new) = (self.rent_exempt_reserve, corrected_rent_exempt_reserve);
-            self.rent_exempt_reserve = corrected_rent_exempt_reserve;
-            Some((old, new))
-        } else {
-            None
-        }
     }
 
     pub fn auto(authorized: &Pubkey) -> Self {
@@ -622,6 +596,11 @@ mod test {
         let bincode_serialized = serialize(&stake).unwrap();
         let borsh_serialized = StakeState::try_to_vec(&stake).unwrap();
         assert_eq!(bincode_serialized, borsh_serialized);
+    }
+
+    #[test]
+    fn test_size_of() {
+        assert_eq!(StakeState::size_of(), std::mem::size_of::<StakeState>());
     }
 
     #[test]

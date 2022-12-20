@@ -1,12 +1,14 @@
-use std::{
-    result::Result,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, RecvTimeoutError},
-        Arc,
+use {
+    crossbeam_channel::{Receiver, RecvTimeoutError},
+    std::{
+        result::Result,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread::{self, Builder, JoinHandle},
+        time::Duration,
     },
-    thread::{self, Builder, JoinHandle},
-    time::Duration,
 };
 
 pub struct StatsReporterService {
@@ -20,7 +22,7 @@ impl StatsReporterService {
     ) -> Self {
         let exit = exit.clone();
         let thread_hdl = Builder::new()
-            .name("solana-stats-reporter".to_owned())
+            .name("solStatsReport".to_owned())
             .spawn(move || loop {
                 if exit.load(Ordering::Relaxed) {
                     return;

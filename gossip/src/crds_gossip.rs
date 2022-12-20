@@ -7,6 +7,7 @@
 use {
     crate::{
         cluster_info::Ping,
+        cluster_info_metrics::GossipStats,
         contact_info::ContactInfo,
         crds::{Crds, GossipRoute},
         crds_gossip_error::CrdsGossipError,
@@ -46,25 +47,10 @@ impl CrdsGossip {
     /// Returns unique origins' pubkeys of upserted values.
     pub fn process_push_message(
         &self,
-        from: &Pubkey,
-        values: Vec<CrdsValue>,
+        messages: Vec<(/*from:*/ Pubkey, Vec<CrdsValue>)>,
         now: u64,
-    ) -> (usize, HashSet<Pubkey>) {
-        let results = self
-            .push
-            .process_push_message(&self.crds, from, values, now);
-        let mut success_count = 0;
-        let successfully_inserted_origin_set: HashSet<Pubkey> = results
-            .into_iter()
-            .filter_map(|result| {
-                if result.is_ok() {
-                    success_count += 1;
-                }
-                Result::ok(result)
-            })
-            .collect();
-
-        (success_count, successfully_inserted_origin_set)
+    ) -> HashSet<Pubkey> {
+        self.push.process_push_message(&self.crds, messages, now)
     }
 
     /// Remove redundant paths in the network.
@@ -77,15 +63,18 @@ impl CrdsGossip {
     where
         I: IntoIterator<Item = Pubkey>,
     {
-        self.push
-            .prune_received_cache_many(self_pubkey, origins, stakes)
+        self.push.prune_received_cache(self_pubkey, origins, stakes)
     }
 
     pub fn new_push_messages(
         &self,
         pending_push_messages: Vec<CrdsValue>,
         now: u64,
-    ) -> HashMap<Pubkey, Vec<CrdsValue>> {
+    ) -> (
+        HashMap<Pubkey, Vec<CrdsValue>>,
+        usize, // number of values
+        usize, // number of push messages
+    ) {
         {
             let mut crds = self.crds.write().unwrap();
             for entry in pending_push_messages {
@@ -168,11 +157,9 @@ impl CrdsGossip {
         wallclock: u64,
         now: u64,
     ) -> Result<(), CrdsGossipError> {
-        let expired = now > wallclock + self.push.prune_timeout;
-        if expired {
-            return Err(CrdsGossipError::PruneMessageTimeout);
-        }
-        if self_pubkey == destination {
+        if now > wallclock.saturating_add(self.push.prune_timeout) {
+            Err(CrdsGossipError::PruneMessageTimeout)
+        } else if self_pubkey == destination {
             self.push.process_prune_msg(self_pubkey, peer, origin);
             Ok(())
         } else {
@@ -183,10 +170,12 @@ impl CrdsGossip {
     /// Refresh the push active set.
     pub fn refresh_push_active_set(
         &self,
-        self_pubkey: &Pubkey,
+        self_keypair: &Keypair,
         self_shred_version: u16,
         stakes: &HashMap<Pubkey, u64>,
         gossip_validators: Option<&HashSet<Pubkey>>,
+        ping_cache: &Mutex<PingCache>,
+        pings: &mut Vec<(SocketAddr, Ping)>,
         socket_addr_space: &SocketAddrSpace,
     ) {
         let network_size = self.crds.read().unwrap().num_nodes();
@@ -194,10 +183,12 @@ impl CrdsGossip {
             &self.crds,
             stakes,
             gossip_validators,
-            self_pubkey,
+            self_keypair,
             self_shred_version,
             network_size,
             CRDS_GOSSIP_NUM_ACTIVE,
+            ping_cache,
+            pings,
             socket_addr_space,
         )
     }
@@ -216,7 +207,7 @@ impl CrdsGossip {
         ping_cache: &Mutex<PingCache>,
         pings: &mut Vec<(SocketAddr, Ping)>,
         socket_addr_space: &SocketAddrSpace,
-    ) -> Result<(ContactInfo, Vec<CrdsFilter>), CrdsGossipError> {
+    ) -> Result<HashMap<ContactInfo, Vec<CrdsFilter>>, CrdsGossipError> {
         self.pull.new_pull_request(
             thread_pool,
             &self.crds,
@@ -254,6 +245,7 @@ impl CrdsGossip {
         filters: &[(CrdsValue, CrdsFilter)],
         output_size_limit: usize, // Limit number of crds values returned.
         now: u64,
+        stats: &GossipStats,
     ) -> Vec<Vec<CrdsValue>> {
         CrdsGossipPull::generate_pull_responses(
             thread_pool,
@@ -261,6 +253,7 @@ impl CrdsGossip {
             filters,
             output_size_limit,
             now,
+            stats,
         )
     }
 
@@ -317,10 +310,6 @@ impl CrdsGossip {
         timeouts: &HashMap<Pubkey, u64>,
     ) -> usize {
         let mut rv = 0;
-        if now > 5 * self.push.msg_timeout {
-            let min = now - 5 * self.push.msg_timeout;
-            self.push.purge_old_received_cache(min);
-        }
         if now > self.pull.crds_timeout {
             //sanity check
             assert_eq!(timeouts[self_pubkey], std::u64::MAX);
@@ -375,7 +364,8 @@ mod test {
     #[test]
     fn test_prune_errors() {
         let crds_gossip = CrdsGossip::default();
-        let id = Pubkey::new(&[0; 32]);
+        let keypair = Keypair::new();
+        let id = keypair.pubkey();
         let ci = ContactInfo::new_localhost(&Pubkey::new(&[1; 32]), 0);
         let prune_pubkey = Pubkey::new(&[2; 32]);
         crds_gossip
@@ -388,11 +378,19 @@ mod test {
                 GossipRoute::LocalMessage,
             )
             .unwrap();
+        let ping_cache = PingCache::new(
+            Duration::from_secs(20 * 60),      // ttl
+            Duration::from_secs(20 * 60) / 64, // rate_limit_delay
+            128,                               // capacity
+        );
+        let ping_cache = Mutex::new(ping_cache);
         crds_gossip.refresh_push_active_set(
-            &id,
+            &keypair,
             0,               // shred version
             &HashMap::new(), // stakes
             None,            // gossip validators
+            &ping_cache,
+            &mut Vec::new(), // pings
             &SocketAddrSpace::Unspecified,
         );
         let now = timestamp();

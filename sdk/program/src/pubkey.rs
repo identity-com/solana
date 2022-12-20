@@ -1,3 +1,5 @@
+//! Solana account addresses.
+
 #![allow(clippy::integer_arithmetic)]
 use {
     crate::{decode_error::DecodeError, hash::hashv, wasm_bindgen},
@@ -23,7 +25,7 @@ const MAX_BASE58_LEN: usize = 44;
 
 const PDA_MARKER: &[u8; 21] = b"ProgramDerivedAddress";
 
-#[derive(Error, Debug, Serialize, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Error, Debug, Serialize, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PubkeyError {
     /// Length of the seed is too long for address generation
     #[error("Length of the seed is too long for address generation")]
@@ -48,6 +50,20 @@ impl From<u64> for PubkeyError {
     }
 }
 
+/// The address of a [Solana account][acc].
+///
+/// Some account addresses are [ed25519] public keys, with corresponding secret
+/// keys that are managed off-chain. Often, though, account addresses do not
+/// have corresponding secret keys &mdash; as with [_program derived
+/// addresses_][pdas] &mdash; or the secret key is not relevant to the operation
+/// of a program, and may have even been disposed of. As running Solana programs
+/// can not safely create or manage secret keys, the full [`Keypair`] is not
+/// defined in `solana-program` but in `solana-sdk`.
+///
+/// [acc]: https://docs.solana.com/developing/programming-model/accounts
+/// [ed25519]: https://ed25519.cr.yp.to/
+/// [pdas]: https://docs.solana.com/developing/programming-model/calling-between-programs#program-derived-addresses
+/// [`Keypair`]: https://docs.rs/solana-sdk/latest/solana_sdk/signer/keypair/struct.Keypair.html
 #[wasm_bindgen]
 #[repr(transparent)]
 #[derive(
@@ -72,7 +88,7 @@ pub struct Pubkey(pub(crate) [u8; 32]);
 
 impl crate::sanitize::Sanitize for Pubkey {}
 
-#[derive(Error, Debug, Serialize, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Error, Debug, Serialize, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ParsePubkeyError {
     #[error("String is the wrong size")]
     WrongSize,
@@ -82,7 +98,7 @@ pub enum ParsePubkeyError {
 
 impl From<Infallible> for ParsePubkeyError {
     fn from(_: Infallible) -> Self {
-        unreachable!("Infallible unihnabited");
+        unreachable!("Infallible uninhabited");
     }
 }
 
@@ -110,6 +126,12 @@ impl FromStr for Pubkey {
     }
 }
 
+impl From<[u8; 32]> for Pubkey {
+    fn from(from: [u8; 32]) -> Self {
+        Self(from)
+    }
+}
+
 impl TryFrom<&str> for Pubkey {
     type Error = ParsePubkeyError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
@@ -118,13 +140,13 @@ impl TryFrom<&str> for Pubkey {
 }
 
 pub fn bytes_are_curve_point<T: AsRef<[u8]>>(_bytes: T) -> bool {
-    #[cfg(not(target_arch = "bpf"))]
+    #[cfg(not(target_os = "solana"))]
     {
         curve25519_dalek::edwards::CompressedEdwardsY::from_slice(_bytes.as_ref())
             .decompress()
             .is_some()
     }
-    #[cfg(target_arch = "bpf")]
+    #[cfg(target_os = "solana")]
     unimplemented!();
 }
 
@@ -141,7 +163,7 @@ impl Pubkey {
     }
 
     #[deprecated(since = "1.3.9", note = "Please use 'Pubkey::new_unique' instead")]
-    #[cfg(not(target_arch = "bpf"))]
+    #[cfg(not(target_os = "solana"))]
     pub fn new_rand() -> Self {
         // Consider removing Pubkey::new_rand() entirely in the v1.5 or v1.6 timeframe
         Pubkey::new(&rand::random::<[u8; 32]>())
@@ -154,7 +176,9 @@ impl Pubkey {
 
         let mut b = [0u8; 32];
         let i = I.fetch_add(1);
-        b[0..8].copy_from_slice(&i.to_le_bytes());
+        // use big endian representation to ensure that recent unique pubkeys
+        // are always greater than less recent unique pubkeys
+        b[0..8].copy_from_slice(&i.to_be_bytes());
         Self::new(&b)
     }
 
@@ -346,22 +370,24 @@ impl Pubkey {
     ///
     /// The client program:
     ///
-    /// ```ignore
-    /// # // NB: This example depends on solana_sdk and solana_client, and adding
-    /// # // those as dev-dependencies would create an unpublishable circular
-    /// # // dependency, hence it is ignored.
-    /// #
+    /// ```
     /// # use borsh::{BorshSerialize, BorshDeserialize};
-    /// # use solana_program::pubkey::Pubkey;
-    /// # use solana_program::instruction::Instruction;
-    /// # use solana_program::hash::Hash;
-    /// # use solana_program::instruction::AccountMeta;
-    /// # use solana_program::system_program;
-    /// # use solana_sdk::signature::Keypair;
-    /// # use solana_sdk::signature::{Signer, Signature};
-    /// # use solana_sdk::transaction::Transaction;
-    /// # use solana_client::rpc_client::RpcClient;
+    /// # use solana_program::example_mocks::{solana_sdk, solana_rpc_client};
+    /// # use solana_program::{
+    /// #     pubkey::Pubkey,
+    /// #     instruction::Instruction,
+    /// #     hash::Hash,
+    /// #     instruction::AccountMeta,
+    /// #     system_program,
+    /// # };
+    /// # use solana_sdk::{
+    /// #     signature::Keypair,
+    /// #     signature::{Signer, Signature},
+    /// #     transaction::Transaction,
+    /// # };
+    /// # use solana_rpc_client::rpc_client::RpcClient;
     /// # use std::convert::TryFrom;
+    /// # use anyhow::Result;
     /// #
     /// # #[derive(BorshSerialize, BorshDeserialize, Debug)]
     /// # struct InstructionData {
@@ -370,52 +396,63 @@ impl Pubkey {
     /// # }
     /// #
     /// # pub static VAULT_ACCOUNT_SIZE: u64 = 1024;
+    /// #
+    /// fn create_vault_account(
+    ///     client: &RpcClient,
+    ///     program_id: Pubkey,
+    ///     payer: &Keypair,
+    /// ) -> Result<()> {
+    ///     // Derive the PDA from the payer account, a string representing the unique
+    ///     // purpose of the account ("vault"), and the address of our on-chain program.
+    ///     let (vault_pubkey, vault_bump_seed) = Pubkey::find_program_address(
+    ///         &[b"vault", payer.pubkey().as_ref()],
+    ///         &program_id
+    ///     );
+    ///
+    ///     // Get the amount of lamports needed to pay for the vault's rent
+    ///     let vault_account_size = usize::try_from(VAULT_ACCOUNT_SIZE)?;
+    ///     let lamports = client.get_minimum_balance_for_rent_exemption(vault_account_size)?;
+    ///
+    ///     // The on-chain program's instruction data, imported from that program's crate.
+    ///     let instr_data = InstructionData {
+    ///         vault_bump_seed,
+    ///         lamports,
+    ///     };
+    ///
+    ///     // The accounts required by both our on-chain program and the system program's
+    ///     // `create_account` instruction, including the vault's address.
+    ///     let accounts = vec![
+    ///         AccountMeta::new(payer.pubkey(), true),
+    ///         AccountMeta::new(vault_pubkey, false),
+    ///         AccountMeta::new(system_program::ID, false),
+    ///     ];
+    ///
+    ///     // Create the instruction by serializing our instruction data via borsh
+    ///     let instruction = Instruction::new_with_borsh(
+    ///         program_id,
+    ///         &instr_data,
+    ///         accounts,
+    ///     );
+    ///
+    ///     let blockhash = client.get_latest_blockhash()?;
+    ///
+    ///     let transaction = Transaction::new_signed_with_payer(
+    ///         &[instruction],
+    ///         Some(&payer.pubkey()),
+    ///         &[payer],
+    ///         blockhash,
+    ///     );
+    ///
+    ///     client.send_and_confirm_transaction(&transaction)?;
+    ///
+    ///     Ok(())
+    /// }
     /// # let program_id = Pubkey::new_unique();
     /// # let payer = Keypair::new();
-    /// # let rpc_client = RpcClient::new("no-run".to_string());
+    /// # let client = RpcClient::new(String::new());
     /// #
-    /// // Derive the PDA from the payer account, a string representing the unique
-    /// // purpose of the account ("vault"), and the address of our on-chain program.
-    /// let (vault_pubkey, vault_bump_seed) = Pubkey::find_program_address(
-    ///     &[b"vault", payer.pubkey().as_ref()],
-    ///     &program_id
-    /// );
-    ///
-    /// // Get the amount of lamports needed to pay for the vault's rent
-    /// let vault_account_size = usize::try_from(VAULT_ACCOUNT_SIZE)?;
-    /// let lamports = rpc_client.get_minimum_balance_for_rent_exemption(vault_account_size)?;
-    ///
-    /// // The on-chain program's instruction data, imported from that program's crate.
-    /// let instr_data = InstructionData {
-    ///     vault_bump_seed,
-    ///     lamports,
-    /// };
-    ///
-    /// // The accounts required by both our on-chain program and the system program's
-    /// // `create_account` instruction, including the vault's address.
-    /// let accounts = vec![
-    ///     AccountMeta::new(payer.pubkey(), true),
-    ///     AccountMeta::new(vault_pubkey, false),
-    ///     AccountMeta::new(system_program::ID, false),
-    /// ];
-    ///
-    /// // Create the instruction by serializing our instruction data via borsh
-    /// let instruction = Instruction::new_with_borsh(
-    ///     program_id,
-    ///     &instr_data,
-    ///     accounts,
-    /// );
-    ///
-    /// let blockhash = rpc_client.get_latest_blockhash()?;
-    ///
-    /// let transaction = Transaction::new_signed_with_payer(
-    ///     &[instruction],
-    ///     Some(&payer.pubkey()),
-    ///     &[&payer],
-    ///     blockhash,
-    /// );
-    ///
-    /// rpc_client.send_and_confirm_transaction(&transaction)?;
+    /// # create_vault_account(&client, program_id, &payer)?;
+    /// #
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn find_program_address(seeds: &[&[u8]], program_id: &Pubkey) -> (Pubkey, u8) {
@@ -439,7 +476,7 @@ impl Pubkey {
     pub fn try_find_program_address(seeds: &[&[u8]], program_id: &Pubkey) -> Option<(Pubkey, u8)> {
         // Perform the calculation inline, calling this from within a program is
         // not supported
-        #[cfg(not(target_arch = "bpf"))]
+        #[cfg(not(target_os = "solana"))]
         {
             let mut bump_seed = [std::u8::MAX];
             for _ in 0..std::u8::MAX {
@@ -457,21 +494,12 @@ impl Pubkey {
             None
         }
         // Call via a system call to perform the calculation
-        #[cfg(target_arch = "bpf")]
+        #[cfg(target_os = "solana")]
         {
-            extern "C" {
-                fn sol_try_find_program_address(
-                    seeds_addr: *const u8,
-                    seeds_len: u64,
-                    program_id_addr: *const u8,
-                    address_bytes_addr: *const u8,
-                    bump_seed_addr: *const u8,
-                ) -> u64;
-            }
             let mut bytes = [0; 32];
             let mut bump_seed = std::u8::MAX;
             let result = unsafe {
-                sol_try_find_program_address(
+                crate::syscalls::sol_try_find_program_address(
                     seeds as *const _ as *const u8,
                     seeds.len() as u64,
                     program_id as *const _ as *const u8,
@@ -543,7 +571,7 @@ impl Pubkey {
 
         // Perform the calculation inline, calling this from within a program is
         // not supported
-        #[cfg(not(target_arch = "bpf"))]
+        #[cfg(not(target_os = "solana"))]
         {
             let mut hasher = crate::hash::Hasher::default();
             for seed in seeds.iter() {
@@ -559,19 +587,11 @@ impl Pubkey {
             Ok(Pubkey::new(hash.as_ref()))
         }
         // Call via a system call to perform the calculation
-        #[cfg(target_arch = "bpf")]
+        #[cfg(target_os = "solana")]
         {
-            extern "C" {
-                fn sol_create_program_address(
-                    seeds_addr: *const u8,
-                    seeds_len: u64,
-                    program_id_addr: *const u8,
-                    address_bytes_addr: *const u8,
-                ) -> u64;
-            }
             let mut bytes = [0; 32];
             let result = unsafe {
-                sol_create_program_address(
+                crate::syscalls::sol_create_program_address(
                     seeds as *const _ as *const u8,
                     seeds.len() as u64,
                     program_id as *const _ as *const u8,
@@ -595,15 +615,12 @@ impl Pubkey {
 
     /// Log a `Pubkey` from a program
     pub fn log(&self) {
-        #[cfg(target_arch = "bpf")]
-        {
-            extern "C" {
-                fn sol_log_pubkey(pubkey_addr: *const u8);
-            }
-            unsafe { sol_log_pubkey(self.as_ref() as *const _ as *const u8) };
-        }
+        #[cfg(target_os = "solana")]
+        unsafe {
+            crate::syscalls::sol_log_pubkey(self.as_ref() as *const _ as *const u8)
+        };
 
-        #[cfg(not(target_arch = "bpf"))]
+        #[cfg(not(target_os = "solana"))]
         crate::program_stubs::sol_log(&self.to_string());
     }
 }

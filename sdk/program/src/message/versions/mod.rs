@@ -2,7 +2,7 @@ use {
     crate::{
         hash::Hash,
         instruction::CompiledInstruction,
-        message::{legacy::Message as LegacyMessage, MessageHeader},
+        message::{legacy::Message as LegacyMessage, v0::MessageAddressTableLookup, MessageHeader},
         pubkey::Pubkey,
         sanitize::{Sanitize, SanitizeError},
         short_vec,
@@ -15,12 +15,15 @@ use {
     std::fmt,
 };
 
+mod sanitized;
 pub mod v0;
+
+pub use sanitized::*;
 
 /// Bit mask that indicates whether a serialized message is versioned.
 pub const MESSAGE_VERSION_PREFIX: u8 = 0x80;
 
-/// Message versions supported by the Solana runtime.
+/// Either a legacy message or a v0 message.
 ///
 /// # Serialization
 ///
@@ -36,6 +39,13 @@ pub enum VersionedMessage {
 }
 
 impl VersionedMessage {
+    pub fn sanitize(&self, require_static_program_ids: bool) -> Result<(), SanitizeError> {
+        match self {
+            Self::Legacy(message) => message.sanitize(),
+            Self::V0(message) => message.sanitize(require_static_program_ids),
+        }
+    }
+
     pub fn header(&self) -> &MessageHeader {
         match self {
             Self::Legacy(message) => &message.header,
@@ -43,25 +53,60 @@ impl VersionedMessage {
         }
     }
 
-    pub fn unmapped_keys(self) -> Vec<Pubkey> {
+    pub fn static_account_keys(&self) -> &[Pubkey] {
         match self {
-            Self::Legacy(message) => message.account_keys,
-            Self::V0(message) => message.account_keys,
+            Self::Legacy(message) => &message.account_keys,
+            Self::V0(message) => &message.account_keys,
         }
     }
 
-    pub fn unmapped_keys_iter(&self) -> impl Iterator<Item = &Pubkey> {
+    pub fn address_table_lookups(&self) -> Option<&[MessageAddressTableLookup]> {
         match self {
-            Self::Legacy(message) => message.account_keys.iter(),
-            Self::V0(message) => message.account_keys.iter(),
+            Self::Legacy(_) => None,
+            Self::V0(message) => Some(&message.address_table_lookups),
         }
     }
 
-    pub fn unmapped_keys_len(&self) -> usize {
+    /// Returns true if the account at the specified index signed this
+    /// message.
+    pub fn is_signer(&self, index: usize) -> bool {
+        index < usize::from(self.header().num_required_signatures)
+    }
+
+    /// Returns true if the account at the specified index is writable by the
+    /// instructions in this message. Since dynamically loaded addresses can't
+    /// have write locks demoted without loading addresses, this shouldn't be
+    /// used in the runtime.
+    pub fn is_maybe_writable(&self, index: usize) -> bool {
         match self {
-            Self::Legacy(message) => message.account_keys.len(),
-            Self::V0(message) => message.account_keys.len(),
+            Self::Legacy(message) => message.is_writable(index),
+            Self::V0(message) => message.is_maybe_writable(index),
         }
+    }
+
+    /// Returns true if the account at the specified index is an input to some
+    /// program instruction in this message.
+    fn is_key_passed_to_program(&self, key_index: usize) -> bool {
+        if let Ok(key_index) = u8::try_from(key_index) {
+            self.instructions()
+                .iter()
+                .any(|ix| ix.accounts.contains(&key_index))
+        } else {
+            false
+        }
+    }
+
+    pub fn is_invoked(&self, key_index: usize) -> bool {
+        match self {
+            Self::Legacy(message) => message.is_key_called_as_program(key_index),
+            Self::V0(message) => message.is_key_called_as_program(key_index),
+        }
+    }
+
+    /// Returns true if the account at the specified index is not invoked as a
+    /// program or, if invoked, is passed to a program.
+    pub fn is_non_loader_key(&self, key_index: usize) -> bool {
+        !self.is_invoked(key_index) || self.is_key_passed_to_program(key_index)
     }
 
     pub fn recent_blockhash(&self) -> &Hash {
@@ -75,6 +120,15 @@ impl VersionedMessage {
         match self {
             Self::Legacy(message) => message.recent_blockhash = recent_blockhash,
             Self::V0(message) => message.recent_blockhash = recent_blockhash,
+        }
+    }
+
+    /// Program instructions that will be executed in sequence and committed in
+    /// one atomic transaction if all succeed.
+    pub fn instructions(&self) -> &[CompiledInstruction] {
+        match self {
+            Self::Legacy(message) => &message.instructions,
+            Self::V0(message) => &message.instructions,
         }
     }
 
@@ -101,15 +155,6 @@ impl VersionedMessage {
 impl Default for VersionedMessage {
     fn default() -> Self {
         Self::Legacy(LegacyMessage::default())
-    }
-}
-
-impl Sanitize for VersionedMessage {
-    fn sanitize(&self) -> Result<(), SanitizeError> {
-        match self {
-            Self::Legacy(message) => message.sanitize(),
-            Self::V0(message) => message.sanitize(),
-        }
     }
 }
 
@@ -304,9 +349,7 @@ mod tests {
                 num_readonly_unsigned_accounts: 0,
             },
             recent_blockhash: Hash::new_unique(),
-            account_keys: vec![
-                Pubkey::new_unique(),
-            ],
+            account_keys: vec![Pubkey::new_unique()],
             address_table_lookups: vec![
                 MessageAddressTableLookup {
                     account_key: Pubkey::new_unique(),

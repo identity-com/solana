@@ -6,18 +6,19 @@ use {
     std::{
         collections::HashMap,
         net::SocketAddr,
-        sync::{Arc, Mutex},
+        sync::{Arc, RwLock},
     },
 };
 
+#[derive(Clone)]
 pub struct ClusterTpuInfo {
     cluster_info: Arc<ClusterInfo>,
-    poh_recorder: Arc<Mutex<PohRecorder>>,
+    poh_recorder: Arc<RwLock<PohRecorder>>,
     recent_peers: HashMap<Pubkey, SocketAddr>,
 }
 
 impl ClusterTpuInfo {
-    pub fn new(cluster_info: Arc<ClusterInfo>, poh_recorder: Arc<Mutex<PohRecorder>>) -> Self {
+    pub fn new(cluster_info: Arc<ClusterInfo>, poh_recorder: Arc<RwLock<PohRecorder>>) -> Self {
         Self {
             cluster_info,
             poh_recorder,
@@ -37,7 +38,7 @@ impl TpuInfo for ClusterTpuInfo {
     }
 
     fn get_leader_tpus(&self, max_count: u64) -> Vec<&SocketAddr> {
-        let recorder = self.poh_recorder.lock().unwrap();
+        let recorder = self.poh_recorder.read().unwrap();
         let leaders: Vec<_> = (0..max_count)
             .filter_map(|i| recorder.leader_after_n_slots(i * NUM_CONSECUTIVE_LEADER_SLOTS))
             .collect();
@@ -91,11 +92,7 @@ mod test {
                 &validator_vote_keypairs1,
                 &validator_vote_keypairs2,
             ];
-            let GenesisConfigInfo {
-                genesis_config,
-                mint_keypair: _,
-                voting_keypair: _,
-            } = create_genesis_config_with_vote_accounts(
+            let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_vote_accounts(
                 1_000_000_000,
                 &validator_keypairs,
                 vec![10_000; 3],
@@ -111,7 +108,7 @@ mod test {
                 &Pubkey::default(),
                 &Arc::new(blockstore),
                 &Arc::new(LeaderScheduleCache::new_from_bank(&bank)),
-                &Arc::new(PohConfig::default()),
+                &PohConfig::default(),
                 Arc::new(AtomicBool::default()),
             );
 
@@ -144,7 +141,7 @@ mod test {
             .collect();
             let leader_info = ClusterTpuInfo {
                 cluster_info,
-                poh_recorder: Arc::new(Mutex::new(poh_recorder)),
+                poh_recorder: Arc::new(RwLock::new(poh_recorder)),
                 recent_peers: recent_peers.clone(),
             };
 

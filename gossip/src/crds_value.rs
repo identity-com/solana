@@ -9,6 +9,7 @@ use {
     bincode::{serialize, serialized_size},
     rand::{CryptoRng, Rng},
     serde::de::{Deserialize, Deserializer},
+    solana_runtime::vote_parser,
     solana_sdk::{
         clock::Slot,
         hash::Hash,
@@ -18,7 +19,6 @@ use {
         timing::timestamp,
         transaction::Transaction,
     },
-    solana_vote_program::vote_transaction::parse_vote_transaction,
     std::{
         borrow::{Borrow, Cow},
         cmp::Ordering,
@@ -39,7 +39,7 @@ pub type EpochSlotsIndex = u8;
 pub const MAX_EPOCH_SLOTS: EpochSlotsIndex = 255;
 
 /// CrdsValue that is replicated across the cluster
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct CrdsValue {
     pub signature: Signature,
     pub data: CrdsData,
@@ -79,7 +79,7 @@ impl Signable for CrdsValue {
 /// * Merge Strategy - Latest wallclock is picked
 /// * LowestSlot index is deprecated
 #[allow(clippy::large_enum_variant)]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample, AbiEnumVisitor)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample, AbiEnumVisitor)]
 pub enum CrdsData {
     ContactInfo(ContactInfo),
     Vote(VoteIndex, Vote),
@@ -161,7 +161,7 @@ impl CrdsData {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct SnapshotHashes {
     pub from: Pubkey,
     pub hashes: Vec<(Slot, Hash)>,
@@ -207,7 +207,7 @@ impl SnapshotHashes {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct IncrementalSnapshotHashes {
     pub from: Pubkey,
     pub base: (Slot, Hash),
@@ -233,7 +233,7 @@ impl Sanitize for IncrementalSnapshotHashes {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct LowestSlot {
     pub from: Pubkey,
     root: Slot, //deprecated
@@ -287,7 +287,7 @@ impl Sanitize for LowestSlot {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, AbiExample, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, AbiExample, Serialize)]
 pub struct Vote {
     pub(crate) from: Pubkey,
     transaction: Transaction,
@@ -305,15 +305,14 @@ impl Sanitize for Vote {
 }
 
 impl Vote {
-    pub fn new(from: Pubkey, transaction: Transaction, wallclock: u64) -> Self {
-        let slot =
-            parse_vote_transaction(&transaction).and_then(|(_, vote, _)| vote.last_voted_slot());
-        Self {
+    // Returns None if cannot parse transaction into a vote.
+    pub fn new(from: Pubkey, transaction: Transaction, wallclock: u64) -> Option<Self> {
+        vote_parser::parse_vote_transaction(&transaction).map(|(_, vote, ..)| Self {
             from,
             transaction,
             wallclock,
-            slot,
-        }
+            slot: vote.last_voted_slot(),
+        })
     }
 
     /// New random Vote for tests and benchmarks.
@@ -347,20 +346,15 @@ impl<'de> Deserialize<'de> for Vote {
             wallclock: u64,
         }
         let vote = Vote::deserialize(deserializer)?;
-        let vote = match vote.transaction.sanitize() {
-            Ok(_) => Self::new(vote.from, vote.transaction, vote.wallclock),
-            Err(_) => Self {
-                from: vote.from,
-                transaction: vote.transaction,
-                wallclock: vote.wallclock,
-                slot: None,
-            },
-        };
-        Ok(vote)
+        vote.transaction
+            .sanitize()
+            .map_err(serde::de::Error::custom)?;
+        Self::new(vote.from, vote.transaction, vote.wallclock)
+            .ok_or_else(|| serde::de::Error::custom("invalid vote tx"))
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct LegacyVersion {
     pub from: Pubkey,
     pub wallclock: u64,
@@ -375,7 +369,7 @@ impl Sanitize for LegacyVersion {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, AbiExample)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, AbiExample)]
 pub struct Version {
     pub from: Pubkey,
     pub wallclock: u64,
@@ -415,7 +409,7 @@ impl Version {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, AbiExample, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, AbiExample, Deserialize, Serialize)]
 pub struct NodeInstance {
     from: Pubkey,
     wallclock: u64,
@@ -510,8 +504,8 @@ impl fmt::Display for CrdsValueLabel {
             CrdsValueLabel::AccountsHashes(_) => write!(f, "AccountsHashes({})", self.pubkey()),
             CrdsValueLabel::LegacyVersion(_) => write!(f, "LegacyVersion({})", self.pubkey()),
             CrdsValueLabel::Version(_) => write!(f, "Version({})", self.pubkey()),
-            CrdsValueLabel::NodeInstance(pk) => write!(f, "NodeInstance({})", pk),
-            CrdsValueLabel::DuplicateShred(ix, pk) => write!(f, "DuplicateShred({}, {})", ix, pk),
+            CrdsValueLabel::NodeInstance(pk) => write!(f, "NodeInstance({pk})"),
+            CrdsValueLabel::DuplicateShred(ix, pk) => write!(f, "DuplicateShred({ix}, {pk})"),
             CrdsValueLabel::IncrementalSnapshotHashes(_) => {
                 write!(f, "IncrementalSnapshotHashes({})", self.pubkey())
             }
@@ -692,7 +686,7 @@ mod test {
         bincode::{deserialize, Options},
         rand::SeedableRng,
         rand_chacha::ChaChaRng,
-        solana_perf::test_tx::test_tx,
+        solana_perf::test_tx::new_test_vote_tx,
         solana_sdk::{
             signature::{Keypair, Signer},
             timing::timestamp,
@@ -703,15 +697,14 @@ mod test {
 
     #[test]
     fn test_keys_and_values() {
+        let mut rng = rand::thread_rng();
         let v = CrdsValue::new_unsigned(CrdsData::ContactInfo(ContactInfo::default()));
         assert_eq!(v.wallclock(), 0);
         let key = v.contact_info().unwrap().id;
         assert_eq!(v.label(), CrdsValueLabel::ContactInfo(key));
 
-        let v = CrdsValue::new_unsigned(CrdsData::Vote(
-            0,
-            Vote::new(Pubkey::default(), test_tx(), 0),
-        ));
+        let v = Vote::new(Pubkey::default(), new_test_vote_tx(&mut rng), 0).unwrap();
+        let v = CrdsValue::new_unsigned(CrdsData::Vote(0, v));
         assert_eq!(v.wallclock(), 0);
         let key = match &v.data {
             CrdsData::Vote(_, vote) => vote.from,
@@ -759,6 +752,7 @@ mod test {
 
     #[test]
     fn test_signature() {
+        let mut rng = rand::thread_rng();
         let keypair = Keypair::new();
         let wrong_keypair = Keypair::new();
         let mut v = CrdsValue::new_unsigned(CrdsData::ContactInfo(ContactInfo::new_localhost(
@@ -766,10 +760,8 @@ mod test {
             timestamp(),
         )));
         verify_signatures(&mut v, &keypair, &wrong_keypair);
-        v = CrdsValue::new_unsigned(CrdsData::Vote(
-            0,
-            Vote::new(keypair.pubkey(), test_tx(), timestamp()),
-        ));
+        let v = Vote::new(keypair.pubkey(), new_test_vote_tx(&mut rng), timestamp()).unwrap();
+        let mut v = CrdsValue::new_unsigned(CrdsData::Vote(0, v));
         verify_signatures(&mut v, &keypair, &wrong_keypair);
         v = CrdsValue::new_unsigned(CrdsData::LowestSlot(
             0,
@@ -780,14 +772,10 @@ mod test {
 
     #[test]
     fn test_max_vote_index() {
+        let mut rng = rand::thread_rng();
         let keypair = Keypair::new();
-        let vote = CrdsValue::new_signed(
-            CrdsData::Vote(
-                MAX_VOTES,
-                Vote::new(keypair.pubkey(), test_tx(), timestamp()),
-            ),
-            &keypair,
-        );
+        let vote = Vote::new(keypair.pubkey(), new_test_vote_tx(&mut rng), timestamp()).unwrap();
+        let vote = CrdsValue::new_signed(CrdsData::Vote(MAX_VOTES, vote), &keypair);
         assert!(vote.sanitize().is_err());
     }
 
@@ -811,7 +799,8 @@ mod test {
             Pubkey::new_unique(), // from
             tx,
             rng.gen(), // wallclock
-        );
+        )
+        .unwrap();
         assert_eq!(vote.slot, Some(7));
         let bytes = bincode::serialize(&vote).unwrap();
         let other = bincode::deserialize(&bytes[..]).unwrap();

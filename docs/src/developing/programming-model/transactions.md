@@ -43,7 +43,7 @@ not requiring signatures.
 #### Account Addresses Format
 
 The addresses that require signatures appear at the beginning of the account
-address array, with addresses requesting write access first and read-only
+address array, with addresses requesting read-write access first, and read-only
 accounts following. The addresses that do not require signatures follow the
 addresses that do, again with read-write accounts first and read-only accounts
 following.
@@ -130,11 +130,11 @@ https://github.com/solana-labs/solana/blob/6606590b8132e56dab9e60b3f7d20ba7412a7
 
 The instruction's [program id](terminology.md#program-id) specifies which
 program will process this instruction. The program's account's owner specifies
-which loader should be used to load and execute the program and the data
+which loader should be used to load and execute the program, and the data
 contains information about how the runtime should execute the program.
 
-In the case of [on-chain BPF programs](developing/on-chain-programs/overview.md),
-the owner is the BPF Loader and the account data holds the BPF bytecode. Program
+In the case of [on-chain SBF programs](developing/on-chain-programs/overview.md),
+the owner is the SBF Loader and the account data holds the BPF bytecode. Program
 accounts are permanently marked as executable by the loader once they are
 successfully deployed. The runtime will reject transactions that specify programs
 that are not executable.
@@ -145,20 +145,20 @@ are handled differently in that they are built directly into the Solana runtime.
 ### Accounts
 
 The accounts referenced by an instruction represent on-chain state and serve as
-both the inputs and outputs of a program. More information about Accounts can be
+both the inputs and outputs of a program. More information about accounts can be
 found in the [Accounts](accounts.md) section.
 
 ### Instruction data
 
-Each instruction caries a general purpose byte array that is passed to the
+Each instruction carries a general purpose byte array that is passed to the
 program along with the accounts. The contents of the instruction data is program
 specific and typically used to convey what operations the program should
 perform, and any additional information those operations may need above and
 beyond what the accounts contain.
 
 Programs are free to specify how information is encoded into the instruction
-data byte array. The choice of how data is encoded should take into account the
-overhead of decoding since that step is performed by the program on-chain. It's
+data byte array. The choice of how data is encoded should consider the
+overhead of decoding, since that step is performed by the program on-chain. It's
 been observed that some common encodings (Rust's bincode for example) are very
 inefficient.
 
@@ -202,7 +202,7 @@ found in [Accounts](accounts.md#signers)
 
 ## Recent Blockhash
 
-A transaction includes a recent [blockhash](terminology.md#blockhash) to prevent
+A transaction includes a recent [blockhash](../../terminology.md#blockhash) to prevent
 duplication and to give transactions lifetimes. Any transaction that is
 completely identical to a previous one is rejected, so adding a newer blockhash
 allows multiple transactions to repeat the exact same action. Transactions also

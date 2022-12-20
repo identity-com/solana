@@ -16,7 +16,7 @@ pub type Offset = usize;
 pub type StoredSize = u32;
 
 /// specify where account data is located
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum StorageLocation {
     AppendVec(AppendVecId, Offset),
     Cached,
@@ -60,12 +60,12 @@ impl StorageLocation {
 /// AppendVecs store accounts aligned to u64, so offset is always a multiple of 8 (sizeof(u64))
 pub type OffsetReduced = u32;
 
-#[derive(Default, Debug, PartialEq, Clone, Copy)]
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct AccountInfo {
     /// index identifying the append storage
     store_id: AppendVecId,
 
-    /// offset = 'reduced_offset' / ALIGN_BOUNDARY_OFFSET into the storage
+    /// offset = 'reduced_offset' * ALIGN_BOUNDARY_OFFSET into the storage
     /// Note this is a smaller type than 'Offset'
     reduced_offset: OffsetReduced,
 
@@ -130,6 +130,8 @@ impl AccountInfo {
     }
 
     pub fn store_id(&self) -> AppendVecId {
+        // if the account is in a cached store, the store_id is meaningless
+        assert!(!self.is_cached());
         self.store_id
     }
 

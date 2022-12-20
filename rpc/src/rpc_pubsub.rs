@@ -16,15 +16,15 @@ use {
     jsonrpc_derive::rpc,
     jsonrpc_pubsub::{typed::Subscriber, SubscriptionId as PubSubSubscriptionId},
     solana_account_decoder::{UiAccount, UiAccountEncoding},
-    solana_client::{
-        rpc_config::{
+    solana_rpc_client_api::{
+        config::{
             RpcAccountInfoConfig, RpcBlockSubscribeConfig, RpcBlockSubscribeFilter,
             RpcProgramAccountsConfig, RpcSignatureSubscribeConfig, RpcTransactionLogsConfig,
             RpcTransactionLogsFilter,
         },
-        rpc_response::{
+        response::{
             Response as RpcResponse, RpcBlockUpdate, RpcKeyedAccount, RpcLogsResponse,
-            RpcSignatureResult, RpcVote, SlotInfo, SlotUpdate,
+            RpcSignatureResult, RpcVersionInfo, RpcVote, SlotInfo, SlotUpdate,
         },
     },
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Signature},
@@ -348,6 +348,10 @@ mod internal {
         // Unsubscribe from slot notification subscription.
         #[rpc(name = "rootUnsubscribe")]
         fn root_unsubscribe(&self, id: SubscriptionId) -> Result<bool>;
+
+        // Get the current solana version running on the node
+        #[rpc(name = "getVersion")]
+        fn get_version(&self) -> Result<RpcVersionInfo>;
     }
 }
 
@@ -401,7 +405,7 @@ impl RpcSolPubSubImpl {
 fn param<T: FromStr>(param_str: &str, thing: &str) -> Result<T> {
     param_str.parse::<T>().map_err(|_e| Error {
         code: ErrorCode::InvalidParams,
-        message: format!("Invalid Request: Invalid {} provided", thing),
+        message: format!("Invalid Request: Invalid {thing} provided"),
         data: None,
     })
 }
@@ -412,12 +416,17 @@ impl RpcSolPubSubInternal for RpcSolPubSubImpl {
         pubkey_str: String,
         config: Option<RpcAccountInfoConfig>,
     ) -> Result<SubscriptionId> {
-        let config = config.unwrap_or_default();
+        let RpcAccountInfoConfig {
+            encoding,
+            data_slice,
+            commitment,
+            min_context_slot: _, // ignored
+        } = config.unwrap_or_default();
         let params = AccountSubscriptionParams {
             pubkey: param::<Pubkey>(&pubkey_str, "pubkey")?,
-            commitment: config.commitment.unwrap_or_default(),
-            data_slice: config.data_slice,
-            encoding: config.encoding.unwrap_or(UiAccountEncoding::Binary),
+            commitment: commitment.unwrap_or_default(),
+            data_slice,
+            encoding: encoding.unwrap_or(UiAccountEncoding::Binary),
         };
         self.subscribe(SubscriptionParams::Account(params))
     }
@@ -538,6 +547,7 @@ impl RpcSolPubSubInternal for RpcSolPubSubImpl {
             },
             transaction_details: config.transaction_details.unwrap_or_default(),
             show_rewards: config.show_rewards.unwrap_or_default(),
+            max_supported_transaction_version: config.max_supported_transaction_version,
         };
         self.subscribe(SubscriptionParams::Block(params))
     }
@@ -570,6 +580,14 @@ impl RpcSolPubSubInternal for RpcSolPubSubImpl {
     fn root_unsubscribe(&self, id: SubscriptionId) -> Result<bool> {
         self.unsubscribe(id)
     }
+
+    fn get_version(&self) -> Result<RpcVersionInfo> {
+        let version = solana_version::Version::default();
+        Ok(RpcVersionInfo {
+            solana_core: version.to_string(),
+            feature_set: Some(version.feature_set),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -583,7 +601,7 @@ mod tests {
         jsonrpc_core::{IoHandler, Response},
         serial_test::serial,
         solana_account_decoder::{parse_account_data::parse_account_data, UiAccountEncoding},
-        solana_client::rpc_response::{
+        solana_rpc_client_api::response::{
             ProcessedSignatureResult, ReceivedSignatureResult, RpcSignatureResult, SlotInfo,
         },
         solana_runtime::{
@@ -591,9 +609,10 @@ mod tests {
             bank_forks::BankForks,
             commitment::{BlockCommitmentCache, CommitmentSlots},
             genesis_utils::{
-                create_genesis_config, create_genesis_config_with_vote_accounts, GenesisConfigInfo,
-                ValidatorVoteKeypairs,
+                activate_all_features, create_genesis_config,
+                create_genesis_config_with_vote_accounts, GenesisConfigInfo, ValidatorVoteKeypairs,
             },
+            vote_transaction::VoteTransaction,
         },
         solana_sdk::{
             account::ReadableAccount,
@@ -602,10 +621,11 @@ mod tests {
             hash::Hash,
             message::Message,
             pubkey::Pubkey,
+            rent::Rent,
             signature::{Keypair, Signer},
             stake::{
                 self, instruction as stake_instruction,
-                state::{Authorized, Lockup, StakeAuthorize},
+                state::{Authorized, Lockup, StakeAuthorize, StakeState},
             },
             system_instruction, system_program, system_transaction,
             transaction::{self, Transaction},
@@ -807,7 +827,7 @@ mod tests {
         let expected: Response = serde_json::from_str(expected).unwrap();
 
         let result: Response = serde_json::from_str(&res.unwrap()).unwrap();
-        assert_eq!(expected, result);
+        assert_eq!(result, expected);
 
         // Test bad parameter
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"signatureUnsubscribe","params":[1]}"#;
@@ -816,17 +836,19 @@ mod tests {
         let expected: Response = serde_json::from_str(expected).unwrap();
 
         let result: Response = serde_json::from_str(&res.unwrap()).unwrap();
-        assert_eq!(expected, result);
+        assert_eq!(result, expected);
     }
 
     #[test]
     #[serial]
     fn test_account_subscribe() {
         let GenesisConfigInfo {
-            genesis_config,
+            mut genesis_config,
             mint_keypair: alice,
             ..
-        } = create_genesis_config(10_000);
+        } = create_genesis_config(10_000_000_000);
+        genesis_config.rent = Rent::default();
+        activate_all_features(&mut genesis_config);
 
         let new_stake_authority = solana_sdk::pubkey::new_rand();
         let stake_authority = Keypair::new();
@@ -836,7 +858,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
@@ -860,6 +882,7 @@ mod tests {
                 commitment: Some(CommitmentConfig::processed()),
                 encoding: Some(encoding),
                 data_slice: None,
+                min_context_slot: None,
             }),
         )
         .unwrap();
@@ -870,16 +893,21 @@ mod tests {
         rpc_subscriptions.notify_slot(1, 0, 0);
         receiver2.recv();
 
-        let tx = system_transaction::transfer(&alice, &from.pubkey(), 51, blockhash);
-        process_transaction_and_notify(&bank_forks, &tx, &rpc_subscriptions, 1).unwrap();
+        let balance = {
+            let bank = bank_forks.read().unwrap().working_bank();
+            let rent = &bank.rent_collector().rent;
+            rent.minimum_balance(StakeState::size_of())
+        };
 
+        let tx = system_transaction::transfer(&alice, &from.pubkey(), balance, blockhash);
+        process_transaction_and_notify(&bank_forks, &tx, &rpc_subscriptions, 1).unwrap();
         let authorized = Authorized::auto(&stake_authority.pubkey());
         let ixs = stake_instruction::create_account(
             &from.pubkey(),
             &stake_account.pubkey(),
             &authorized,
             &Lockup::default(),
-            51,
+            balance,
         );
         let message = Message::new(&ixs, Some(&from.pubkey()));
         let tx = Transaction::new(&[&from, &stake_account], message, blockhash);
@@ -902,10 +930,11 @@ mod tests {
                    "context": { "slot": 1 },
                    "value": {
                        "owner": stake_program_id.to_string(),
-                       "lamports": 51,
+                       "lamports": balance,
                        "data": [base64::encode(expected_data), encoding],
                        "executable": false,
                        "rentEpoch": 0,
+                       "space": expected_data.len(),
                    },
                },
                "subscription": 0,
@@ -918,7 +947,13 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&response).unwrap(),
         );
 
-        let tx = system_transaction::transfer(&alice, &stake_authority.pubkey(), 1, blockhash);
+        let balance = {
+            let bank = bank_forks.read().unwrap().working_bank();
+            let rent = &bank.rent_collector().rent;
+            rent.minimum_balance(0)
+        };
+        let tx =
+            system_transaction::transfer(&alice, &stake_authority.pubkey(), balance, blockhash);
         process_transaction_and_notify(&bank_forks, &tx, &rpc_subscriptions, 1).unwrap();
         sleep(Duration::from_millis(200));
         let ix = stake_instruction::authorize(
@@ -954,7 +989,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
@@ -976,6 +1011,7 @@ mod tests {
                 commitment: Some(CommitmentConfig::processed()),
                 encoding: Some(UiAccountEncoding::JsonParsed),
                 data_slice: None,
+                min_context_slot: None,
             }),
         )
         .unwrap();
@@ -1024,6 +1060,7 @@ mod tests {
                        "data": expected_data,
                        "executable": false,
                        "rentEpoch": 0,
+                       "space": account.data().len(),
                    },
                },
                "subscription": 0,
@@ -1058,8 +1095,7 @@ mod tests {
         io.extend_with(rpc.to_delegate());
 
         let req = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"accountSubscribe","params":["{}"]}}"#,
-            bob_pubkey
+            r#"{{"jsonrpc":"2.0","id":1,"method":"accountSubscribe","params":["{bob_pubkey}"]}}"#
         );
         let _res = io.handle_request_sync(&req);
 
@@ -1070,7 +1106,7 @@ mod tests {
         let expected: Response = serde_json::from_str(expected).unwrap();
 
         let result: Response = serde_json::from_str(&res.unwrap()).unwrap();
-        assert_eq!(expected, result);
+        assert_eq!(result, expected);
 
         // Test bad parameter
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"accountUnsubscribe","params":[1]}"#;
@@ -1079,7 +1115,7 @@ mod tests {
         let expected: Response = serde_json::from_str(expected).unwrap();
 
         let result: Response = serde_json::from_str(&res.unwrap()).unwrap();
-        assert_eq!(expected, result);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -1113,6 +1149,7 @@ mod tests {
                 commitment: Some(CommitmentConfig::finalized()),
                 encoding: None,
                 data_slice: None,
+                min_context_slot: None,
             }),
         )
         .unwrap();
@@ -1142,7 +1179,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let bob = Keypair::new();
@@ -1165,6 +1202,7 @@ mod tests {
                 commitment: Some(CommitmentConfig::finalized()),
                 encoding: None,
                 data_slice: None,
+                min_context_slot: None,
             }),
         )
         .unwrap();
@@ -1202,6 +1240,7 @@ mod tests {
                        "data": "",
                        "executable": false,
                        "rentEpoch": 0,
+                       "space": 0,
                    },
                },
                "subscription": 0,
@@ -1240,8 +1279,7 @@ mod tests {
         let expected_res_str = serde_json::to_string(&expected_res).unwrap();
 
         let expected = format!(
-            r#"{{"jsonrpc":"2.0","method":"slotNotification","params":{{"result":{},"subscription":0}}}}"#,
-            expected_res_str
+            r#"{{"jsonrpc":"2.0","method":"slotNotification","params":{{"result":{expected_res_str},"subscription":0}}}}"#
         );
         assert_eq!(expected, response);
     }
@@ -1270,8 +1308,7 @@ mod tests {
         let expected_res_str = serde_json::to_string(&expected_res).unwrap();
 
         let expected = format!(
-            r#"{{"jsonrpc":"2.0","method":"slotNotification","params":{{"result":{},"subscription":0}}}}"#,
-            expected_res_str
+            r#"{{"jsonrpc":"2.0","method":"slotNotification","params":{{"result":{expected_res_str},"subscription":0}}}}"#
         );
         assert_eq!(expected, response);
 
@@ -1315,12 +1352,16 @@ mod tests {
             hash: Hash::default(),
             timestamp: None,
         };
-        subscriptions.notify_vote(Box::new(vote));
+        subscriptions.notify_vote(
+            Pubkey::default(),
+            VoteTransaction::from(vote),
+            Signature::default(),
+        );
 
         let response = receiver.recv();
         assert_eq!(
             response,
-            r#"{"jsonrpc":"2.0","method":"voteNotification","params":{"result":{"slots":[1,2],"hash":"11111111111111111111111111111111","timestamp":null},"subscription":0}}"#
+            r#"{"jsonrpc":"2.0","method":"voteNotification","params":{"result":{"votePubkey":"11111111111111111111111111111111","slots":[1,2],"hash":"11111111111111111111111111111111","timestamp":null,"signature":"1111111111111111111111111111111111111111111111111111111111111111"},"subscription":0}}"#
         );
     }
 
@@ -1340,5 +1381,22 @@ mod tests {
 
         assert!(rpc.vote_unsubscribe(42.into()).is_err());
         assert!(rpc.vote_unsubscribe(sub_id).is_ok());
+    }
+
+    #[test]
+    fn test_get_version() {
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+        let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
+        let rpc_subscriptions = Arc::new(RpcSubscriptions::default_with_bank_forks(
+            max_complete_transaction_status_slot,
+            bank_forks,
+        ));
+        let (rpc, _receiver) = rpc_pubsub_service::test_connection(&rpc_subscriptions);
+        let version = rpc.get_version().unwrap();
+        let expected_version = solana_version::Version::default();
+        assert_eq!(version.to_string(), expected_version.to_string());
+        assert_eq!(version.feature_set.unwrap(), expected_version.feature_set);
     }
 }

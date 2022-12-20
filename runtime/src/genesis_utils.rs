@@ -21,7 +21,28 @@ const VALIDATOR_LAMPORTS: u64 = 42;
 
 // fun fact: rustc is very close to make this const fn.
 pub fn bootstrap_validator_stake_lamports() -> u64 {
-    StakeState::get_rent_exempt_reserve(&Rent::default())
+    Rent::default().minimum_balance(StakeState::size_of())
+}
+
+// Number of lamports automatically used for genesis accounts
+pub const fn genesis_sysvar_and_builtin_program_lamports() -> u64 {
+    const NUM_BUILTIN_PROGRAMS: u64 = 4;
+    const NUM_PRECOMPILES: u64 = 2;
+    const FEES_SYSVAR_MIN_BALANCE: u64 = 946_560;
+    const STAKE_HISTORY_MIN_BALANCE: u64 = 114_979_200;
+    const CLOCK_SYSVAR_MIN_BALANCE: u64 = 1_169_280;
+    const RENT_SYSVAR_MIN_BALANCE: u64 = 1_009_200;
+    const EPOCH_SCHEDULE_SYSVAR_MIN_BALANCE: u64 = 1_120_560;
+    const RECENT_BLOCKHASHES_SYSVAR_MIN_BALANCE: u64 = 42_706_560;
+
+    FEES_SYSVAR_MIN_BALANCE
+        + STAKE_HISTORY_MIN_BALANCE
+        + CLOCK_SYSVAR_MIN_BALANCE
+        + RENT_SYSVAR_MIN_BALANCE
+        + EPOCH_SCHEDULE_SYSVAR_MIN_BALANCE
+        + RECENT_BLOCKHASHES_SYSVAR_MIN_BALANCE
+        + NUM_BUILTIN_PROGRAMS
+        + NUM_PRECOMPILES
 }
 
 pub struct ValidatorVoteKeypairs {
@@ -52,10 +73,19 @@ pub struct GenesisConfigInfo {
     pub genesis_config: GenesisConfig,
     pub mint_keypair: Keypair,
     pub voting_keypair: Keypair,
+    pub validator_pubkey: Pubkey,
 }
 
 pub fn create_genesis_config(mint_lamports: u64) -> GenesisConfigInfo {
-    create_genesis_config_with_leader(mint_lamports, &solana_sdk::pubkey::new_rand(), 0)
+    // Note that zero lamports for validator stake will result in stake account
+    // not being stored in accounts-db but still cached in bank stakes. This
+    // causes discrepancy between cached stakes accounts in bank and
+    // accounts-db which in particular will break snapshots test.
+    create_genesis_config_with_leader(
+        mint_lamports,
+        &solana_sdk::pubkey::new_rand(), // validator_pubkey
+        0,                               // validator_stake_lamports
+    )
 }
 
 pub fn create_genesis_config_with_vote_accounts(
@@ -81,13 +111,13 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
     assert_eq!(voting_keypairs.len(), stakes.len());
 
     let mint_keypair = Keypair::new();
-    let voting_keypair =
-        Keypair::from_bytes(&voting_keypairs[0].borrow().vote_keypair.to_bytes()).unwrap();
+    let voting_keypair = voting_keypairs[0].borrow().vote_keypair.insecure_clone();
 
+    let validator_pubkey = voting_keypairs[0].borrow().node_keypair.pubkey();
     let genesis_config = create_genesis_config_with_leader_ex(
         mint_lamports,
         &mint_keypair.pubkey(),
-        &voting_keypairs[0].borrow().node_keypair.pubkey(),
+        &validator_pubkey,
         &voting_keypairs[0].borrow().vote_keypair.pubkey(),
         &voting_keypairs[0].borrow().stake_keypair.pubkey(),
         stakes[0],
@@ -102,6 +132,7 @@ pub fn create_genesis_config_with_vote_accounts_and_cluster_type(
         genesis_config,
         mint_keypair,
         voting_keypair,
+        validator_pubkey,
     };
 
     for (validator_voting_keypairs, stake) in voting_keypairs[1..].iter().zip(&stakes[1..]) {
@@ -159,22 +190,27 @@ pub fn create_genesis_config_with_leader(
         genesis_config,
         mint_keypair,
         voting_keypair,
+        validator_pubkey: *validator_pubkey,
     }
 }
 
 pub fn activate_all_features(genesis_config: &mut GenesisConfig) {
     // Activate all features at genesis in development mode
     for feature_id in FeatureSet::default().inactive {
-        genesis_config.accounts.insert(
-            feature_id,
-            Account::from(feature::create_account(
-                &Feature {
-                    activated_at: Some(0),
-                },
-                std::cmp::max(genesis_config.rent.minimum_balance(Feature::size_of()), 1),
-            )),
-        );
+        activate_feature(genesis_config, feature_id);
     }
+}
+
+pub fn activate_feature(genesis_config: &mut GenesisConfig, feature_id: Pubkey) {
+    genesis_config.accounts.insert(
+        feature_id,
+        Account::from(feature::create_account(
+            &Feature {
+                activated_at: Some(0),
+            },
+            std::cmp::max(genesis_config.rent.minimum_balance(Feature::size_of()), 1),
+        )),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

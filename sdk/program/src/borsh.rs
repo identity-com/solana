@@ -1,5 +1,7 @@
 #![allow(clippy::integer_arithmetic)]
-//! Borsh utils
+//! Utilities for the [borsh] serialization format.
+//!
+//! [borsh]: https://borsh.io/
 use {
     borsh::{
         maybestd::io::{Error, Write},
@@ -50,7 +52,7 @@ fn get_declaration_packed_len(
             "u64" | "i64" => 8,
             "u128" | "i128" => 16,
             "nil" => 0,
-            _ => panic!("Missing primitive type: {}", declaration),
+            _ => panic!("Missing primitive type: {declaration}"),
         },
     }
 }
@@ -58,7 +60,7 @@ fn get_declaration_packed_len(
 /// Get the worst-case packed length for the given BorshSchema
 ///
 /// Note: due to the serializer currently used by Borsh, this function cannot
-/// be used on-chain in the Solana BPF execution environment.
+/// be used on-chain in the Solana SBF execution environment.
 pub fn get_packed_len<S: BorshSchema>() -> usize {
     let schema_container = S::schema_container();
     get_declaration_packed_len(&schema_container.declaration, &schema_container.definitions)
@@ -117,7 +119,7 @@ mod tests {
         std::{collections::HashMap, mem::size_of},
     };
 
-    #[derive(PartialEq, Clone, Debug, BorshSerialize, BorshDeserialize, BorshSchema)]
+    #[derive(PartialEq, Eq, Clone, Debug, BorshSerialize, BorshDeserialize, BorshSchema)]
     enum TestEnum {
         NoValue,
         Number(u32),
@@ -146,12 +148,12 @@ mod tests {
         pub r#bool: bool,
     }
 
-    #[derive(Debug, PartialEq, BorshSerialize, BorshDeserialize, BorshSchema)]
+    #[derive(Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, BorshSchema)]
     struct Child {
         pub data: [u8; 64],
     }
 
-    #[derive(Debug, PartialEq, BorshSerialize, BorshDeserialize, BorshSchema)]
+    #[derive(Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, BorshSchema)]
     struct Parent {
         pub data: Vec<Child>,
     }
@@ -188,7 +190,7 @@ mod tests {
     fn packed_len() {
         assert_eq!(
             get_packed_len::<TestEnum>(),
-            size_of::<u8>() + size_of::<u64>() + size_of::<u8>() * 8
+            size_of::<u8>() + size_of::<u64>() + u8::BITS as usize
         );
         assert_eq!(
             get_packed_len::<TestStruct>(),
@@ -267,7 +269,7 @@ mod tests {
         );
     }
 
-    #[derive(Debug, PartialEq, BorshSerialize, BorshDeserialize, BorshSchema)]
+    #[derive(Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, BorshSchema)]
     struct StructWithHashMap {
         data: HashMap<String, TestEnum>,
     }

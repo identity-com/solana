@@ -13,6 +13,7 @@ use {
         replay_stage::{HeaviestForkFailures, ReplayStage},
         unfrozen_gossip_verified_vote_hashes::UnfrozenGossipVerifiedVoteHashes,
     },
+    crossbeam_channel::unbounded,
     solana_runtime::{
         accounts_background_service::AbsRequestSender,
         bank::Bank,
@@ -78,7 +79,7 @@ impl VoteSimulator {
                 continue;
             }
             let parent = *walk.get_parent().unwrap().data();
-            let parent_bank = self.bank_forks.read().unwrap().get(parent).unwrap().clone();
+            let parent_bank = self.bank_forks.read().unwrap().get(parent).unwrap();
             let new_bank = Bank::new_from_parent(&parent_bank, &Pubkey::default(), slot);
             self.progress
                 .entry(slot)
@@ -104,7 +105,7 @@ impl VoteSimulator {
                     let vote_account = new_bank
                         .get_vote_account(&keypairs.vote_keypair.pubkey())
                         .unwrap();
-                    let state = vote_account.1.vote_state();
+                    let state = vote_account.vote_state();
                     assert!(state
                         .as_ref()
                         .unwrap()
@@ -170,11 +171,10 @@ impl VoteSimulator {
             .read()
             .unwrap()
             .get(vote_slot)
-            .expect("Bank must have been created before vote simulation")
-            .clone();
+            .expect("Bank must have been created before vote simulation");
 
         // Try to vote on the given slot
-        let descendants = self.bank_forks.read().unwrap().descendants().clone();
+        let descendants = self.bank_forks.read().unwrap().descendants();
         let SelectVoteAndResetForkResult {
             heaviest_fork_failures,
             ..
@@ -204,7 +204,7 @@ impl VoteSimulator {
     }
 
     pub fn set_root(&mut self, new_root: Slot) {
-        let (drop_bank_sender, _drop_bank_receiver) = std::sync::mpsc::channel();
+        let (drop_bank_sender, _drop_bank_receiver) = unbounded();
         ReplayStage::handle_new_root(
             new_root,
             &self.bank_forks,
@@ -343,7 +343,7 @@ pub fn initialize_state(
     let GenesisConfigInfo {
         mut genesis_config,
         mint_keypair,
-        voting_keypair: _,
+        ..
     } = create_genesis_config_with_vote_accounts(
         1_000_000_000,
         &validator_keypairs,

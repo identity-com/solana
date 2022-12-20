@@ -1,9 +1,6 @@
 #![allow(clippy::integer_arithmetic)]
 use {
-    clap::{
-        crate_description, crate_name, crate_version, value_t, value_t_or_exit, App, Arg,
-        ArgMatches, SubCommand,
-    },
+    clap::{crate_description, crate_name, crate_version, Arg, ArgMatches, Command},
     rand::{thread_rng, Rng},
     serde::{Deserialize, Serialize},
     std::{fs, io, path::PathBuf},
@@ -52,7 +49,7 @@ impl NetworkTopology {
         println!("Configure partition map (must add up to 100, e.g. [70, 20, 10]):");
         let partitions_str = match io::stdin().read_line(&mut input) {
             Ok(_) => input,
-            Err(error) => panic!("error: {}", error),
+            Err(error) => panic!("error: {error}"),
         };
 
         let partitions: Vec<u8> = serde_json::from_str(&partitions_str)
@@ -62,11 +59,11 @@ impl NetworkTopology {
 
         for i in 0..partitions.len() - 1 {
             for j in i + 1..partitions.len() {
-                println!("Configure interconnect ({} <-> {}):", i, j);
+                println!("Configure interconnect ({i} <-> {j}):");
                 let mut input = String::new();
                 let mut interconnect_config = match io::stdin().read_line(&mut input) {
                     Ok(_) => input,
-                    Err(error) => panic!("error: {}", error),
+                    Err(error) => panic!("error: {error}"),
                 };
 
                 if interconnect_config.ends_with('\n') {
@@ -124,14 +121,14 @@ impl NetworkTopology {
             for j in i + 1..partitions.len() {
                 let drop_config = if max_packet_drop > 0 {
                     let packet_drop = rng.gen_range(0, max_packet_drop + 1);
-                    format!("loss {}% 25% ", packet_drop)
+                    format!("loss {packet_drop}% 25% ")
                 } else {
                     String::default()
                 };
 
                 let config = if max_packet_delay > 0 {
                     let packet_delay = rng.gen_range(0, max_packet_delay + 1);
-                    format!("{}delay {}ms 10ms", drop_config, packet_delay)
+                    format!("{drop_config}delay {packet_delay}ms 10ms")
                 } else {
                     drop_config
                 };
@@ -369,13 +366,13 @@ fn partition_id_to_tos(partition: usize) -> u8 {
 }
 
 fn shape_network(matches: &ArgMatches) {
-    let config_path = PathBuf::from(value_t_or_exit!(matches, "file", String));
-    let config = fs::read_to_string(&config_path).expect("Unable to read config file");
+    let config_path = PathBuf::from(matches.value_of_t_or_exit::<String>("file"));
+    let config = fs::read_to_string(config_path).expect("Unable to read config file");
     let topology: NetworkTopology =
         serde_json::from_str(&config).expect("Failed to parse log as JSON");
-    let interface = value_t_or_exit!(matches, "iface", String);
-    let network_size = value_t_or_exit!(matches, "size", u64);
-    let my_index = value_t_or_exit!(matches, "position", u64);
+    let interface: String = matches.value_of_t_or_exit("iface");
+    let network_size: u64 = matches.value_of_t_or_exit("size");
+    let my_index: u64 = matches.value_of_t_or_exit("position");
     if !shape_network_steps(&topology, &interface, network_size, my_index) {
         delete_ifb(interface.as_str());
         flush_iptables_rule();
@@ -400,7 +397,7 @@ fn shape_network_steps(
         "my_index: {}, network_size: {}, partitions: {:?}",
         my_index, network_size, topology.partitions
     );
-    println!("My partition is {}", my_partition);
+    println!("My partition is {my_partition}");
 
     cleanup_network(interface);
 
@@ -410,7 +407,7 @@ fn shape_network_steps(
     }
 
     let num_bands = topology.partitions.len() + 1;
-    let default_filter_class = format!("1:{}", num_bands);
+    let default_filter_class = format!("1:{num_bands}");
     if !topology.interconnects.is_empty() {
         let num_bands_str = num_bands.to_string();
         // Redirect ingress traffic to the virtual interface ifb0 so we can
@@ -429,7 +426,7 @@ fn shape_network_steps(
     println!("Setting up interconnects");
     for i in &topology.interconnects {
         if i.b as usize == my_partition {
-            println!("interconnects: {:#?}", i);
+            println!("interconnects: {i:#?}");
             let tos = partition_id_to_tos(i.a as usize);
             if tos == 0 {
                 println!("Incorrect value of TOS/Partition in config {}", i.a);
@@ -471,9 +468,9 @@ fn configure(matches: &ArgMatches) {
     let config = if !matches.is_present("random") {
         NetworkTopology::new_from_stdin()
     } else {
-        let max_partitions = value_t!(matches, "max-partitions", usize).unwrap_or(4);
-        let max_drop = value_t!(matches, "max-drop", u8).unwrap_or(100);
-        let max_delay = value_t!(matches, "max-delay", u32).unwrap_or(50);
+        let max_partitions: usize = matches.value_of_t("max-partitions").unwrap_or(4);
+        let max_drop: u8 = matches.value_of_t("max-drop").unwrap_or(100);
+        let max_delay: u32 = matches.value_of_t("max-delay").unwrap_or(50);
         NetworkTopology::new_random(max_partitions, max_drop, max_delay)
     };
 
@@ -481,21 +478,21 @@ fn configure(matches: &ArgMatches) {
 
     let topology = serde_json::to_string(&config).expect("Failed to write as JSON");
 
-    println!("{}", topology);
+    println!("{topology}");
 }
 
 fn main() {
     solana_logger::setup();
 
-    let matches = App::new(crate_name!())
+    let matches = Command::new(crate_name!())
         .about(crate_description!())
         .version(crate_version!())
         .subcommand(
-            SubCommand::with_name("shape")
+            Command::new("shape")
                 .about("Shape the network using config file")
                 .arg(
-                    Arg::with_name("file")
-                        .short("f")
+                    Arg::new("file")
+                        .short('f')
                         .long("file")
                         .value_name("config file")
                         .takes_value(true)
@@ -503,8 +500,8 @@ fn main() {
                         .help("Location of the network config file"),
                 )
                 .arg(
-                    Arg::with_name("size")
-                        .short("s")
+                    Arg::new("size")
+                        .short('s')
                         .long("size")
                         .value_name("network size")
                         .takes_value(true)
@@ -512,8 +509,8 @@ fn main() {
                         .help("Number of nodes in the network"),
                 )
                 .arg(
-                    Arg::with_name("iface")
-                        .short("i")
+                    Arg::new("iface")
+                        .short('i')
                         .long("iface")
                         .value_name("network interface name")
                         .takes_value(true)
@@ -521,8 +518,8 @@ fn main() {
                         .help("Name of network interface"),
                 )
                 .arg(
-                    Arg::with_name("position")
-                        .short("p")
+                    Arg::new("position")
+                        .short('p')
                         .long("position")
                         .value_name("position of node")
                         .takes_value(true)
@@ -531,11 +528,11 @@ fn main() {
                 ),
         )
         .subcommand(
-            SubCommand::with_name("cleanup")
+            Command::new("cleanup")
                 .about("Remove the network filters using config file")
                 .arg(
-                    Arg::with_name("file")
-                        .short("f")
+                    Arg::new("file")
+                        .short('f')
                         .long("file")
                         .value_name("config file")
                         .takes_value(true)
@@ -543,8 +540,8 @@ fn main() {
                         .help("Location of the network config file"),
                 )
                 .arg(
-                    Arg::with_name("size")
-                        .short("s")
+                    Arg::new("size")
+                        .short('s')
                         .long("size")
                         .value_name("network size")
                         .takes_value(true)
@@ -552,8 +549,8 @@ fn main() {
                         .help("Number of nodes in the network"),
                 )
                 .arg(
-                    Arg::with_name("iface")
-                        .short("i")
+                    Arg::new("iface")
+                        .short('i')
                         .long("iface")
                         .value_name("network interface name")
                         .takes_value(true)
@@ -561,8 +558,8 @@ fn main() {
                         .help("Name of network interface"),
                 )
                 .arg(
-                    Arg::with_name("position")
-                        .short("p")
+                    Arg::new("position")
+                        .short('p')
                         .long("position")
                         .value_name("position of node")
                         .takes_value(true)
@@ -571,18 +568,18 @@ fn main() {
                 ),
         )
         .subcommand(
-            SubCommand::with_name("configure")
+            Command::new("configure")
                 .about("Generate a config file")
                 .arg(
-                    Arg::with_name("random")
-                        .short("r")
+                    Arg::new("random")
+                        .short('r')
                         .long("random")
                         .required(false)
                         .help("Generate a random config file"),
                 )
                 .arg(
-                    Arg::with_name("max-partitions")
-                        .short("p")
+                    Arg::new("max-partitions")
+                        .short('p')
                         .long("max-partitions")
                         .value_name("count")
                         .takes_value(true)
@@ -590,8 +587,8 @@ fn main() {
                         .help("Maximum number of partitions. Used only with random configuration generation"),
                 )
                 .arg(
-                    Arg::with_name("max-drop")
-                        .short("d")
+                    Arg::new("max-drop")
+                        .short('d')
                         .long("max-drop")
                         .value_name("percentage")
                         .takes_value(true)
@@ -599,8 +596,8 @@ fn main() {
                         .help("Maximum amount of packet drop. Used only with random configuration generation"),
                 )
                 .arg(
-                    Arg::with_name("max-delay")
-                        .short("y")
+                    Arg::new("max-delay")
+                        .short('y')
                         .long("max-delay")
                         .value_name("ms")
                         .takes_value(true)
@@ -611,13 +608,13 @@ fn main() {
         .get_matches();
 
     match matches.subcommand() {
-        ("shape", Some(args_matches)) => shape_network(args_matches),
-        ("cleanup", Some(args_matches)) => {
-            let interfaces = value_t_or_exit!(args_matches, "iface", String);
+        Some(("shape", args_matches)) => shape_network(args_matches),
+        Some(("cleanup", args_matches)) => {
+            let interfaces: String = args_matches.value_of_t_or_exit("iface");
             let iface = parse_interface(&interfaces);
             cleanup_network(iface)
         }
-        ("configure", Some(args_matches)) => configure(args_matches),
+        Some(("configure", args_matches)) => configure(args_matches),
         _ => {}
     };
 }

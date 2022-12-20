@@ -24,7 +24,7 @@ and so this document attempts to clarify and codify the process for new releases
 
 ### Release Cadence
 
-The Solana RPC API, Rust SDK, CLI tooling, and BPF Program SDK are all updated and shipped
+The Solana RPC API, Rust SDK, CLI tooling, and SBF Program SDK are all updated and shipped
 along with each Solana software release and should always be compatible between `PATCH`
 updates of a particular `MINOR` version release.
 
@@ -76,7 +76,7 @@ Major releases:
 - [`solana-program`](https://docs.rs/solana-program/) - Rust SDK for writing programs
 - [`solana-client`](https://docs.rs/solana-client/) - Rust client for connecting to RPC API
 - [`solana-cli-config`](https://docs.rs/solana-cli-config/) - Rust client for managing Solana CLI config files
-- [`solana-accountsdb-plugin-interface`](https://docs.rs/solana-accountsdb-plugin-interface/) - Rust interface for developing Solana AccountsDb plugins.
+- [`solana-geyser-plugin-interface`](https://docs.rs/solana-geyser-plugin-interface/) - Rust interface for developing Solana Geyser plugins.
 
 Patch releases:
 

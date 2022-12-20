@@ -29,6 +29,7 @@ pub struct BucketMapHolderStats {
     pub updates_in_mem: AtomicU64,
     pub items: AtomicU64,
     pub items_us: AtomicU64,
+    pub failed_to_evict: AtomicU64,
     pub keys: AtomicU64,
     pub deletes: AtomicU64,
     pub inserts: AtomicU64,
@@ -38,17 +39,20 @@ pub struct BucketMapHolderStats {
     pub count_in_mem: AtomicUsize,
     pub per_bucket_count: Vec<AtomicUsize>,
     pub flush_entries_updated_on_disk: AtomicU64,
-    pub flush_entries_removed_from_mem: AtomicU64,
+    pub flush_entries_evicted_from_mem: AtomicU64,
     pub active_threads: AtomicU64,
     pub get_range_us: AtomicU64,
     last_age: AtomicU8,
     last_ages_flushed: AtomicU64,
-    pub flush_scan_update_us: AtomicU64,
-    pub flush_remove_us: AtomicU64,
+    pub flush_scan_us: AtomicU64,
+    pub flush_update_us: AtomicU64,
+    pub flush_evict_us: AtomicU64,
     pub flush_grow_us: AtomicU64,
     last_was_startup: AtomicBool,
     last_time: AtomicInterval,
     bins: u64,
+    pub estimate_mem: AtomicU64,
+    pub flush_should_evict_us: AtomicU64,
 }
 
 impl BucketMapHolderStats {
@@ -63,42 +67,51 @@ impl BucketMapHolderStats {
         }
     }
 
-    pub fn insert_or_delete(&self, insert: bool, _bin: usize) {
-        if insert {
-            self.inserts.fetch_add(1, Ordering::Relaxed);
-            self.count.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.deletes.fetch_add(1, Ordering::Relaxed);
-            self.count.fetch_sub(1, Ordering::Relaxed);
-        }
+    pub fn inc_insert(&self) {
+        self.inc_insert_count(1);
     }
 
-    pub fn insert_or_delete_mem(&self, insert: bool, bin: usize) {
-        self.insert_or_delete_mem_count(insert, bin, 1)
+    pub fn inc_insert_count(&self, count: u64) {
+        self.inserts.fetch_add(count, Ordering::Relaxed);
+        self.count.fetch_add(count as usize, Ordering::Relaxed);
     }
 
-    pub fn insert_or_delete_mem_count(&self, insert: bool, bin: usize, count: usize) {
+    pub fn inc_delete(&self) {
+        self.deletes.fetch_add(1, Ordering::Relaxed);
+        self.count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_mem_count(&self, bin: usize) {
+        self.add_mem_count(bin, 1);
+    }
+
+    pub fn dec_mem_count(&self, bin: usize) {
+        self.sub_mem_count(bin, 1);
+    }
+
+    pub fn add_mem_count(&self, bin: usize, count: usize) {
         let per_bucket = self.per_bucket_count.get(bin);
-        if insert {
-            self.count_in_mem.fetch_add(count, Ordering::Relaxed);
-            per_bucket.map(|stat| stat.fetch_add(count, Ordering::Relaxed));
-        } else {
-            self.count_in_mem.fetch_sub(count, Ordering::Relaxed);
-            per_bucket.map(|stat| stat.fetch_sub(count, Ordering::Relaxed));
-        }
+        self.count_in_mem.fetch_add(count, Ordering::Relaxed);
+        per_bucket.map(|stat| stat.fetch_add(count, Ordering::Relaxed));
+    }
+
+    pub fn sub_mem_count(&self, bin: usize, count: usize) {
+        let per_bucket = self.per_bucket_count.get(bin);
+        self.count_in_mem.fetch_sub(count, Ordering::Relaxed);
+        per_bucket.map(|stat| stat.fetch_sub(count, Ordering::Relaxed));
     }
 
     fn ms_per_age<T: IndexValue>(&self, storage: &BucketMapHolder<T>, elapsed_ms: u64) -> u64 {
         let age_now = storage.current_age();
-        let ages_flushed = storage.count_ages_flushed() as u64;
+        let ages_flushed = storage.count_buckets_flushed() as u64;
         let last_age = self.last_age.swap(age_now, Ordering::Relaxed) as u64;
-        let last_ages_flushed = self.last_ages_flushed.swap(ages_flushed, Ordering::Relaxed) as u64;
+        let last_ages_flushed = self.last_ages_flushed.swap(ages_flushed, Ordering::Relaxed);
         let mut age_now = age_now as u64;
         if last_age > age_now {
             // age wrapped
             age_now += u8::MAX as u64 + 1;
         }
-        let age_delta = age_now.saturating_sub(last_age) as u64;
+        let age_delta = age_now.saturating_sub(last_age);
         if age_delta > 0 {
             return elapsed_ms / age_delta;
         } else {
@@ -151,6 +164,16 @@ impl BucketMapHolderStats {
         }
     }
 
+    /// This is an estimate of the # of items in mem that are awaiting flushing to disk.
+    /// returns (# items in mem) - (# items we intend to hold in mem for performance heuristics)
+    /// The result is also an estimate because 'held_in_mem' is based on a stat that is swapped out when stats are reported.
+    pub fn get_remaining_items_to_flush_estimate(&self) -> usize {
+        let in_mem = self.count_in_mem.load(Ordering::Relaxed) as u64;
+        let held_in_mem = self.held_in_mem_slot_list_cached.load(Ordering::Relaxed)
+            + self.held_in_mem_slot_list_len.load(Ordering::Relaxed);
+        in_mem.saturating_sub(held_in_mem) as usize
+    }
+
     pub fn report_stats<T: IndexValue>(&self, storage: &BucketMapHolder<T>) {
         let elapsed_ms = self.last_time.elapsed_ms();
         if elapsed_ms < STATS_INTERVAL_MS {
@@ -196,6 +219,16 @@ impl BucketMapHolderStats {
                 } else {
                     "accounts_index"
                 },
+                (
+                    "estimate_mem_bytes",
+                    self.estimate_mem.load(Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "flush_should_evict_us",
+                    self.flush_should_evict_us.swap(0, Ordering::Relaxed),
+                    i64
+                ),
                 (
                     "count_in_mem",
                     self.count_in_mem.load(Ordering::Relaxed),
@@ -297,6 +330,11 @@ impl BucketMapHolderStats {
                     i64
                 ),
                 (
+                    "failed_to_evict",
+                    self.failed_to_evict.swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
                     "updates_in_mem",
                     self.updates_in_mem.swap(0, Ordering::Relaxed),
                     i64
@@ -317,8 +355,13 @@ impl BucketMapHolderStats {
                 ("keys", self.keys.swap(0, Ordering::Relaxed), i64),
                 ("ms_per_age", ms_per_age, i64),
                 (
-                    "flush_scan_update_us",
-                    self.flush_scan_update_us.swap(0, Ordering::Relaxed),
+                    "flush_scan_us",
+                    self.flush_scan_us.swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "flush_update_us",
+                    self.flush_update_us.swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (
@@ -327,8 +370,8 @@ impl BucketMapHolderStats {
                     i64
                 ),
                 (
-                    "flush_remove_us",
-                    self.flush_remove_us.swap(0, Ordering::Relaxed),
+                    "flush_evict_us",
+                    self.flush_evict_us.swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (
@@ -363,6 +406,16 @@ impl BucketMapHolderStats {
                 (
                     "disk_index_flush_file_us",
                     disk.map(|disk| disk.stats.index.flush_file_us.swap(0, Ordering::Relaxed))
+                        .unwrap_or_default(),
+                    i64
+                ),
+                (
+                    "disk_index_find_entry_mut_us",
+                    disk.map(|disk| disk
+                        .stats
+                        .index
+                        .find_entry_mut_us
+                        .swap(0, Ordering::Relaxed))
                         .unwrap_or_default(),
                     i64
                 ),
@@ -420,8 +473,8 @@ impl BucketMapHolderStats {
                     i64
                 ),
                 (
-                    "flush_entries_removed_from_mem",
-                    self.flush_entries_removed_from_mem
+                    "flush_entries_evicted_from_mem",
+                    self.flush_entries_evicted_from_mem
                         .swap(0, Ordering::Relaxed),
                     i64
                 ),

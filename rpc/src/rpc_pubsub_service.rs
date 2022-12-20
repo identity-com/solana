@@ -85,7 +85,7 @@ impl PubSubService {
 
         let (trigger, tripwire) = Tripwire::new();
         let thread_hdl = Builder::new()
-            .name("solana-pubsub".to_string())
+            .name("solRpcPubSub".to_string())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(pubsub_config.worker_threads)
@@ -193,15 +193,14 @@ pub struct TestBroadcastReceiver {
 #[cfg(test)]
 impl TestBroadcastReceiver {
     pub fn recv(&mut self) -> String {
-        return match self.recv_timeout(std::time::Duration::from_secs(5)) {
-            Err(err) => panic!("broadcast receiver error: {}", err),
+        match self.recv_timeout(std::time::Duration::from_secs(10)) {
+            Err(err) => panic!("broadcast receiver error: {err}"),
             Ok(str) => str,
-        };
+        }
     }
 
     pub fn recv_timeout(&mut self, timeout: std::time::Duration) -> Result<String, String> {
-        use std::thread::sleep;
-        use tokio::sync::broadcast::error::TryRecvError;
+        use {std::thread::sleep, tokio::sync::broadcast::error::TryRecvError};
 
         let started = std::time::Instant::now();
 
@@ -417,6 +416,6 @@ mod tests {
         let (_trigger, pubsub_service) =
             PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
         let thread = pubsub_service.thread_hdl.thread();
-        assert_eq!(thread.name().unwrap(), "solana-pubsub");
+        assert_eq!(thread.name().unwrap(), "solRpcPubSub");
     }
 }

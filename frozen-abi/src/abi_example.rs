@@ -1,5 +1,6 @@
 use {
     crate::abi_digester::{AbiDigester, DigestError, DigestResult},
+    lazy_static::lazy_static,
     log::*,
     serde::Serialize,
     std::any::type_name,
@@ -214,9 +215,9 @@ atomic_example_impls! { AtomicI64 }
 atomic_example_impls! { AtomicIsize }
 atomic_example_impls! { AtomicBool }
 
-#[cfg(not(target_arch = "bpf"))]
+#[cfg(not(target_os = "solana"))]
 use generic_array::{ArrayLength, GenericArray};
-#[cfg(not(target_arch = "bpf"))]
+#[cfg(not(target_os = "solana"))]
 impl<T: Default, U: ArrayLength<T>> AbiExample for GenericArray<T, U> {
     fn example() -> Self {
         Self::default()
@@ -265,15 +266,9 @@ impl<T: Default + Serialize> TypeErasedExample<T> for Placeholder {
         let normalized_type_name = normalize_type_name(original_type_name);
 
         if normalized_type_name.starts_with("solana") {
-            panic!(
-                "derive or implement AbiExample/AbiEnumVisitor for {}",
-                original_type_name
-            );
+            panic!("derive or implement AbiExample/AbiEnumVisitor for {original_type_name}");
         } else {
-            panic!(
-                "new unrecognized type for ABI digest!: {}",
-                original_type_name
-            )
+            panic!("new unrecognized type for ABI digest!: {original_type_name}")
         }
     }
 }
@@ -371,6 +366,21 @@ impl<
     }
 }
 
+#[cfg(not(target_os = "solana"))]
+impl<
+        T: Clone + std::cmp::Eq + std::hash::Hash + AbiExample,
+        S: Clone + AbiExample,
+        H: std::hash::BuildHasher + Default,
+    > AbiExample for im::HashMap<T, S, H>
+{
+    fn example() -> Self {
+        info!("AbiExample for (HashMap<T, S, H>): {}", type_name::<Self>());
+        let mut map = im::HashMap::default();
+        map.insert(T::example(), S::example());
+        map
+    }
+}
+
 impl<T: std::cmp::Ord + AbiExample, S: AbiExample> AbiExample for BTreeMap<T, S> {
     fn example() -> Self {
         info!("AbiExample for (BTreeMap<T, S>): {}", type_name::<Self>());
@@ -384,6 +394,25 @@ impl<T: AbiExample> AbiExample for Vec<T> {
     fn example() -> Self {
         info!("AbiExample for (Vec<T>): {}", type_name::<Self>());
         vec![T::example()]
+    }
+}
+
+lazy_static! {
+    /// we need &Vec<u8>, so we need something with a static lifetime
+    static ref VEC_U8: Vec<u8> = vec![u8::default()];
+}
+
+impl AbiExample for &Vec<u8> {
+    fn example() -> Self {
+        info!("AbiExample for (&Vec<u8>): {}", type_name::<Self>());
+        &VEC_U8
+    }
+}
+
+impl AbiExample for &[u8] {
+    fn example() -> Self {
+        info!("AbiExample for (&[u8]): {}", type_name::<Self>());
+        &VEC_U8[..]
     }
 }
 
@@ -414,14 +443,14 @@ impl<T: std::cmp::Ord + AbiExample> AbiExample for BTreeSet<T> {
     }
 }
 
-#[cfg(not(target_arch = "bpf"))]
+#[cfg(not(target_os = "solana"))]
 impl AbiExample for memmap2::MmapMut {
     fn example() -> Self {
         memmap2::MmapMut::map_anon(1).expect("failed to map the data file")
     }
 }
 
-#[cfg(not(target_arch = "bpf"))]
+#[cfg(not(target_os = "solana"))]
 impl AbiExample for std::path::PathBuf {
     fn example() -> Self {
         std::path::PathBuf::from(String::example())
@@ -518,5 +547,11 @@ impl<O: AbiEnumVisitor, E: AbiEnumVisitor> AbiEnumVisitor for Result<O, E> {
         variant.serialize(digester.create_enum_child()?)?;
 
         digester.create_child()
+    }
+}
+
+impl<T: AbiExample> AbiExample for once_cell::sync::OnceCell<T> {
+    fn example() -> Self {
+        Self::with_value(T::example())
     }
 }

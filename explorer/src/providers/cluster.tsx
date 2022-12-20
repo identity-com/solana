@@ -63,14 +63,22 @@ export const TESTNET_URL = clusterApiUrl("testnet");
 export const DEVNET_URL = clusterApiUrl("devnet");
 
 export function clusterUrl(cluster: Cluster, customUrl: string): string {
+  const modifyUrl = (url: string): string => {
+    if (window.location.hostname === "localhost") {
+      return url;
+    } else {
+      return url.replace("api", "explorer-api");
+    }
+  };
+
   switch (cluster) {
     case Cluster.Devnet:
-      return DEVNET_URL.replace("api", "explorer-api");
+      return modifyUrl(DEVNET_URL);
     case Cluster.MainnetBeta:
-      // return MAINNET_BETA_URL.replace("api", "explorer-api");
+      // return modifyUrl(MAINNET_BETA_URL);
       return MAINNET_BETA_URL;
     case Cluster.Testnet:
-      return TESTNET_URL.replace("api", "explorer-api");
+      return modifyUrl(TESTNET_URL);
     case Cluster.Custom:
       return customUrl;
   }
@@ -148,9 +156,8 @@ export function ClusterProvider({ children }: ClusterProviderProps) {
   const enableCustomUrl =
     localStorageIsAvailable() &&
     localStorage.getItem("enableCustomUrl") !== null;
-  const customUrl = enableCustomUrl
-    ? query.get("customUrl") || ""
-    : state.customUrl;
+  const customUrl =
+    (enableCustomUrl && query.get("customUrl")) || state.customUrl;
   const history = useHistory();
   const location = useLocation();
 
@@ -164,15 +171,6 @@ export function ClusterProvider({ children }: ClusterProviderProps) {
 
   // Reconnect to cluster when params change
   React.useEffect(() => {
-    if (cluster === Cluster.Custom) {
-      // Remove cluster param if custom url has not been set
-      if (customUrl.length === 0) {
-        query.delete("cluster");
-        history.push({ ...location, search: query.toString() });
-        return;
-      }
-    }
-
     updateCluster(dispatch, cluster, customUrl);
   }, [cluster, customUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -199,6 +197,9 @@ async function updateCluster(
   });
 
   try {
+    // validate url
+    new URL(customUrl);
+
     const connection = new Connection(clusterUrl(cluster, customUrl));
     const [firstAvailableBlock, epochSchedule, epochInfo, genesisHash] =
       await Promise.all([

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum BlockError {
     /// Block did not have enough ticks was not marked full
     /// and no shred with is_last was seen.
@@ -16,7 +16,7 @@ pub enum BlockError {
     InvalidLastTick,
 
     /// Blocks can not have missing ticks
-    /// Usually indicates that the node was interruppted with a more valuable block during
+    /// Usually indicates that the node was interrupted with a more valuable block during
     /// production and abandoned it for that more-favorable block. Leader sent data to indicate
     /// the end of the block.
     #[error("too few ticks")]

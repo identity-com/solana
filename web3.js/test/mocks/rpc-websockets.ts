@@ -7,29 +7,33 @@ import {Connection} from '../../src';
 type RpcRequest = {
   method: string;
   params?: Array<any>;
+  subscriptionEstablishmentPromise?: Promise<void>;
 };
 
 type RpcResponse = {
   context: {
     slot: number;
   };
-  value: any;
+  value: any | Promise<any>;
 };
 
-const mockRpcSocket: Array<[RpcRequest, RpcResponse]> = [];
+const mockRpcSocket: Array<[RpcRequest, RpcResponse | Promise<RpcResponse>]> =
+  [];
 const sandbox = createSandbox();
 
 export const mockRpcMessage = ({
   method,
   params,
   result,
+  subscriptionEstablishmentPromise,
 }: {
   method: string;
   params: Array<any>;
-  result: any;
+  result: any | Promise<any>;
+  subscriptionEstablishmentPromise?: Promise<void>;
 }) => {
   mockRpcSocket.push([
-    {method, params},
+    {method, params, subscriptionEstablishmentPromise},
     {
       context: {slot: 11},
       value: result,
@@ -62,6 +66,14 @@ export const restoreRpcWebSocket = (connection: Connection) => {
   sandbox.restore();
 };
 
+function isPromise<T>(obj: PromiseLike<T> | T): obj is PromiseLike<T> {
+  return (
+    !!obj &&
+    (typeof obj === 'object' || typeof obj === 'function') &&
+    typeof (obj as any).then === 'function'
+  );
+}
+
 class MockClient {
   client: LiveClient;
   mockOpen = false;
@@ -85,7 +97,7 @@ class MockClient {
     }
   }
 
-  call(method: string, params: Array<any>): Promise<Object> {
+  async call(method: string, params: Array<any>): Promise<Object> {
     expect(mockRpcSocket.length).to.be.at.least(1);
     const [mockRequest, mockResponse] = mockRpcSocket.shift() as [
       RpcRequest,
@@ -93,12 +105,26 @@ class MockClient {
     ];
 
     expect(method).to.eq(mockRequest.method);
-    expect(params).to.eql(mockRequest.params);
+    if (method.endsWith('Unsubscribe')) {
+      expect(params.length).to.eq(1);
+      expect(params[0]).to.be.a('number');
+    } else {
+      expect(params).to.eql(mockRequest.params);
+    }
+
+    if (mockRequest.subscriptionEstablishmentPromise) {
+      await mockRequest.subscriptionEstablishmentPromise;
+    }
 
     let id = ++this.subscriptionCounter;
     const response = {
       subscription: id,
-      result: mockResponse,
+      result: {
+        ...mockResponse,
+        value: isPromise(mockResponse.value)
+          ? await mockResponse.value
+          : mockResponse.value,
+      },
     };
 
     setImmediate(() => {

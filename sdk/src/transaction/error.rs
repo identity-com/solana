@@ -1,6 +1,8 @@
 use {
     crate::{
-        instruction::InstructionError, message::SanitizeMessageError, sanitize::SanitizeError,
+        instruction::InstructionError,
+        message::{AddressLoaderError, SanitizeMessageError},
+        sanitize::SanitizeError,
     },
     serde::Serialize,
     thiserror::Error,
@@ -102,9 +104,61 @@ pub enum TransactionError {
     #[error("Transaction would exceed max account limit within the block")]
     WouldExceedMaxAccountCostLimit,
 
-    /// Transaction would exceed max account data limit within the block
-    #[error("Transaction would exceed max account data limit within the block")]
-    WouldExceedMaxAccountDataCostLimit,
+    /// Transaction would exceed account data limit within the block
+    #[error("Transaction would exceed account data limit within the block")]
+    WouldExceedAccountDataBlockLimit,
+
+    /// Transaction locked too many accounts
+    #[error("Transaction locked too many accounts")]
+    TooManyAccountLocks,
+
+    /// Address lookup table not found
+    #[error("Transaction loads an address table account that doesn't exist")]
+    AddressLookupTableNotFound,
+
+    /// Attempted to lookup addresses from an account owned by the wrong program
+    #[error("Transaction loads an address table account with an invalid owner")]
+    InvalidAddressLookupTableOwner,
+
+    /// Attempted to lookup addresses from an invalid account
+    #[error("Transaction loads an address table account with invalid data")]
+    InvalidAddressLookupTableData,
+
+    /// Address table lookup uses an invalid index
+    #[error("Transaction address table lookup uses an invalid index")]
+    InvalidAddressLookupTableIndex,
+
+    /// Transaction leaves an account with a lower balance than rent-exempt minimum
+    #[error("Transaction leaves an account with a lower balance than rent-exempt minimum")]
+    InvalidRentPayingAccount,
+
+    /// Transaction would exceed max Vote Cost Limit
+    #[error("Transaction would exceed max Vote Cost Limit")]
+    WouldExceedMaxVoteCostLimit,
+
+    /// Transaction would exceed total account data limit
+    #[error("Transaction would exceed total account data limit")]
+    WouldExceedAccountDataTotalLimit,
+
+    /// Transaction contains a duplicate instruction that is not allowed
+    #[error("Transaction contains a duplicate instruction ({0}) that is not allowed")]
+    DuplicateInstruction(u8),
+
+    /// Transaction results in an account with insufficient funds for rent
+    #[error(
+        "Transaction results in an account ({account_index}) with insufficient funds for rent"
+    )]
+    InsufficientFundsForRent { account_index: u8 },
+
+    /// Transaction exceeded max loaded accounts data size capped by requested compute units
+    #[error(
+        "Transaction exceeded max loaded accounts data size capped by requested compute units"
+    )]
+    MaxLoadedAccountsDataSizeExceeded,
+
+    /// LoadedAccountsDataSizeLimit set for transaction must be greater than 0.
+    #[error("LoadedAccountsDataSizeLimit set for transaction must be greater than 0.")]
+    InvalidLoadedAccountsDataSizeLimit,
 }
 
 impl From<SanitizeError> for TransactionError {
@@ -116,10 +170,21 @@ impl From<SanitizeError> for TransactionError {
 impl From<SanitizeMessageError> for TransactionError {
     fn from(err: SanitizeMessageError) -> Self {
         match err {
-            SanitizeMessageError::IndexOutOfBounds
-            | SanitizeMessageError::ValueOutOfBounds
-            | SanitizeMessageError::InvalidValue => Self::SanitizeFailure,
-            SanitizeMessageError::DuplicateAccountKey => Self::AccountLoadedTwice,
+            SanitizeMessageError::AddressLoaderError(err) => Self::from(err),
+            _ => Self::SanitizeFailure,
+        }
+    }
+}
+
+impl From<AddressLoaderError> for TransactionError {
+    fn from(err: AddressLoaderError) -> Self {
+        match err {
+            AddressLoaderError::Disabled => Self::UnsupportedVersion,
+            AddressLoaderError::SlotHashesSysvarNotFound => Self::AccountNotFound,
+            AddressLoaderError::LookupTableAccountNotFound => Self::AddressLookupTableNotFound,
+            AddressLoaderError::InvalidAccountOwner => Self::InvalidAddressLookupTableOwner,
+            AddressLoaderError::InvalidAccountData => Self::InvalidAddressLookupTableData,
+            AddressLoaderError::InvalidLookupIndex => Self::InvalidAddressLookupTableIndex,
         }
     }
 }

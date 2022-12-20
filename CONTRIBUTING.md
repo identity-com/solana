@@ -74,7 +74,7 @@ minutes to execute. Use that time to write a detailed problem description. Once
 the description is written and CI succeeds, click the "Ready to Review" button
 and add reviewers. Adding reviewers before CI succeeds is a fast path to losing
 reviewer engagement. Not only will they be notified and see the PR is not yet
-ready for them, they will also be bombarded them with additional notifications
+ready for them, they will also be bombarded with additional notifications
 each time you push a commit to get past CI or until they "mute" the PR. Once
 muted, you'll need to reach out over some other medium, such as Discord, to
 request they have another look. When you use draft PRs, no notifications are
@@ -145,6 +145,27 @@ list of steps taken to solve the problem. Oftentimes, the list is identical to
 the subject lines of the git commits contained in the PR. It's especially
 generous (and not expected) to rebase or reword commits such that each change
 matches the logical flow in your PR description.
+
+### The PR / Issue Labels
+Labels make it easier to manage and track PRs / issues.  Below some common labels
+that we use in Solana.  For the complete list of labels, please refer to the
+[label page](https://github.com/solana-labs/solana/issues/labels):
+
+* "feature-gate": when you add a new feature gate or modify the behavior of
+an existing feature gate, please add the "feature-gate" label to your PR.
+New feature gates should also always have a corresponding tracking issue
+(go to "New Issue" -> "Feature Gate Tracker [Get Started](https://github.com/solana-labs/solana/issues/new?assignees=&labels=feature-gate&template=1-feature-gate.yml&title=Feature+Gate%3A+)")
+and should be updated each time the feature is activated on a cluster.
+
+* "automerge": When a PR is labelled with "automerge", the PR will be
+automically merged once CI passes.  In general, this label should only
+be used for small hot-fix (fewer than 100 lines) or automatic generated
+PRs.  If you're uncertain, it's usually the case that the PR is not
+qualified as "automerge".
+
+* "good first issue": If you happen to find an issue that is non-urgent and
+self-contained with moderate scope, you might want to consider attaching
+"good first issue" to it as it might be a good practice for newcomers.
 
 ### When will my PR be reviewed?
 
@@ -229,20 +250,12 @@ confused with 3-letter acronyms.
 
 ## Design Proposals
 
-Solana's architecture is described by docs generated from markdown files in
-the `docs/src/` directory, maintained by an *editor* (currently @garious). To
-add a design proposal, you'll need to include it in the
-[Accepted Design Proposals](https://docs.solana.com/proposals/accepted-design-proposals)
-section of the Solana docs.  Here's the full process:
+Solana's architecture is described by docs generated from markdown files in the `docs/src/`
+directory and viewable on the official [Solana Documentation](https://docs.solana.com) website.
 
-1. Propose a design by creating a PR that adds a markdown document to the
-   `docs/src/proposals` directory and references it from the [table of
-   contents](docs/src/SUMMARY.md). Add any relevant *maintainers* to the PR
-   review.
-2. The PR being merged indicates your proposed change was accepted and that the
-   maintainers support your plan of attack.
-3. Submit PRs that implement the proposal. When the implementation reveals the
-   need for tweaks to the proposal, be sure to update the proposal and have that
-   change reviewed by the same people as in step 1.
-4. Once the implementation is complete, submit a PR that moves the link from
-   the Accepted Proposals to the Implemented Proposals section.
+Current design proposals may be viewed on the docs site:
+
+1. [Accepted Proposals](https://docs.solana.com/proposals/accepted-design-proposals)
+2. [Implemented Proposals](https://docs.solana.com/implemented-proposals/implemented-proposals)
+
+New design proposals should follow this guide on [how to submit a design proposal](./docs/src/proposals.md#submit-a-design-proposal).

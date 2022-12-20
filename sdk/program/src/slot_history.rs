@@ -1,12 +1,18 @@
+//! A type to hold data for the [`SlotHistory` sysvar][sv].
+//!
+//! [sv]: https://docs.solana.com/developing/runtime-facilities/sysvars#slothistory
+//!
+//! The sysvar ID is declared in [`sysvar::slot_history`].
+//!
+//! [`sysvar::slot_history`]: crate::sysvar::slot_history
+
 #![allow(clippy::integer_arithmetic)]
-//!
-//! slot history
-//!
 pub use crate::clock::Slot;
 use bv::{BitVec, BitsMut};
 
+/// A bitvector indicating which slots are present in the past epoch.
 #[repr(C)]
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlotHistory {
     pub bits: BitVec<u64>,
     pub next_slot: Slot,
@@ -36,7 +42,7 @@ impl std::fmt::Debug for SlotHistory {
 
 pub const MAX_ENTRIES: u64 = 1024 * 1024; // 1 million slots is about 5 days
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum Check {
     Future,
     TooOld,
@@ -110,10 +116,10 @@ mod tests {
             assert_eq!(slot_history.check(*i), Check::Found);
         }
         for i in 3..20 {
-            assert_eq!(slot_history.check(i), Check::NotFound, "i: {}", i);
+            assert_eq!(slot_history.check(i), Check::NotFound, "i: {i}");
         }
         for i in 21..MAX_ENTRIES {
-            assert_eq!(slot_history.check(i), Check::NotFound, "i: {}", i);
+            assert_eq!(slot_history.check(i), Check::NotFound, "i: {i}");
         }
         assert_eq!(slot_history.check(MAX_ENTRIES + 1), Check::Future);
 
@@ -126,7 +132,7 @@ mod tests {
         let start = slot - MAX_ENTRIES + 1;
         let end = slot;
         for i in start..end {
-            assert_eq!(slot_history.check(i), Check::NotFound, "i: {}", i);
+            assert_eq!(slot_history.check(i), Check::NotFound, "i: {i}");
         }
         assert_eq!(slot_history.check(slot), Check::Found);
     }
@@ -154,7 +160,7 @@ mod tests {
         assert_eq!(slot_history.check(MAX_ENTRIES + 19), Check::Found);
         assert_eq!(slot_history.check(20), Check::Found);
         for i in 21..MAX_ENTRIES + 19 {
-            assert_eq!(slot_history.check(i), Check::NotFound, "found: {}", i);
+            assert_eq!(slot_history.check(i), Check::NotFound, "found: {i}");
         }
         assert_eq!(slot_history.check(MAX_ENTRIES + 20), Check::Future);
     }
@@ -173,7 +179,7 @@ mod tests {
         slot_history.add(MAX_ENTRIES + 5);
         assert_eq!(slot_history.check(5), Check::TooOld);
         for i in 6..MAX_ENTRIES + 5 {
-            assert_eq!(slot_history.check(i), Check::NotFound, "i: {}", i);
+            assert_eq!(slot_history.check(i), Check::NotFound, "i: {i}");
         }
         assert_eq!(slot_history.check(MAX_ENTRIES + 5), Check::Found);
     }

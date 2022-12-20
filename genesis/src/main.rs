@@ -13,7 +13,7 @@ use {
     },
     solana_entry::poh::compute_hashes_per_tick,
     solana_genesis::{genesis_accounts::add_genesis_accounts, Base64Account},
-    solana_ledger::{blockstore::create_new_ledger, blockstore_db::AccessType},
+    solana_ledger::{blockstore::create_new_ledger, blockstore_options::LedgerColumnOptions},
     solana_runtime::hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount, WritableAccount},
@@ -60,17 +60,17 @@ fn pubkey_from_str(key_str: &str) -> Result<Pubkey, Box<dyn error::Error>> {
 
 pub fn load_genesis_accounts(file: &str, genesis_config: &mut GenesisConfig) -> io::Result<u64> {
     let mut lamports = 0;
-    let accounts_file = File::open(file.to_string())?;
+    let accounts_file = File::open(file)?;
 
     let genesis_accounts: HashMap<String, Base64Account> =
         serde_yaml::from_reader(accounts_file)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{:?}", err)))?;
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{err:?}")))?;
 
     for (key, account_details) in genesis_accounts {
         let pubkey = pubkey_from_str(key.as_str()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("Invalid pubkey/keypair {}: {:?}", key, err),
+                format!("Invalid pubkey/keypair {key}: {err:?}"),
             )
         })?;
 
@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         .to_string();
     // stake account
     let default_bootstrap_validator_stake_lamports = &sol_to_lamports(0.5)
-        .max(StakeState::get_rent_exempt_reserve(&rent))
+        .max(rent.minimum_balance(StakeState::size_of()))
         .to_string();
 
     let default_target_tick_duration =
@@ -374,7 +374,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
                 .takes_value(true)
                 .number_of_values(3)
                 .multiple(true)
-                .help("Install a BPF program at the given address"),
+                .help("Install a SBF program at the given address"),
         )
         .arg(
             Arg::with_name("inflation")
@@ -401,8 +401,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!(
-                    "error: insufficient {}: {} for rent exemption, requires {}",
-                    name, lamports, exempt
+                    "error: insufficient {name}: {lamports} for rent exemption, requires {exempt}"
                 ),
             ))
         } else {
@@ -430,7 +429,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
     let bootstrap_validator_stake_lamports = rent_exempt_check(
         &matches,
         "bootstrap_validator_stake_lamports",
-        StakeState::get_rent_exempt_reserve(&rent),
+        rent.minimum_balance(StakeState::size_of()),
     )?;
 
     let bootstrap_stake_authorized_pubkey =
@@ -580,8 +579,8 @@ fn main() -> Result<(), Box<dyn error::Error>> {
 
     let issued_lamports = genesis_config
         .accounts
-        .iter()
-        .map(|(_key, account)| account.lamports)
+        .values()
+        .map(|account| account.lamports)
         .sum::<u64>();
 
     add_genesis_accounts(&mut genesis_config, issued_lamports - faucet_lamports);
@@ -592,12 +591,12 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             match address_loader_program {
                 [address, loader, program] => {
                     let address = address.parse::<Pubkey>().unwrap_or_else(|err| {
-                        eprintln!("Error: invalid address {}: {}", address, err);
+                        eprintln!("Error: invalid address {address}: {err}");
                         process::exit(1);
                     });
 
                     let loader = loader.parse::<Pubkey>().unwrap_or_else(|err| {
-                        eprintln!("Error: invalid loader {}: {}", loader, err);
+                        eprintln!("Error: invalid loader {loader}: {err}");
                         process::exit(1);
                     });
 
@@ -605,7 +604,7 @@ fn main() -> Result<(), Box<dyn error::Error>> {
                     File::open(program)
                         .and_then(|mut file| file.read_to_end(&mut program_data))
                         .unwrap_or_else(|err| {
-                            eprintln!("Error: failed to read {}: {}", program, err);
+                            eprintln!("Error: failed to read {program}: {err}");
                             process::exit(1);
                         });
                     genesis_config.add_account(
@@ -629,10 +628,10 @@ fn main() -> Result<(), Box<dyn error::Error>> {
         &ledger_path,
         &genesis_config,
         max_genesis_archive_unpacked_size,
-        AccessType::PrimaryOnly,
+        LedgerColumnOptions::default(),
     )?;
 
-    println!("{}", genesis_config);
+    println!("{genesis_config}");
     Ok(())
 }
 
@@ -683,6 +682,7 @@ mod tests {
         let serialized = serde_yaml::to_string(&genesis_accounts).unwrap();
         let path = Path::new("test_append_primordial_accounts_to_genesis.yml");
         let mut file = File::create(path).unwrap();
+        file.write_all(b"---\n").unwrap();
         file.write_all(&serialized.into_bytes()).unwrap();
 
         load_genesis_accounts(
@@ -756,6 +756,7 @@ mod tests {
         let serialized = serde_yaml::to_string(&genesis_accounts1).unwrap();
         let path = Path::new("test_append_primordial_accounts_to_genesis.yml");
         let mut file = File::create(path).unwrap();
+        file.write_all(b"---\n").unwrap();
         file.write_all(&serialized.into_bytes()).unwrap();
 
         load_genesis_accounts(
@@ -839,6 +840,7 @@ mod tests {
         let serialized = serde_yaml::to_string(&genesis_accounts2).unwrap();
         let path = Path::new("test_append_primordial_accounts_to_genesis.yml");
         let mut file = File::create(path).unwrap();
+        file.write_all(b"---\n").unwrap();
         file.write_all(&serialized.into_bytes()).unwrap();
 
         load_genesis_accounts(

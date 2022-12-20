@@ -6,7 +6,11 @@ extern crate test;
 use {
     log::*,
     solana_program_runtime::invoke_context::InvokeContext,
-    solana_runtime::{bank::*, bank_client::BankClient, loader_utils::create_invoke_instruction},
+    solana_runtime::{
+        bank::{test_utils::goto_end_of_slot, *},
+        bank_client::BankClient,
+        loader_utils::create_invoke_instruction,
+    },
     solana_sdk::{
         client::{AsyncClient, SyncClient},
         clock::MAX_RECENT_BLOCKHASHES,
@@ -16,6 +20,7 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signer},
         transaction::Transaction,
+        transaction_context::IndexOfAccount,
     },
     std::{sync::Arc, thread::sleep, time::Duration},
     test::Bencher,
@@ -33,8 +38,7 @@ const NOOP_PROGRAM_ID: [u8; 32] = [
 
 #[allow(clippy::unnecessary_wraps)]
 fn process_instruction(
-    _first_instruction_account: usize,
-    _data: &[u8],
+    _first_instruction_account: IndexOfAccount,
     _invoke_context: &mut InvokeContext,
 ) -> Result<(), InstructionError> {
     Ok(())
@@ -90,7 +94,7 @@ fn sync_bencher(bank: &Arc<Bank>, _bank_client: &BankClient, transactions: &[Tra
 }
 
 fn async_bencher(bank: &Arc<Bank>, bank_client: &BankClient, transactions: &[Transaction]) {
-    for transaction in transactions.to_owned() {
+    for transaction in transactions.iter().cloned() {
         bank_client.async_send_transaction(transaction).unwrap();
     }
     for _ in 0..1_000_000_000_u64 {
@@ -116,6 +120,7 @@ fn async_bencher(bank: &Arc<Bank>, bank_client: &BankClient, transactions: &[Tra
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn do_bench_transactions(
     bencher: &mut Bencher,
     bench_work: &dyn Fn(&Arc<Bank>, &BankClient, &[Transaction]),
@@ -123,9 +128,14 @@ fn do_bench_transactions(
 ) {
     solana_logger::setup();
     let ns_per_s = 1_000_000_000;
-    let (mut genesis_config, mint_keypair) = create_genesis_config(100_000_000);
+    let (mut genesis_config, mint_keypair) = create_genesis_config(100_000_000_000_000);
     genesis_config.ticks_per_slot = 100;
-    let mut bank = Bank::new_for_benches(&genesis_config);
+
+    let bank = Bank::new_for_benches(&genesis_config);
+    // freeze bank so that slot hashes is populated
+    bank.freeze();
+
+    let mut bank = Bank::new_from_parent(&Arc::new(bank), &Pubkey::default(), 1);
     bank.add_builtin(
         "builtin_program",
         &Pubkey::new(&BUILTIN_PROGRAM_ID),
@@ -146,7 +156,7 @@ fn do_bench_transactions(
         bench_work(&bank, &bank_client, &transactions);
     });
 
-    let summary = bencher.bench(|_bencher| {}).unwrap();
+    let summary = bencher.bench(|_bencher| Ok(())).unwrap().unwrap();
     info!("  {:?} transactions", transactions.len());
     info!("  {:?} ns/iter median", summary.median as u64);
     assert!(0f64 != summary.median);
@@ -195,10 +205,7 @@ fn bench_bank_update_recent_blockhashes(bencher: &mut Bencher) {
         goto_end_of_slot(Arc::get_mut(&mut bank).unwrap());
     }
     // Verify blockhash_queue is full (genesis hash has been kicked out)
-    assert_eq!(
-        Some(false),
-        bank.check_hash_age(&genesis_hash, MAX_RECENT_BLOCKHASHES)
-    );
+    assert!(!bank.is_hash_valid_for_age(&genesis_hash, MAX_RECENT_BLOCKHASHES));
     bencher.iter(|| {
         bank.update_recent_blockhashes();
     });

@@ -6,9 +6,9 @@ use {
         blockstore::Blockstore,
         blockstore_processor::{TransactionStatusBatch, TransactionStatusMessage},
     },
-    solana_runtime::bank::{Bank, InnerInstructionsList, NonceInfo, TransactionLogMessages},
+    solana_runtime::bank::{DurableNonceFee, TransactionExecutionDetails},
     solana_transaction_status::{
-        extract_and_fmt_memos, InnerInstructions, Reward, TransactionStatusMeta,
+        extract_and_fmt_memos, InnerInstruction, InnerInstructions, Reward, TransactionStatusMeta,
     },
     std::{
         sync::{
@@ -32,11 +32,12 @@ impl TransactionStatusService {
         enable_rpc_transaction_history: bool,
         transaction_notifier: Option<TransactionNotifierLock>,
         blockstore: Arc<Blockstore>,
+        enable_extended_tx_metadata_storage: bool,
         exit: &Arc<AtomicBool>,
     ) -> Self {
         let exit = exit.clone();
         let thread_hdl = Builder::new()
-            .name("solana-transaction-status-writer".to_string())
+            .name("solTxStatusWrtr".to_string())
             .spawn(move || loop {
                 if exit.load(Ordering::Relaxed) {
                     break;
@@ -48,6 +49,7 @@ impl TransactionStatusService {
                     enable_rpc_transaction_history,
                     transaction_notifier.clone(),
                     &blockstore,
+                    enable_extended_tx_metadata_storage,
                 ) {
                     break;
                 }
@@ -62,68 +64,63 @@ impl TransactionStatusService {
         enable_rpc_transaction_history: bool,
         transaction_notifier: Option<TransactionNotifierLock>,
         blockstore: &Arc<Blockstore>,
+        enable_extended_tx_metadata_storage: bool,
     ) -> Result<(), RecvTimeoutError> {
         match write_transaction_status_receiver.recv_timeout(Duration::from_secs(1))? {
             TransactionStatusMessage::Batch(TransactionStatusBatch {
                 bank,
                 transactions,
-                statuses,
+                execution_results,
                 balances,
                 token_balances,
-                inner_instructions,
-                transaction_logs,
                 rent_debits,
+                transaction_indexes,
             }) => {
                 let slot = bank.slot();
-                let inner_instructions_iter: Box<
-                    dyn Iterator<Item = Option<InnerInstructionsList>>,
-                > = if let Some(inner_instructions) = inner_instructions {
-                    Box::new(inner_instructions.into_iter())
-                } else {
-                    Box::new(std::iter::repeat_with(|| None))
-                };
-                let transaction_logs_iter: Box<
-                    dyn Iterator<Item = Option<TransactionLogMessages>>,
-                > = if let Some(transaction_logs) = transaction_logs {
-                    Box::new(transaction_logs.into_iter())
-                } else {
-                    Box::new(std::iter::repeat_with(|| None))
-                };
                 for (
                     transaction,
-                    (status, nonce),
+                    execution_result,
                     pre_balances,
                     post_balances,
                     pre_token_balances,
                     post_token_balances,
-                    inner_instructions,
-                    log_messages,
                     rent_debits,
+                    transaction_index,
                 ) in izip!(
                     transactions,
-                    statuses,
+                    execution_results,
                     balances.pre_balances,
                     balances.post_balances,
                     token_balances.pre_token_balances,
                     token_balances.post_token_balances,
-                    inner_instructions_iter,
-                    transaction_logs_iter,
                     rent_debits,
+                    transaction_indexes,
                 ) {
-                    if Bank::can_commit(&status) {
-                        let lamports_per_signature = nonce
-                            .map(|nonce| nonce.lamports_per_signature())
-                            .unwrap_or_else(|| {
-                                bank.get_lamports_per_signature_for_blockhash(
-                                    transaction.message().recent_blockhash(),
-                                )
-                            })
-                            .expect("lamports_per_signature must be available");
-                        let fee = Bank::get_fee_for_message_with_lamports_per_signature(
+                    if let Some(details) = execution_result {
+                        let TransactionExecutionDetails {
+                            status,
+                            log_messages,
+                            inner_instructions,
+                            durable_nonce_fee,
+                            return_data,
+                            executed_units,
+                            ..
+                        } = details;
+                        let lamports_per_signature = match durable_nonce_fee {
+                            Some(DurableNonceFee::Valid(lamports_per_signature)) => {
+                                Some(lamports_per_signature)
+                            }
+                            Some(DurableNonceFee::Invalid) => None,
+                            None => bank.get_lamports_per_signature_for_blockhash(
+                                transaction.message().recent_blockhash(),
+                            ),
+                        }
+                        .expect("lamports_per_signature must be available");
+                        let fee = bank.get_fee_for_message_with_lamports_per_signature(
                             transaction.message(),
                             lamports_per_signature,
                         );
-                        let tx_account_locks = transaction.get_account_locks();
+                        let tx_account_locks = transaction.get_account_locks_unchecked();
 
                         let inner_instructions = inner_instructions.map(|inner_instructions| {
                             inner_instructions
@@ -131,7 +128,13 @@ impl TransactionStatusService {
                                 .enumerate()
                                 .map(|(index, instructions)| InnerInstructions {
                                     index: index as u8,
-                                    instructions,
+                                    instructions: instructions
+                                        .into_iter()
+                                        .map(|info| InnerInstruction {
+                                            instruction: info.instruction,
+                                            stack_height: Some(u32::from(info.stack_height)),
+                                        })
+                                        .collect(),
                                 })
                                 .filter(|i| !i.instructions.is_empty())
                                 .collect()
@@ -151,8 +154,8 @@ impl TransactionStatusService {
                                 })
                                 .collect(),
                         );
-
-                        let transaction_status_meta = TransactionStatusMeta {
+                        let loaded_addresses = transaction.get_loaded_addresses();
+                        let mut transaction_status_meta = TransactionStatusMeta {
                             status,
                             fee,
                             pre_balances,
@@ -162,16 +165,28 @@ impl TransactionStatusService {
                             pre_token_balances,
                             post_token_balances,
                             rewards,
+                            loaded_addresses,
+                            return_data,
+                            compute_units_consumed: Some(executed_units),
                         };
 
                         if let Some(transaction_notifier) = transaction_notifier.as_ref() {
                             transaction_notifier.write().unwrap().notify_transaction(
                                 slot,
+                                transaction_index,
                                 transaction.signature(),
                                 &transaction_status_meta,
                                 &transaction,
                             );
                         }
+
+                        if !(enable_extended_tx_metadata_storage || transaction_notifier.is_some())
+                        {
+                            transaction_status_meta.log_messages.take();
+                            transaction_status_meta.inner_instructions.take();
+                            transaction_status_meta.return_data.take();
+                        }
+
                         if enable_rpc_transaction_history {
                             if let Some(memos) = extract_and_fmt_memos(transaction.message()) {
                                 blockstore
@@ -213,19 +228,21 @@ pub(crate) mod tests {
         dashmap::DashMap,
         solana_account_decoder::parse_token::token_amount_to_ui_amount,
         solana_ledger::{genesis_utils::create_genesis_config, get_tmp_ledger_path},
-        solana_runtime::bank::{NonceFull, NoncePartial, RentDebits, TransactionBalancesSet},
+        solana_runtime::bank::{Bank, NonceFull, NoncePartial, RentDebits, TransactionBalancesSet},
         solana_sdk::{
             account_utils::StateMut,
             clock::Slot,
             hash::Hash,
             instruction::CompiledInstruction,
-            message::{Message, MessageHeader, SanitizedMessage},
-            nonce, nonce_account,
+            message::{LegacyMessage, Message, MessageHeader, SanitizedMessage},
+            nonce::{self, state::DurableNonce},
+            nonce_account,
             pubkey::Pubkey,
             signature::{Keypair, Signature, Signer},
             system_transaction,
             transaction::{
-                SanitizedTransaction, Transaction, TransactionError, VersionedTransaction,
+                MessageHash, SanitizedTransaction, SimpleAddressLoader, Transaction,
+                VersionedTransaction,
             },
         },
         solana_transaction_status::{
@@ -242,8 +259,20 @@ pub(crate) mod tests {
         },
     };
 
+    #[derive(Eq, Hash, PartialEq)]
+    struct TestNotifierKey {
+        slot: Slot,
+        transaction_index: usize,
+        signature: Signature,
+    }
+
+    struct TestNotification {
+        _meta: TransactionStatusMeta,
+        transaction: SanitizedTransaction,
+    }
+
     struct TestTransactionNotifier {
-        notifications: DashMap<(Slot, Signature), (TransactionStatusMeta, SanitizedTransaction)>,
+        notifications: DashMap<TestNotifierKey, TestNotification>,
     }
 
     impl TestTransactionNotifier {
@@ -258,13 +287,21 @@ pub(crate) mod tests {
         fn notify_transaction(
             &self,
             slot: Slot,
+            transaction_index: usize,
             signature: &Signature,
             transaction_status_meta: &TransactionStatusMeta,
             transaction: &SanitizedTransaction,
         ) {
             self.notifications.insert(
-                (slot, *signature),
-                (transaction_status_meta.clone(), transaction.clone()),
+                TestNotifierKey {
+                    slot,
+                    transaction_index,
+                    signature: *signature,
+                },
+                TestNotification {
+                    _meta: transaction_status_meta.clone(),
+                    transaction: transaction.clone(),
+                },
             );
         }
     }
@@ -304,24 +341,27 @@ pub(crate) mod tests {
             Blockstore::open(&ledger_path).expect("Expected to be able to open database ledger");
         let blockstore = Arc::new(blockstore);
 
-        let message_hash = Hash::new_unique();
         let transaction = build_test_transaction_legacy();
         let transaction = VersionedTransaction::from(transaction);
-        let transaction =
-            SanitizedTransaction::try_create(transaction, message_hash, Some(true), |_| {
-                Err(TransactionError::UnsupportedVersion)
-            })
-            .unwrap();
+        let transaction = SanitizedTransaction::try_create(
+            transaction,
+            MessageHash::Compute,
+            None,
+            SimpleAddressLoader::Disabled,
+            true, // require_static_program_ids
+        )
+        .unwrap();
 
         let expected_transaction = transaction.clone();
         let pubkey = Pubkey::new_unique();
 
         let mut nonce_account = nonce_account::create_account(1).into_inner();
-        let data = nonce::state::Data::new(Pubkey::new(&[1u8; 32]), Hash::new(&[42u8; 32]), 42);
+        let durable_nonce = DurableNonce::from_blockhash(&Hash::new(&[42u8; 32]));
+        let data = nonce::state::Data::new(Pubkey::new(&[1u8; 32]), durable_nonce, 42);
         nonce_account
-            .set_state(&nonce::state::Versions::new_current(
-                nonce::State::Initialized(data),
-            ))
+            .set_state(&nonce::state::Versions::new(nonce::State::Initialized(
+                data,
+            )))
             .unwrap();
 
         let message = build_message();
@@ -331,18 +371,23 @@ pub(crate) mod tests {
         let mut rent_debits = RentDebits::default();
         rent_debits.insert(&pubkey, 123, 456);
 
-        let transaction_result = (
-            Ok(()),
-            Some(
-                NonceFull::from_partial(
+        let transaction_result = Some(TransactionExecutionDetails {
+            status: Ok(()),
+            log_messages: None,
+            inner_instructions: None,
+            durable_nonce_fee: Some(DurableNonceFee::from(
+                &NonceFull::from_partial(
                     rollback_partial,
-                    &SanitizedMessage::Legacy(message),
+                    &SanitizedMessage::Legacy(LegacyMessage::new(message)),
                     &[(pubkey, nonce_account)],
                     &rent_debits,
                 )
                 .unwrap(),
-            ),
-        );
+            )),
+            return_data: None,
+            executed_units: 0,
+            accounts_data_len_delta: 0,
+        });
 
         let balances = TransactionBalancesSet {
             pre_balances: vec![vec![123456]],
@@ -350,11 +395,13 @@ pub(crate) mod tests {
         };
 
         let owner = Pubkey::new_unique().to_string();
+        let token_program_id = Pubkey::new_unique().to_string();
         let pre_token_balance = TransactionTokenBalance {
             account_index: 0,
             mint: Pubkey::new_unique().to_string(),
             ui_token_amount: token_amount_to_ui_amount(42, 2),
             owner: owner.clone(),
+            program_id: token_program_id.clone(),
         };
 
         let post_token_balance = TransactionTokenBalance {
@@ -362,6 +409,7 @@ pub(crate) mod tests {
             mint: Pubkey::new_unique().to_string(),
             ui_token_amount: token_amount_to_ui_amount(58, 2),
             owner,
+            program_id: token_program_id,
         };
 
         let token_balances = TransactionTokenBalancesSet {
@@ -371,15 +419,15 @@ pub(crate) mod tests {
 
         let slot = bank.slot();
         let signature = *transaction.signature();
+        let transaction_index: usize = bank.transaction_count().try_into().unwrap();
         let transaction_status_batch = TransactionStatusBatch {
             bank,
             transactions: vec![transaction],
-            statuses: vec![transaction_result],
+            execution_results: vec![transaction_result],
             balances,
             token_balances,
-            inner_instructions: None,
-            transaction_logs: None,
             rent_debits: vec![rent_debits],
+            transaction_indexes: vec![transaction_index],
         };
 
         let test_notifier = Arc::new(RwLock::new(TestTransactionNotifier::new()));
@@ -391,6 +439,7 @@ pub(crate) mod tests {
             false,
             Some(test_notifier.clone()),
             blockstore,
+            false,
             &exit,
         );
 
@@ -403,9 +452,17 @@ pub(crate) mod tests {
         transaction_status_service.join().unwrap();
         let notifier = test_notifier.read().unwrap();
         assert_eq!(notifier.notifications.len(), 1);
-        assert!(notifier.notifications.contains_key(&(slot, signature)));
+        let key = TestNotifierKey {
+            slot,
+            transaction_index,
+            signature,
+        };
+        assert!(notifier.notifications.contains_key(&key));
 
-        let result = &*notifier.notifications.get(&(slot, signature)).unwrap();
-        assert_eq!(expected_transaction.signature(), result.1.signature());
+        let result = &*notifier.notifications.get(&key).unwrap();
+        assert_eq!(
+            expected_transaction.signature(),
+            result.transaction.signature()
+        );
     }
 }

@@ -6,11 +6,11 @@ use log::*;
 use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
-    solana_client::thin_client::create_client,
+    solana_client::{connection_cache::ConnectionCache, thin_client::ThinClient},
     solana_core::consensus::VOTE_THRESHOLD_DEPTH,
     solana_entry::entry::{Entry, EntrySlice},
     solana_gossip::{
-        cluster_info::{self, VALIDATOR_PORT_RANGE},
+        cluster_info,
         contact_info::ContactInfo,
         crds_value::{self, CrdsData, CrdsValue},
         gossip_error::GossipError,
@@ -35,13 +35,21 @@ use {
     solana_vote_program::vote_transaction,
     std::{
         collections::{HashMap, HashSet},
-        net::SocketAddr,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         path::Path,
         sync::{Arc, RwLock},
         thread::sleep,
         time::{Duration, Instant},
     },
 };
+
+pub fn get_client_facing_addr(contact_info: &ContactInfo) -> (SocketAddr, SocketAddr) {
+    let (rpc, mut tpu) = contact_info.client_facing_addr();
+    // QUIC certificate authentication requires the IP Address to match. ContactInfo might have
+    // 0.0.0.0 as the IP instead of 127.0.0.1.
+    tpu.set_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    (rpc, tpu)
+}
 
 /// Spend and verify from every node in the network
 pub fn spend_and_verify_all_nodes<S: ::std::hash::BuildHasher + Sync + Send>(
@@ -50,6 +58,7 @@ pub fn spend_and_verify_all_nodes<S: ::std::hash::BuildHasher + Sync + Send>(
     nodes: usize,
     ignore_nodes: HashSet<Pubkey, S>,
     socket_addr_space: SocketAddrSpace,
+    connection_cache: &Arc<ConnectionCache>,
 ) {
     let cluster_nodes =
         discover_cluster(&entry_point_info.gossip, nodes, socket_addr_space).unwrap();
@@ -60,7 +69,8 @@ pub fn spend_and_verify_all_nodes<S: ::std::hash::BuildHasher + Sync + Send>(
             return;
         }
         let random_keypair = Keypair::new();
-        let client = create_client(ingress_node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+        let (rpc, tpu) = get_client_facing_addr(ingress_node);
+        let client = ThinClient::new(rpc, tpu, connection_cache.clone());
         let bal = client
             .poll_get_balance_with_commitment(
                 &funding_keypair.pubkey(),
@@ -81,7 +91,8 @@ pub fn spend_and_verify_all_nodes<S: ::std::hash::BuildHasher + Sync + Send>(
             if ignore_nodes.contains(&validator.id) {
                 continue;
             }
-            let client = create_client(validator.client_facing_addr(), VALIDATOR_PORT_RANGE);
+            let (rpc, tpu) = get_client_facing_addr(validator);
+            let client = ThinClient::new(rpc, tpu, connection_cache.clone());
             client.poll_for_signature_confirmation(&sig, confs).unwrap();
         }
     });
@@ -90,8 +101,10 @@ pub fn spend_and_verify_all_nodes<S: ::std::hash::BuildHasher + Sync + Send>(
 pub fn verify_balances<S: ::std::hash::BuildHasher>(
     expected_balances: HashMap<Pubkey, u64, S>,
     node: &ContactInfo,
+    connection_cache: Arc<ConnectionCache>,
 ) {
-    let client = create_client(node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+    let (rpc, tpu) = get_client_facing_addr(node);
+    let client = ThinClient::new(rpc, tpu, connection_cache);
     for (pk, b) in expected_balances {
         let bal = client
             .poll_get_balance_with_commitment(&pk, CommitmentConfig::processed())
@@ -103,10 +116,12 @@ pub fn verify_balances<S: ::std::hash::BuildHasher>(
 pub fn send_many_transactions(
     node: &ContactInfo,
     funding_keypair: &Keypair,
+    connection_cache: &Arc<ConnectionCache>,
     max_tokens_per_transfer: u64,
     num_txs: u64,
 ) -> HashMap<Pubkey, u64> {
-    let client = create_client(node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+    let (rpc, tpu) = get_client_facing_addr(node);
+    let client = ThinClient::new(rpc, tpu, connection_cache.clone());
     let mut expected_balances = HashMap::new();
     for _ in 0..num_txs {
         let random_keypair = Keypair::new();
@@ -189,6 +204,7 @@ pub fn kill_entry_and_spend_and_verify_rest(
     entry_point_info: &ContactInfo,
     entry_point_validator_exit: &Arc<RwLock<Exit>>,
     funding_keypair: &Keypair,
+    connection_cache: &Arc<ConnectionCache>,
     nodes: usize,
     slot_millis: u64,
     socket_addr_space: SocketAddrSpace,
@@ -197,7 +213,9 @@ pub fn kill_entry_and_spend_and_verify_rest(
     let cluster_nodes =
         discover_cluster(&entry_point_info.gossip, nodes, socket_addr_space).unwrap();
     assert!(cluster_nodes.len() >= nodes);
-    let client = create_client(entry_point_info.client_facing_addr(), VALIDATOR_PORT_RANGE);
+    let (rpc, tpu) = get_client_facing_addr(entry_point_info);
+    let client = ThinClient::new(rpc, tpu, connection_cache.clone());
+
     // sleep long enough to make sure we are in epoch 3
     let first_two_epoch_slots = MINIMUM_SLOTS_PER_EPOCH * (3 + 1);
 
@@ -208,9 +226,7 @@ pub fn kill_entry_and_spend_and_verify_rest(
     }
 
     info!("sleeping for 2 leader fortnights");
-    sleep(Duration::from_millis(
-        slot_millis * first_two_epoch_slots as u64,
-    ));
+    sleep(Duration::from_millis(slot_millis * first_two_epoch_slots));
     info!("done sleeping for first 2 warmup epochs");
     info!("killing entry point: {}", entry_point_info.id);
     entry_point_validator_exit.write().unwrap().exit();
@@ -225,7 +241,8 @@ pub fn kill_entry_and_spend_and_verify_rest(
             continue;
         }
 
-        let client = create_client(ingress_node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+        let (rpc, tpu) = get_client_facing_addr(ingress_node);
+        let client = ThinClient::new(rpc, tpu, connection_cache.clone());
         let balance = client
             .poll_get_balance_with_commitment(
                 &funding_keypair.pubkey(),
@@ -271,7 +288,13 @@ pub fn kill_entry_and_spend_and_verify_rest(
                 }
             };
             info!("poll_all_nodes_for_signature()");
-            match poll_all_nodes_for_signature(entry_point_info, &cluster_nodes, &sig, confs) {
+            match poll_all_nodes_for_signature(
+                entry_point_info,
+                &cluster_nodes,
+                connection_cache,
+                &sig,
+                confs,
+            ) {
                 Err(e) => {
                     info!("poll_all_nodes_for_signature() failed {:?}", e);
                     result = Err(e);
@@ -285,7 +308,12 @@ pub fn kill_entry_and_spend_and_verify_rest(
     }
 }
 
-pub fn check_for_new_roots(num_new_roots: usize, contact_infos: &[ContactInfo], test_name: &str) {
+pub fn check_for_new_roots(
+    num_new_roots: usize,
+    contact_infos: &[ContactInfo],
+    connection_cache: &Arc<ConnectionCache>,
+    test_name: &str,
+) {
     let mut roots = vec![HashSet::new(); contact_infos.len()];
     let mut done = false;
     let mut last_print = Instant::now();
@@ -296,7 +324,8 @@ pub fn check_for_new_roots(num_new_roots: usize, contact_infos: &[ContactInfo], 
         assert!(loop_start.elapsed() < loop_timeout);
 
         for (i, ingress_node) in contact_infos.iter().enumerate() {
-            let client = create_client(ingress_node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+            let (rpc, tpu) = get_client_facing_addr(ingress_node);
+            let client = ThinClient::new(rpc, tpu, connection_cache.clone());
             let root_slot = client
                 .get_slot_with_commitment(CommitmentConfig::finalized())
                 .unwrap_or(0);
@@ -319,6 +348,7 @@ pub fn check_for_new_roots(num_new_roots: usize, contact_infos: &[ContactInfo], 
 pub fn check_no_new_roots(
     num_slots_to_wait: usize,
     contact_infos: &[ContactInfo],
+    connection_cache: &Arc<ConnectionCache>,
     test_name: &str,
 ) {
     assert!(!contact_infos.is_empty());
@@ -327,7 +357,8 @@ pub fn check_no_new_roots(
         .iter()
         .enumerate()
         .map(|(i, ingress_node)| {
-            let client = create_client(ingress_node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+            let (rpc, tpu) = get_client_facing_addr(ingress_node);
+            let client = ThinClient::new(rpc, tpu, connection_cache.clone());
             let initial_root = client
                 .get_slot()
                 .unwrap_or_else(|_| panic!("get_slot for {} failed", ingress_node.id));
@@ -345,7 +376,8 @@ pub fn check_no_new_roots(
     let mut reached_end_slot = false;
     loop {
         for contact_info in contact_infos {
-            let client = create_client(contact_info.client_facing_addr(), VALIDATOR_PORT_RANGE);
+            let (rpc, tpu) = get_client_facing_addr(contact_info);
+            let client = ThinClient::new(rpc, tpu, connection_cache.clone());
             current_slot = client
                 .get_slot_with_commitment(CommitmentConfig::processed())
                 .unwrap_or_else(|_| panic!("get_slot for {} failed", contact_infos[0].id));
@@ -367,7 +399,8 @@ pub fn check_no_new_roots(
     }
 
     for (i, ingress_node) in contact_infos.iter().enumerate() {
-        let client = create_client(ingress_node.client_facing_addr(), VALIDATOR_PORT_RANGE);
+        let (rpc, tpu) = get_client_facing_addr(ingress_node);
+        let client = ThinClient::new(rpc, tpu, connection_cache.clone());
         assert_eq!(
             client
                 .get_slot()
@@ -380,6 +413,7 @@ pub fn check_no_new_roots(
 fn poll_all_nodes_for_signature(
     entry_point_info: &ContactInfo,
     cluster_nodes: &[ContactInfo],
+    connection_cache: &Arc<ConnectionCache>,
     sig: &Signature,
     confs: usize,
 ) -> Result<(), TransportError> {
@@ -387,7 +421,8 @@ fn poll_all_nodes_for_signature(
         if validator.id == entry_point_info.id {
             continue;
         }
-        let client = create_client(validator.client_facing_addr(), VALIDATOR_PORT_RANGE);
+        let (rpc, tpu) = get_client_facing_addr(validator);
+        let client = ThinClient::new(rpc, tpu, connection_cache.clone());
         client.poll_for_signature_confirmation(sig, confs)?;
     }
 
@@ -441,7 +476,7 @@ pub fn submit_vote_to_cluster_gossip(
         vec![CrdsValue::new_signed(
             CrdsData::Vote(
                 0,
-                crds_value::Vote::new(node_keypair.pubkey(), vote_tx, timestamp()),
+                crds_value::Vote::new(node_keypair.pubkey(), vote_tx, timestamp()).unwrap(),
             ),
             node_keypair,
         )],

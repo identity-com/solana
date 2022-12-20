@@ -24,6 +24,12 @@ annotate() {
   fi
 }
 
+# Assume everyting needs to be tested when this file or any Dockerfile changes
+mandatory_affected_files=()
+mandatory_affected_files+=(^ci/buildkite-pipeline.sh)
+mandatory_affected_files+=(^ci/docker-rust/Dockerfile)
+mandatory_affected_files+=(^ci/docker-rust-nightly/Dockerfile)
+
 # Checks if a CI pull request affects one or more path patterns.  Each
 # pattern argument is checked in series. If one of them found to be affected,
 # return immediately as such.
@@ -42,8 +48,7 @@ affects() {
     # the worse (affected)
     return 0
   fi
-  # Assume everyting needs to be tested when any Dockerfile changes
-  for pattern in ^ci/docker-rust/Dockerfile ^ci/docker-rust-nightly/Dockerfile "$@"; do
+  for pattern in "${mandatory_affected_files[@]}" "$@"; do
     if [[ ${pattern:0:1} = "!" ]]; then
       for file in "${affected_files[@]}"; do
         if [[ ! $file =~ ${pattern:1} ]]; then
@@ -102,13 +107,16 @@ command_step() {
     command: "$2"
     timeout_in_minutes: $3
     artifact_paths: "log-*.txt"
+    agents:
+      queue: "solana"
 EOF
 }
 
 
 trigger_secondary_step() {
   cat  >> "$output_file" <<"EOF"
-  - trigger: "solana-secondary"
+  - name: "Trigger Build on solana-secondary"
+    trigger: "solana-secondary"
     branches: "!pull/*"
     async: true
     build:
@@ -137,7 +145,7 @@ all_test_steps() {
              ^ci/test-coverage.sh \
              ^scripts/coverage.sh \
       ; then
-    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 40
+    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 80
     wait_step
   else
     annotate --style info --context test-coverage \
@@ -145,16 +153,28 @@ all_test_steps() {
   fi
 
   # Full test suite
-  command_step stable ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-stable.sh" 60
+  command_step stable ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-stable.sh" 70
+
+  # Docs tests
+  if affects \
+             .rs$ \
+             ^ci/rust-version.sh \
+             ^ci/test-docs.sh \
+      ; then
+    command_step doctest "ci/test-docs.sh" 15
+  else
+    annotate --style info --context test-docs \
+      "Docs skipped as no .rs files were modified"
+  fi
   wait_step
 
-  # BPF test suite
+  # SBF test suite
   if affects \
              .rs$ \
              Cargo.lock$ \
              Cargo.toml$ \
              ^ci/rust-version.sh \
-             ^ci/test-stable-bpf.sh \
+             ^ci/test-stable-sbf.sh \
              ^ci/test-stable.sh \
              ^ci/test-local-cluster.sh \
              ^core/build.rs \
@@ -163,16 +183,16 @@ all_test_steps() {
              ^sdk/ \
       ; then
     cat >> "$output_file" <<"EOF"
-  - command: "ci/test-stable-bpf.sh"
-    name: "stable-bpf"
-    timeout_in_minutes: 20
-    artifact_paths: "bpf-dumps.tar.bz2"
+  - command: "ci/test-stable-sbf.sh"
+    name: "stable-sbf"
+    timeout_in_minutes: 35
+    artifact_paths: "sbf-dumps.tar.bz2"
     agents:
-      - "queue=default"
+      queue: "solana"
 EOF
   else
     annotate --style info \
-      "Stable-BPF skipped as no relevant files were modified"
+      "Stable-SBF skipped as no relevant files were modified"
   fi
 
   # Perf test suite
@@ -195,7 +215,7 @@ EOF
     timeout_in_minutes: 20
     artifact_paths: "log-*.txt"
     agents:
-      - "queue=cuda"
+      queue: "cuda"
 EOF
   else
     annotate --style info \
@@ -220,7 +240,9 @@ EOF
     cat >> "$output_file" <<"EOF"
   - command: "scripts/build-downstream-projects.sh"
     name: "downstream-projects"
-    timeout_in_minutes: 30
+    timeout_in_minutes: 35
+    agents:
+      queue: "solana"
 EOF
   else
     annotate --style info \
@@ -248,7 +270,7 @@ EOF
              ^ci/test-coverage.sh \
              ^ci/test-bench.sh \
       ; then
-    command_step bench "ci/test-bench.sh" 30
+    command_step bench "ci/test-bench.sh" 40
   else
     annotate --style info --context test-bench \
       "Bench skipped as no .rs files were modified"
@@ -256,7 +278,19 @@ EOF
 
   command_step "local-cluster" \
     ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-local-cluster.sh" \
-    50
+    40
+
+  command_step "local-cluster-flakey" \
+    ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-local-cluster-flakey.sh" \
+    10
+
+  command_step "local-cluster-slow-1" \
+    ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-local-cluster-slow-1.sh" \
+    40
+
+  command_step "local-cluster-slow-2" \
+    ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-local-cluster-slow-2.sh" \
+    40
 }
 
 pull_or_push_steps() {

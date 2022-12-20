@@ -7,10 +7,12 @@ use {
     solana_runtime::{
         account_info::AccountInfo,
         accounts_index::{
-            AccountSecondaryIndexes, AccountsIndex, ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS,
+            AccountSecondaryIndexes, AccountsIndex, UpsertReclaim,
+            ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS,
         },
     },
-    solana_sdk::pubkey::{self, Pubkey},
+    solana_sdk::{account::AccountSharedData, pubkey},
+    std::sync::Arc,
     test::Bencher,
 };
 
@@ -22,18 +24,21 @@ fn bench_accounts_index(bencher: &mut Bencher) {
     const NUM_FORKS: u64 = 16;
 
     let mut reclaims = vec![];
-    let index = AccountsIndex::<AccountInfo>::new(Some(ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS));
+    let index = AccountsIndex::<AccountInfo>::new(
+        Some(ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS),
+        &Arc::default(),
+    );
     for f in 0..NUM_FORKS {
         for pubkey in pubkeys.iter().take(NUM_PUBKEYS) {
             index.upsert(
                 f,
+                f,
                 pubkey,
-                &Pubkey::default(),
-                &[],
+                &AccountSharedData::default(),
                 &AccountSecondaryIndexes::default(),
                 AccountInfo::default(),
                 &mut reclaims,
-                false,
+                UpsertReclaim::PopulateReclaims,
             );
         }
     }
@@ -45,17 +50,17 @@ fn bench_accounts_index(bencher: &mut Bencher) {
             let pubkey = thread_rng().gen_range(0, NUM_PUBKEYS);
             index.upsert(
                 fork,
+                fork,
                 &pubkeys[pubkey],
-                &Pubkey::default(),
-                &[],
+                &AccountSharedData::default(),
                 &AccountSecondaryIndexes::default(),
                 AccountInfo::default(),
                 &mut reclaims,
-                false,
+                UpsertReclaim::PopulateReclaims,
             );
             reclaims.clear();
         }
-        index.add_root(root, false);
+        index.add_root(root);
         root += 1;
         fork += 1;
     });

@@ -1,10 +1,12 @@
 use {
-    crate::{admin_rpc_service, new_spinner_progress_bar, println_name_value, ProgressBar},
-    console::style,
-    solana_client::{
-        client_error, rpc_client::RpcClient, rpc_request, rpc_response::RpcContactInfo,
+    crate::{
+        admin_rpc_service, format_name_value, new_spinner_progress_bar, println_name_value,
+        ProgressBar,
     },
+    console::style,
     solana_core::validator::ValidatorStartProgress,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client_api::{client_error, request, response::RpcContactInfo},
     solana_sdk::{
         clock::Slot, commitment_config::CommitmentConfig, exit::Exit, native_token::Sol,
         pubkey::Pubkey,
@@ -80,10 +82,10 @@ impl Dashboard {
             };
 
             let rpc_client = RpcClient::new_socket(rpc_addr);
-            let identity = match rpc_client.get_identity() {
+            let mut identity = match rpc_client.get_identity() {
                 Ok(identity) => identity,
                 Err(err) => {
-                    println!("Failed to get validator identity over RPC: {}", err);
+                    println!("Failed to get validator identity over RPC: {err}");
                     continue;
                 }
             };
@@ -108,7 +110,7 @@ impl Dashboard {
                     println_name_value("TPU Address:", &tpu.to_string());
                 }
                 if let Some(rpc) = contact_info.rpc {
-                    println_name_value("JSON RPC URL:", &format!("http://{}", rpc));
+                    println_name_value("JSON RPC URL:", &format!("http://{rpc}"));
                 }
             }
 
@@ -122,9 +124,14 @@ impl Dashboard {
                     snapshot_slot_info = rpc_client.get_highest_snapshot_slot().ok();
                 }
 
+                let new_identity = rpc_client.get_identity().unwrap_or(identity);
+                if identity != new_identity {
+                    identity = new_identity;
+                    progress_bar.println(format_name_value("Identity:", &identity.to_string()));
+                }
+
                 match get_validator_stats(&rpc_client, &identity) {
                     Ok((
-                        max_retransmit_slot,
                         processed_slot,
                         confirmed_slot,
                         finalized_slot,
@@ -145,7 +152,7 @@ impl Dashboard {
                         };
 
                         progress_bar.set_message(format!(
-                            "{}{}{}| \
+                            "{}{}| \
                                     Processed Slot: {} | Confirmed Slot: {} | Finalized Slot: {} | \
                                     Full Snapshot Slot: {} | Incremental Snapshot Slot: {} | \
                                     Transactions: {} | {}",
@@ -154,11 +161,6 @@ impl Dashboard {
                                 "".to_string()
                             } else {
                                 format!("| {} ", style(health).bold().red())
-                            },
-                            if max_retransmit_slot == 0 {
-                                "".to_string()
-                            } else {
-                                format!("| Max Slot: {} ", max_retransmit_slot)
                             },
                             processed_slot,
                             confirmed_slot,
@@ -169,10 +171,9 @@ impl Dashboard {
                                 .unwrap_or_else(|| '-'.to_string()),
                             snapshot_slot_info
                                 .as_ref()
-                                .map(|snapshot_slot_info| snapshot_slot_info
+                                .and_then(|snapshot_slot_info| snapshot_slot_info
                                     .incremental
                                     .map(|incremental| incremental.to_string()))
-                                .flatten()
                                 .unwrap_or_else(|| '-'.to_string()),
                             transaction_count,
                             identity_balance
@@ -180,8 +181,7 @@ impl Dashboard {
                         thread::sleep(refresh_interval);
                     }
                     Err(err) => {
-                        progress_bar
-                            .abandon_with_message(format!("RPC connection failure: {}", err));
+                        progress_bar.abandon_with_message(format!("RPC connection failure: {err}"));
                         break;
                     }
                 }
@@ -206,7 +206,7 @@ async fn wait_for_validator_startup(
             match admin_rpc_service::connect(ledger_path).await {
                 Ok(new_admin_client) => admin_client = Some(new_admin_client),
                 Err(err) => {
-                    progress_bar.set_message(format!("Unable to connect to validator: {}", err));
+                    progress_bar.set_message(format!("Unable to connect to validator: {err}"));
                     thread::sleep(refresh_interval);
                     continue;
                 }
@@ -229,17 +229,16 @@ async fn wait_for_validator_startup(
                         Ok((Some(rpc_addr), start_time)) => return Some((rpc_addr, start_time)),
                         Err(err) => {
                             progress_bar
-                                .set_message(format!("Failed to get validator info: {}", err));
+                                .set_message(format!("Failed to get validator info: {err}"));
                         }
                     }
                 } else {
-                    progress_bar.set_message(format!("Validator startup: {:?}...", start_progress));
+                    progress_bar.set_message(format!("Validator startup: {start_progress:?}..."));
                 }
             }
             Err(err) => {
                 admin_client = None;
-                progress_bar
-                    .set_message(format!("Failed to get validator start progress: {}", err));
+                progress_bar.set_message(format!("Failed to get validator start progress: {err}"));
             }
         }
         thread::sleep(refresh_interval);
@@ -258,11 +257,10 @@ fn get_contact_info(rpc_client: &RpcClient, identity: &Pubkey) -> Option<RpcCont
 fn get_validator_stats(
     rpc_client: &RpcClient,
     identity: &Pubkey,
-) -> client_error::Result<(Slot, Slot, Slot, Slot, u64, Sol, String)> {
+) -> client_error::Result<(Slot, Slot, Slot, u64, Sol, String)> {
     let finalized_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::finalized())?;
     let confirmed_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::confirmed())?;
     let processed_slot = rpc_client.get_slot_with_commitment(CommitmentConfig::processed())?;
-    let max_retransmit_slot = rpc_client.get_max_retransmit_slot()?;
     let transaction_count =
         rpc_client.get_transaction_count_with_commitment(CommitmentConfig::processed())?;
     let identity_balance = rpc_client
@@ -272,18 +270,16 @@ fn get_validator_stats(
     let health = match rpc_client.get_health() {
         Ok(()) => "ok".to_string(),
         Err(err) => {
-            if let client_error::ClientErrorKind::RpcError(
-                rpc_request::RpcError::RpcResponseError {
-                    code: _,
-                    message: _,
-                    data:
-                        rpc_request::RpcResponseErrorData::NodeUnhealthy {
-                            num_slots_behind: Some(num_slots_behind),
-                        },
-                },
-            ) = &err.kind
+            if let client_error::ErrorKind::RpcError(request::RpcError::RpcResponseError {
+                code: _,
+                message: _,
+                data:
+                    request::RpcResponseErrorData::NodeUnhealthy {
+                        num_slots_behind: Some(num_slots_behind),
+                    },
+            }) = &err.kind
             {
-                format!("{} slots behind", num_slots_behind)
+                format!("{num_slots_behind} slots behind")
             } else {
                 "health unknown".to_string()
             }
@@ -291,7 +287,6 @@ fn get_validator_stats(
     };
 
     Ok((
-        max_retransmit_slot,
         processed_slot,
         confirmed_slot,
         finalized_slot,

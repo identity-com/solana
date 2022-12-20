@@ -1,20 +1,21 @@
 #![allow(clippy::integer_arithmetic)]
 use {
+    crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError},
+    itertools::Itertools,
+    rand::SeedableRng,
+    rand_chacha::ChaChaRng,
     rayon::{iter::ParallelIterator, prelude::*},
     serial_test::serial,
     solana_gossip::{
         cluster_info::{compute_retransmit_peers, ClusterInfo},
         contact_info::ContactInfo,
-        deprecated::{shuffle_peers_and_index, sorted_retransmit_peers_and_stakes},
+        weighted_shuffle::WeightedShuffle,
     },
     solana_sdk::{pubkey::Pubkey, signer::keypair::Keypair},
     solana_streamer::socket::SocketAddrSpace,
     std::{
         collections::{HashMap, HashSet},
-        sync::{
-            mpsc::{channel, Receiver, Sender, TryRecvError},
-            Arc, Mutex,
-        },
+        sync::{Arc, Mutex},
         time::Instant,
     },
 };
@@ -32,6 +33,77 @@ fn find_insert_shred(id: &Pubkey, shred: i32, batches: &mut [Nodes]) {
             let _ = batch.get_mut(id).unwrap().1.insert(shred);
         }
     });
+}
+
+fn sorted_retransmit_peers_and_stakes(
+    cluster_info: &ClusterInfo,
+    stakes: Option<&HashMap<Pubkey, u64>>,
+) -> (Vec<ContactInfo>, Vec<(u64, usize)>) {
+    let mut peers = cluster_info.tvu_peers();
+    // insert "self" into this list for the layer and neighborhood computation
+    peers.push(cluster_info.my_contact_info());
+    let stakes_and_index = sorted_stakes_with_index(&peers, stakes);
+    (peers, stakes_and_index)
+}
+
+fn sorted_stakes_with_index(
+    peers: &[ContactInfo],
+    stakes: Option<&HashMap<Pubkey, u64>>,
+) -> Vec<(u64, usize)> {
+    let stakes_and_index: Vec<_> = peers
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            // For stake weighted shuffle a valid weight is atleast 1. Weight 0 is
+            // assumed to be missing entry. So let's make sure stake weights are atleast 1
+            let stake = 1.max(
+                stakes
+                    .as_ref()
+                    .map_or(1, |stakes| *stakes.get(&c.id).unwrap_or(&1)),
+            );
+            (stake, i)
+        })
+        .sorted_by(|(l_stake, l_info), (r_stake, r_info)| {
+            if r_stake == l_stake {
+                peers[*r_info].id.cmp(&peers[*l_info].id)
+            } else {
+                r_stake.cmp(l_stake)
+            }
+        })
+        .collect();
+
+    stakes_and_index
+}
+
+fn shuffle_peers_and_index(
+    id: &Pubkey,
+    peers: &[ContactInfo],
+    stakes_and_index: &[(u64, usize)],
+    seed: [u8; 32],
+) -> (usize, Vec<(u64, usize)>) {
+    let shuffled_stakes_and_index = stake_weighted_shuffle(stakes_and_index, seed);
+    let self_index = shuffled_stakes_and_index
+        .iter()
+        .enumerate()
+        .find_map(|(i, (_stake, index))| {
+            if peers[*index].id == *id {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    (self_index, shuffled_stakes_and_index)
+}
+
+fn stake_weighted_shuffle(stakes_and_index: &[(u64, usize)], seed: [u8; 32]) -> Vec<(u64, usize)> {
+    let mut rng = ChaChaRng::from_seed(seed);
+    let stake_weights: Vec<_> = stakes_and_index.iter().map(|(w, _)| *w).collect();
+    let shuffle = WeightedShuffle::new("stake_weighted_shuffle", &stake_weights);
+    shuffle
+        .shuffle(&mut rng)
+        .map(|i| stakes_and_index[i])
+        .collect()
 }
 
 fn retransmit(
@@ -90,7 +162,7 @@ fn run_simulation(stakes: &[u64], fanout: usize) {
     let mut staked_nodes = HashMap::new();
 
     // setup accounts for all nodes (leader has 0 bal)
-    let (s, r) = channel();
+    let (s, r) = unbounded();
     let senders: Arc<Mutex<HashMap<Pubkey, Sender<(i32, bool)>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     senders.lock().unwrap().insert(leader_info.id, s);
@@ -105,11 +177,11 @@ fn run_simulation(stakes: &[u64], fanout: usize) {
     range.chunks(chunk_size).for_each(|chunk| {
         chunk.iter().for_each(|i| {
             //distribute neighbors across threads to maximize parallel compute
-            let batch_ix = *i as usize % batches.len();
+            let batch_ix = *i % batches.len();
             let node = ContactInfo::new_localhost(&solana_sdk::pubkey::new_rand(), 0);
             staked_nodes.insert(node.id, stakes[*i - 1]);
             cluster_info.insert_info(node.clone());
-            let (s, r) = channel();
+            let (s, r) = unbounded();
             batches
                 .get_mut(batch_ix)
                 .unwrap()
@@ -155,8 +227,7 @@ fn run_simulation(stakes: &[u64], fanout: usize) {
             for (id, (layer1_done, recv, r)) in batch.iter_mut() {
                 assert!(
                     now.elapsed().as_secs() < timeout,
-                    "Timed out with {:?} remaining nodes",
-                    remaining
+                    "Timed out with {remaining:?} remaining nodes"
                 );
                 let cluster = c_info.clone_with_id(id);
                 if !*layer1_done {

@@ -1,8 +1,11 @@
 //! Information about snapshot archives
 
 use {
-    crate::snapshot_utils::{self, ArchiveFormat, Result},
-    solana_sdk::{clock::Slot, hash::Hash},
+    crate::{
+        snapshot_hash::SnapshotHash,
+        snapshot_utils::{self, ArchiveFormat, Result},
+    },
+    solana_sdk::clock::Slot,
     std::{cmp::Ordering, path::PathBuf},
 };
 
@@ -18,12 +21,21 @@ pub trait SnapshotArchiveInfoGetter {
         self.snapshot_archive_info().slot
     }
 
-    fn hash(&self) -> &Hash {
+    fn hash(&self) -> &SnapshotHash {
         &self.snapshot_archive_info().hash
     }
 
     fn archive_format(&self) -> ArchiveFormat {
         self.snapshot_archive_info().archive_format
+    }
+
+    fn is_remote(&self) -> bool {
+        self.snapshot_archive_info()
+            .path
+            .parent()
+            .map_or(false, |p| {
+                p.ends_with(snapshot_utils::SNAPSHOT_ARCHIVE_DOWNLOAD_DIR)
+            })
     }
 }
 
@@ -36,8 +48,8 @@ pub struct SnapshotArchiveInfo {
     /// Slot that the snapshot was made
     pub slot: Slot,
 
-    /// Hash of the accounts at this slot
-    pub hash: Hash,
+    /// Hash for the snapshot
+    pub hash: SnapshotHash,
 
     /// Archive format for the snapshot file
     pub archive_format: ArchiveFormat,
@@ -79,7 +91,7 @@ impl PartialOrd for FullSnapshotArchiveInfo {
     }
 }
 
-// Order `FullSnapshotArchiveInfo` by slot (ascending), which practially is sorting chronologically
+// Order `FullSnapshotArchiveInfo` by slot (ascending), which practically is sorting chronologically
 impl Ord for FullSnapshotArchiveInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         self.slot().cmp(&other.slot())
@@ -141,7 +153,7 @@ impl PartialOrd for IncrementalSnapshotArchiveInfo {
 }
 
 // Order `IncrementalSnapshotArchiveInfo` by base slot (ascending), then slot (ascending), which
-// practially is sorting chronologically
+// practically is sorting chronologically
 impl Ord for IncrementalSnapshotArchiveInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         self.base_slot()

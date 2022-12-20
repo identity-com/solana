@@ -1,37 +1,37 @@
 use {
     crate::{
-        clap_app::*, cluster_query::*, feature::*, inflation::*, nonce::*, program::*,
-        spend_utils::*, stake::*, validator_info::*, vote::*, wallet::*,
+        address_lookup_table::*, clap_app::*, cluster_query::*, feature::*, inflation::*, nonce::*,
+        program::*, spend_utils::*, stake::*, validator_info::*, vote::*, wallet::*,
     },
     clap::{crate_description, crate_name, value_t_or_exit, ArgMatches, Shell},
     log::*,
     num_traits::FromPrimitive,
     serde_json::{self, Value},
-    solana_clap_utils::{self, input_parsers::*, input_validators::*, keypair::*},
+    solana_clap_utils::{self, input_parsers::*, keypair::*},
+    solana_cli_config::ConfigInput,
     solana_cli_output::{
         display::println_name_value, CliSignature, CliValidatorsSortOrder, OutputFormat,
     },
-    solana_client::{
-        blockhash_query::BlockhashQuery,
-        client_error::{ClientError, Result as ClientResult},
-        nonce_utils,
-        rpc_client::RpcClient,
-        rpc_config::{
-            RpcLargestAccountsFilter, RpcSendTransactionConfig, RpcTransactionLogsFilter,
-        },
-    },
     solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client_api::{
+        client_error::{Error as ClientError, Result as ClientResult},
+        config::{RpcLargestAccountsFilter, RpcSendTransactionConfig, RpcTransactionLogsFilter},
+    },
+    solana_rpc_client_nonce_utils::blockhash_query::BlockhashQuery,
     solana_sdk::{
         clock::{Epoch, Slot},
         commitment_config::CommitmentConfig,
         decode_error::DecodeError,
         hash::Hash,
         instruction::InstructionError,
+        offchain_message::OffchainMessage,
         pubkey::Pubkey,
         signature::{Signature, Signer, SignerError},
         stake::{instruction::LockupArgs, state::Lockup},
-        transaction::{Transaction, TransactionError},
+        transaction::{TransactionError, VersionedTransaction},
     },
+    solana_tpu_client::tpu_connection_cache::DEFAULT_TPU_ENABLE_UDP,
     solana_vote_program::vote_state::VoteAuthorize,
     std::{collections::HashMap, error, io::stdout, str::FromStr, sync::Arc, time::Duration},
     thiserror::Error,
@@ -83,12 +83,12 @@ pub enum CliCommand {
         filter: RpcTransactionLogsFilter,
     },
     Ping {
-        lamports: u64,
         interval: Duration,
         count: Option<u64>,
         timeout: Duration,
         blockhash: Option<Hash>,
         print_timestamp: bool,
+        compute_unit_price: Option<u64>,
     },
     Rent {
         data_length: usize,
@@ -102,6 +102,7 @@ pub enum CliCommand {
     ShowStakes {
         use_lamports_unit: bool,
         vote_account_pubkeys: Option<Vec<Pubkey>>,
+        withdraw_authority: Option<Pubkey>,
     },
     ShowValidators {
         use_lamports_unit: bool,
@@ -131,6 +132,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         new_authority: Pubkey,
+        compute_unit_price: Option<u64>,
     },
     CreateNonceAccount {
         nonce_account: SignerIndex,
@@ -138,12 +140,14 @@ pub enum CliCommand {
         nonce_authority: Option<Pubkey>,
         memo: Option<String>,
         amount: SpendAmount,
+        compute_unit_price: Option<u64>,
     },
     GetNonce(Pubkey),
     NewNonce {
         nonce_account: Pubkey,
         nonce_authority: SignerIndex,
         memo: Option<String>,
+        compute_unit_price: Option<u64>,
     },
     ShowNonceAccount {
         nonce_account_pubkey: Pubkey,
@@ -155,14 +159,15 @@ pub enum CliCommand {
         memo: Option<String>,
         destination_account_pubkey: Pubkey,
         lamports: u64,
+        compute_unit_price: Option<u64>,
+    },
+    UpgradeNonceAccount {
+        nonce_account: Pubkey,
+        memo: Option<String>,
+        compute_unit_price: Option<u64>,
     },
     // Program Deployment
-    Deploy {
-        program_location: String,
-        address: Option<SignerIndex>,
-        use_deprecated_loader: bool,
-        allow_excessive_balance: bool,
-    },
+    Deploy,
     Program(ProgramCliCommand),
     // Stake Commands
     CreateStakeAccount {
@@ -181,11 +186,13 @@ pub enum CliCommand {
         memo: Option<String>,
         fee_payer: SignerIndex,
         from: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     DeactivateStake {
         stake_account_pubkey: Pubkey,
         stake_authority: SignerIndex,
         sign_only: bool,
+        deactivate_delinquent: bool,
         dump_transaction_message: bool,
         blockhash_query: BlockhashQuery,
         nonce_account: Option<Pubkey>,
@@ -193,6 +200,7 @@ pub enum CliCommand {
         memo: Option<String>,
         seed: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     DelegateStake {
         stake_account_pubkey: Pubkey,
@@ -206,6 +214,8 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        redelegation_stake_account_pubkey: Option<Pubkey>,
+        compute_unit_price: Option<u64>,
     },
     SplitStake {
         stake_account_pubkey: Pubkey,
@@ -220,6 +230,7 @@ pub enum CliCommand {
         seed: Option<String>,
         lamports: u64,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     MergeStake {
         stake_account_pubkey: Pubkey,
@@ -232,6 +243,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     ShowStakeHistory {
         use_lamports_unit: bool,
@@ -254,6 +266,7 @@ pub enum CliCommand {
         fee_payer: SignerIndex,
         custodian: Option<SignerIndex>,
         no_wait: bool,
+        compute_unit_price: Option<u64>,
     },
     StakeSetLockup {
         stake_account_pubkey: Pubkey,
@@ -267,6 +280,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     WithdrawStake {
         stake_account_pubkey: Pubkey,
@@ -282,6 +296,7 @@ pub enum CliCommand {
         memo: Option<String>,
         seed: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     // Validator Info Commands
     GetValidatorInfo(Option<Pubkey>),
@@ -305,6 +320,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     ShowVoteAccount {
         pubkey: Pubkey,
@@ -323,6 +339,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     CloseVoteAccount {
         vote_account_pubkey: Pubkey,
@@ -330,6 +347,7 @@ pub enum CliCommand {
         withdraw_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     VoteAuthorize {
         vote_account_pubkey: Pubkey,
@@ -344,6 +362,7 @@ pub enum CliCommand {
         fee_payer: SignerIndex,
         authorized: SignerIndex,
         new_authorized: Option<SignerIndex>,
+        compute_unit_price: Option<u64>,
     },
     VoteUpdateValidator {
         vote_account_pubkey: Pubkey,
@@ -356,6 +375,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     VoteUpdateCommission {
         vote_account_pubkey: Pubkey,
@@ -368,6 +388,7 @@ pub enum CliCommand {
         nonce_authority: SignerIndex,
         memo: Option<String>,
         fee_payer: SignerIndex,
+        compute_unit_price: Option<u64>,
     },
     // Wallet Commands
     Address,
@@ -385,7 +406,7 @@ pub enum CliCommand {
         seed: String,
         program_id: Pubkey,
     },
-    DecodeTransaction(Transaction),
+    DecodeTransaction(VersionedTransaction),
     ResolveSigner(Option<String>),
     ShowAccount {
         pubkey: Pubkey,
@@ -407,6 +428,20 @@ pub enum CliCommand {
         fee_payer: SignerIndex,
         derived_address_seed: Option<String>,
         derived_address_program_id: Option<Pubkey>,
+        compute_unit_price: Option<u64>,
+    },
+    StakeMinimumDelegation {
+        use_lamports_unit: bool,
+    },
+    // Address lookup table commands
+    AddressLookupTable(AddressLookupTableCliCommand),
+    SignOffchainMessage {
+        message: OffchainMessage,
+    },
+    VerifyOffchainSignature {
+        signer_pubkey: Option<Pubkey>,
+        signature: Signature,
+        message: OffchainMessage,
     },
 }
 
@@ -431,13 +466,15 @@ pub enum CliError {
     #[error("Account {2} has insufficient funds for spend ({0} SOL) + fee ({1} SOL)")]
     InsufficientFundsForSpendAndFee(f64, f64, Pubkey),
     #[error(transparent)]
-    InvalidNonce(nonce_utils::Error),
+    InvalidNonce(solana_rpc_client_nonce_utils::Error),
     #[error("Dynamic program error: {0}")]
     DynamicProgramError(String),
     #[error("RPC request error: {0}")]
     RpcRequestError(String),
     #[error("Keypair file not found: {0}")]
     KeypairFileNotFound(String),
+    #[error("Invalid signature")]
+    InvalidSignature,
 }
 
 impl From<Box<dyn error::Error>> for CliError {
@@ -446,138 +483,35 @@ impl From<Box<dyn error::Error>> for CliError {
     }
 }
 
-impl From<nonce_utils::Error> for CliError {
-    fn from(error: nonce_utils::Error) -> Self {
+impl From<solana_rpc_client_nonce_utils::Error> for CliError {
+    fn from(error: solana_rpc_client_nonce_utils::Error) -> Self {
         match error {
-            nonce_utils::Error::Client(client_error) => Self::RpcRequestError(client_error),
+            solana_rpc_client_nonce_utils::Error::Client(client_error) => {
+                Self::RpcRequestError(client_error)
+            }
             _ => Self::InvalidNonce(error),
         }
     }
-}
-
-pub enum SettingType {
-    Explicit,
-    Computed,
-    SystemDefault,
 }
 
 pub struct CliConfig<'a> {
     pub command: CliCommand,
     pub json_rpc_url: String,
     pub websocket_url: String,
-    pub signers: Vec<&'a dyn Signer>,
     pub keypair_path: String,
+    pub commitment: CommitmentConfig,
+    pub signers: Vec<&'a dyn Signer>,
     pub rpc_client: Option<Arc<RpcClient>>,
     pub rpc_timeout: Duration,
     pub verbose: bool,
     pub output_format: OutputFormat,
-    pub commitment: CommitmentConfig,
     pub send_transaction_config: RpcSendTransactionConfig,
     pub confirm_transaction_initial_timeout: Duration,
     pub address_labels: HashMap<String, String>,
+    pub use_quic: bool,
 }
 
 impl CliConfig<'_> {
-    fn default_keypair_path() -> String {
-        solana_cli_config::Config::default().keypair_path
-    }
-
-    fn default_json_rpc_url() -> String {
-        solana_cli_config::Config::default().json_rpc_url
-    }
-
-    fn default_websocket_url() -> String {
-        solana_cli_config::Config::default().websocket_url
-    }
-
-    fn default_commitment() -> CommitmentConfig {
-        CommitmentConfig::confirmed()
-    }
-
-    fn first_nonempty_setting(
-        settings: std::vec::Vec<(SettingType, String)>,
-    ) -> (SettingType, String) {
-        settings
-            .into_iter()
-            .find(|(_, value)| !value.is_empty())
-            .expect("no nonempty setting")
-    }
-
-    fn first_setting_is_some<T>(
-        settings: std::vec::Vec<(SettingType, Option<T>)>,
-    ) -> (SettingType, T) {
-        let (setting_type, setting_option) = settings
-            .into_iter()
-            .find(|(_, value)| value.is_some())
-            .expect("all settings none");
-        (setting_type, setting_option.unwrap())
-    }
-
-    pub fn compute_websocket_url_setting(
-        websocket_cmd_url: &str,
-        websocket_cfg_url: &str,
-        json_rpc_cmd_url: &str,
-        json_rpc_cfg_url: &str,
-    ) -> (SettingType, String) {
-        Self::first_nonempty_setting(vec![
-            (SettingType::Explicit, websocket_cmd_url.to_string()),
-            (SettingType::Explicit, websocket_cfg_url.to_string()),
-            (
-                SettingType::Computed,
-                solana_cli_config::Config::compute_websocket_url(&normalize_to_url_if_moniker(
-                    json_rpc_cmd_url,
-                )),
-            ),
-            (
-                SettingType::Computed,
-                solana_cli_config::Config::compute_websocket_url(&normalize_to_url_if_moniker(
-                    json_rpc_cfg_url,
-                )),
-            ),
-            (SettingType::SystemDefault, Self::default_websocket_url()),
-        ])
-    }
-
-    pub fn compute_json_rpc_url_setting(
-        json_rpc_cmd_url: &str,
-        json_rpc_cfg_url: &str,
-    ) -> (SettingType, String) {
-        let (setting_type, url_or_moniker) = Self::first_nonempty_setting(vec![
-            (SettingType::Explicit, json_rpc_cmd_url.to_string()),
-            (SettingType::Explicit, json_rpc_cfg_url.to_string()),
-            (SettingType::SystemDefault, Self::default_json_rpc_url()),
-        ]);
-        (setting_type, normalize_to_url_if_moniker(&url_or_moniker))
-    }
-
-    pub fn compute_keypair_path_setting(
-        keypair_cmd_path: &str,
-        keypair_cfg_path: &str,
-    ) -> (SettingType, String) {
-        Self::first_nonempty_setting(vec![
-            (SettingType::Explicit, keypair_cmd_path.to_string()),
-            (SettingType::Explicit, keypair_cfg_path.to_string()),
-            (SettingType::SystemDefault, Self::default_keypair_path()),
-        ])
-    }
-
-    pub fn compute_commitment_config(
-        commitment_cmd: &str,
-        commitment_cfg: &str,
-    ) -> (SettingType, CommitmentConfig) {
-        Self::first_setting_is_some(vec![
-            (
-                SettingType::Explicit,
-                CommitmentConfig::from_str(commitment_cmd).ok(),
-            ),
-            (
-                SettingType::Explicit,
-                CommitmentConfig::from_str(commitment_cfg).ok(),
-            ),
-            (SettingType::SystemDefault, Some(Self::default_commitment())),
-        ])
-    }
-
     pub(crate) fn pubkey(&self) -> Result<Pubkey, SignerError> {
         if !self.signers.is_empty() {
             self.signers[0].try_pubkey()
@@ -608,20 +542,21 @@ impl Default for CliConfig<'_> {
                 pubkey: Some(Pubkey::default()),
                 use_lamports_unit: false,
             },
-            json_rpc_url: Self::default_json_rpc_url(),
-            websocket_url: Self::default_websocket_url(),
+            json_rpc_url: ConfigInput::default().json_rpc_url,
+            websocket_url: ConfigInput::default().websocket_url,
+            keypair_path: ConfigInput::default().keypair_path,
+            commitment: ConfigInput::default().commitment,
             signers: Vec::new(),
-            keypair_path: Self::default_keypair_path(),
             rpc_client: None,
             rpc_timeout: Duration::from_secs(u64::from_str(DEFAULT_RPC_TIMEOUT_SECONDS).unwrap()),
             verbose: false,
             output_format: OutputFormat::Display,
-            commitment: CommitmentConfig::confirmed(),
             send_transaction_config: RpcSendTransactionConfig::default(),
             confirm_transaction_initial_timeout: Duration::from_secs(
                 u64::from_str(DEFAULT_CONFIRM_TX_TIMEOUT_SECONDS).unwrap(),
             ),
             address_labels: HashMap::new(),
+            use_quic: !DEFAULT_TPU_ENABLE_UDP,
         }
     }
 }
@@ -736,27 +671,18 @@ pub fn parse_command(
         ("withdraw-from-nonce-account", Some(matches)) => {
             parse_withdraw_from_nonce_account(matches, default_signer, wallet_manager)
         }
+        ("upgrade-nonce-account", Some(matches)) => parse_upgrade_nonce_account(matches),
         // Program Deployment
-        ("deploy", Some(matches)) => {
-            let (address_signer, _address) = signer_of(matches, "address_signer", wallet_manager)?;
-            let mut signers = vec![default_signer.signer_from_path(matches, wallet_manager)?];
-            let address = address_signer.map(|signer| {
-                signers.push(signer);
-                1
-            });
-
-            Ok(CliCommandInfo {
-                command: CliCommand::Deploy {
-                    program_location: matches.value_of("program_location").unwrap().to_string(),
-                    address,
-                    use_deprecated_loader: matches.is_present("use_deprecated_loader"),
-                    allow_excessive_balance: matches.is_present("allow_excessive_balance"),
-                },
-                signers,
-            })
-        }
+        ("deploy", Some(_matches)) => clap::Error::with_description(
+            "`solana deploy` has been replaced with `solana program deploy`",
+            clap::ErrorKind::UnrecognizedSubcommand,
+        )
+        .exit(),
         ("program", Some(matches)) => {
             parse_program_subcommand(matches, default_signer, wallet_manager)
+        }
+        ("address-lookup-table", Some(matches)) => {
+            parse_address_lookup_table_subcommand(matches, default_signer, wallet_manager)
         }
         ("wait-for-max-stake", Some(matches)) => {
             let max_stake_percent = value_t_or_exit!(matches, "max_percent", f32);
@@ -773,6 +699,9 @@ pub fn parse_command(
             parse_create_stake_account(matches, default_signer, wallet_manager, CHECKED)
         }
         ("delegate-stake", Some(matches)) => {
+            parse_stake_delegate_stake(matches, default_signer, wallet_manager)
+        }
+        ("redelegate-stake", Some(matches)) => {
             parse_stake_delegate_stake(matches, default_signer, wallet_manager)
         }
         ("withdraw-stake", Some(matches)) => {
@@ -801,6 +730,7 @@ pub fn parse_command(
         }
         ("stake-account", Some(matches)) => parse_show_stake_account(matches, wallet_manager),
         ("stake-history", Some(matches)) => parse_show_stake_history(matches),
+        ("stake-minimum-delegation", Some(matches)) => parse_stake_minimum_delegation(matches),
         // Validator Info Commands
         ("validator-info", Some(matches)) => match matches.subcommand() {
             ("publish", Some(matches)) => {
@@ -881,6 +811,12 @@ pub fn parse_command(
             })
         }
         ("transfer", Some(matches)) => parse_transfer(matches, default_signer, wallet_manager),
+        ("sign-offchain-message", Some(matches)) => {
+            parse_sign_offchain_message(matches, default_signer, wallet_manager)
+        }
+        ("verify-offchain-signature", Some(matches)) => {
+            parse_verify_offchain_signature(matches, default_signer, wallet_manager)
+        }
         //
         ("", None) => {
             eprintln!("{}", matches.usage());
@@ -902,7 +838,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
         if config.keypair_path.starts_with("usb://") {
             let pubkey = config
                 .pubkey()
-                .map(|pubkey| format!("{:?}", pubkey))
+                .map(|pubkey| format!("{pubkey:?}"))
                 .unwrap_or_else(|_| "Unavailable".to_string());
             println_name_value("Pubkey:", &pubkey);
         }
@@ -973,21 +909,21 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
         CliCommand::LiveSlots => process_live_slots(config),
         CliCommand::Logs { filter } => process_logs(config, filter),
         CliCommand::Ping {
-            lamports,
             interval,
             count,
             timeout,
             blockhash,
             print_timestamp,
+            compute_unit_price,
         } => process_ping(
             &rpc_client,
             config,
-            *lamports,
             interval,
             count,
             timeout,
             blockhash,
             *print_timestamp,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::Rent {
             data_length,
@@ -1000,11 +936,13 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
         CliCommand::ShowStakes {
             use_lamports_unit,
             vote_account_pubkeys,
+            withdraw_authority,
         } => process_show_stakes(
             &rpc_client,
             config,
             *use_lamports_unit,
             vote_account_pubkeys.as_deref(),
+            withdraw_authority.as_ref(),
         ),
         CliCommand::WaitForMaxStake { max_stake_percent } => {
             process_wait_for_max_stake(&rpc_client, config, *max_stake_percent)
@@ -1054,6 +992,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             new_authority,
+            compute_unit_price,
         } => process_authorize_nonce_account(
             &rpc_client,
             config,
@@ -1061,6 +1000,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             new_authority,
+            compute_unit_price.as_ref(),
         ),
         // Create nonce account
         CliCommand::CreateNonceAccount {
@@ -1069,6 +1009,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             amount,
+            compute_unit_price,
         } => process_create_nonce_account(
             &rpc_client,
             config,
@@ -1077,6 +1018,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *amount,
+            compute_unit_price.as_ref(),
         ),
         // Get the current nonce
         CliCommand::GetNonce(nonce_account_pubkey) => {
@@ -1087,12 +1029,14 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_account,
             nonce_authority,
             memo,
+            compute_unit_price,
         } => process_new_nonce(
             &rpc_client,
             config,
             nonce_account,
             *nonce_authority,
             memo.as_ref(),
+            compute_unit_price.as_ref(),
         ),
         // Show the contents of a nonce account
         CliCommand::ShowNonceAccount {
@@ -1111,6 +1055,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo,
             destination_account_pubkey,
             lamports,
+            compute_unit_price,
         } => process_withdraw_from_nonce_account(
             &rpc_client,
             config,
@@ -1119,24 +1064,29 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo.as_ref(),
             destination_account_pubkey,
             *lamports,
+            compute_unit_price.as_ref(),
+        ),
+        // Upgrade nonce account out of blockhash domain.
+        CliCommand::UpgradeNonceAccount {
+            nonce_account,
+            memo,
+            compute_unit_price,
+        } => process_upgrade_nonce_account(
+            &rpc_client,
+            config,
+            *nonce_account,
+            memo.as_ref(),
+            compute_unit_price.as_ref(),
         ),
 
         // Program Deployment
+        CliCommand::Deploy => {
+            // This command is not supported any longer
+            // Error message is printed on the previous stage
+            std::process::exit(1);
+        }
 
         // Deploy a custom program to the chain
-        CliCommand::Deploy {
-            program_location,
-            address,
-            use_deprecated_loader,
-            allow_excessive_balance,
-        } => process_deploy(
-            rpc_client,
-            config,
-            program_location,
-            *address,
-            *use_deprecated_loader,
-            *allow_excessive_balance,
-        ),
         CliCommand::Program(program_subcommand) => {
             process_program_subcommand(rpc_client, config, program_subcommand)
         }
@@ -1160,6 +1110,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo,
             fee_payer,
             from,
+            compute_unit_price,
         } => process_create_stake_account(
             &rpc_client,
             config,
@@ -1178,11 +1129,13 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo.as_ref(),
             *fee_payer,
             *from,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::DeactivateStake {
             stake_account_pubkey,
             stake_authority,
             sign_only,
+            deactivate_delinquent,
             dump_transaction_message,
             blockhash_query,
             nonce_account,
@@ -1190,12 +1143,14 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo,
             seed,
             fee_payer,
+            compute_unit_price,
         } => process_deactivate_stake_account(
             &rpc_client,
             config,
             stake_account_pubkey,
             *stake_authority,
             *sign_only,
+            *deactivate_delinquent,
             *dump_transaction_message,
             blockhash_query,
             *nonce_account,
@@ -1203,6 +1158,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo.as_ref(),
             seed.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::DelegateStake {
             stake_account_pubkey,
@@ -1216,6 +1172,8 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            redelegation_stake_account_pubkey,
+            compute_unit_price,
         } => process_delegate_stake(
             &rpc_client,
             config,
@@ -1230,6 +1188,8 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            redelegation_stake_account_pubkey.as_ref(),
+            compute_unit_price.as_ref(),
         ),
         CliCommand::SplitStake {
             stake_account_pubkey,
@@ -1244,6 +1204,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             seed,
             lamports,
             fee_payer,
+            compute_unit_price,
         } => process_split_stake(
             &rpc_client,
             config,
@@ -1259,6 +1220,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             seed,
             *lamports,
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::MergeStake {
             stake_account_pubkey,
@@ -1271,6 +1233,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_merge_stake(
             &rpc_client,
             config,
@@ -1284,6 +1247,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::ShowStakeAccount {
             pubkey: stake_account_pubkey,
@@ -1312,6 +1276,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             fee_payer,
             custodian,
             no_wait,
+            compute_unit_price,
         } => process_stake_authorize(
             &rpc_client,
             config,
@@ -1326,6 +1291,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo.as_ref(),
             *fee_payer,
             *no_wait,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::StakeSetLockup {
             stake_account_pubkey,
@@ -1339,6 +1305,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_stake_set_lockup(
             &rpc_client,
             config,
@@ -1353,6 +1320,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::WithdrawStake {
             stake_account_pubkey,
@@ -1368,6 +1336,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo,
             seed,
             fee_payer,
+            compute_unit_price,
         } => process_withdraw_stake(
             &rpc_client,
             config,
@@ -1384,7 +1353,11 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             memo.as_ref(),
             seed.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
+        CliCommand::StakeMinimumDelegation { use_lamports_unit } => {
+            process_stake_minimum_delegation(&rpc_client, config, *use_lamports_unit)
+        }
 
         // Validator Info Commands
 
@@ -1422,6 +1395,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_create_vote_account(
             &rpc_client,
             config,
@@ -1438,6 +1412,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::ShowVoteAccount {
             pubkey: vote_account_pubkey,
@@ -1462,6 +1437,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_withdraw_from_vote_account(
             &rpc_client,
             config,
@@ -1476,6 +1452,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::CloseVoteAccount {
             vote_account_pubkey,
@@ -1483,6 +1460,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             destination_account_pubkey,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_close_vote_account(
             &rpc_client,
             config,
@@ -1491,6 +1469,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             destination_account_pubkey,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::VoteAuthorize {
             vote_account_pubkey,
@@ -1505,6 +1484,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             fee_payer,
             authorized,
             new_authorized,
+            compute_unit_price,
         } => process_vote_authorize(
             &rpc_client,
             config,
@@ -1520,6 +1500,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::VoteUpdateValidator {
             vote_account_pubkey,
@@ -1532,6 +1513,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_vote_update_validator(
             &rpc_client,
             config,
@@ -1545,6 +1527,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
         CliCommand::VoteUpdateCommission {
             vote_account_pubkey,
@@ -1557,6 +1540,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             nonce_authority,
             memo,
             fee_payer,
+            compute_unit_price,
         } => process_vote_update_commission(
             &rpc_client,
             config,
@@ -1570,6 +1554,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *nonce_authority,
             memo.as_ref(),
             *fee_payer,
+            compute_unit_price.as_ref(),
         ),
 
         // Wallet Commands
@@ -1615,6 +1600,7 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             fee_payer,
             derived_address_seed,
             ref derived_address_program_id,
+            compute_unit_price,
         } => process_transfer(
             &rpc_client,
             config,
@@ -1632,7 +1618,20 @@ pub fn process_command(config: &CliConfig) -> ProcessResult {
             *fee_payer,
             derived_address_seed.clone(),
             derived_address_program_id.as_ref(),
+            compute_unit_price.as_ref(),
         ),
+        // Address Lookup Table Commands
+        CliCommand::AddressLookupTable(subcommand) => {
+            process_address_lookup_table_subcommand(rpc_client, config, subcommand)
+        }
+        CliCommand::SignOffchainMessage { message } => {
+            process_sign_offchain_message(config, message)
+        }
+        CliCommand::VerifyOffchainSignature {
+            signer_pubkey,
+            signature,
+            message,
+        } => process_verify_offchain_signature(config, signer_pubkey, signature, message),
     }
 }
 
@@ -1706,13 +1705,13 @@ where
 mod tests {
     use {
         super::*,
-        serde_json::{json, Value},
-        solana_client::{
-            blockhash_query,
-            mock_sender::SIGNATURE,
-            rpc_request::RpcRequest,
-            rpc_response::{Response, RpcResponseContext},
+        serde_json::json,
+        solana_rpc_client::mock_sender_for_cli::SIGNATURE,
+        solana_rpc_client_api::{
+            request::RpcRequest,
+            response::{Response, RpcResponseContext},
         },
+        solana_rpc_client_nonce_utils::blockhash_query,
         solana_sdk::{
             pubkey::Pubkey,
             signature::{
@@ -1722,7 +1721,6 @@ mod tests {
             transaction::TransactionError,
         },
         solana_transaction_status::TransactionConfirmationStatus,
-        std::path::PathBuf,
     };
 
     fn make_tmp_path(name: &str) -> String {
@@ -1819,7 +1817,7 @@ mod tests {
         let test_commands = get_clap_app("test", "desc", "version");
 
         let pubkey = solana_sdk::pubkey::new_rand();
-        let pubkey_string = format!("{}", pubkey);
+        let pubkey_string = format!("{pubkey}");
 
         let default_keypair = Keypair::new();
         let keypair_file = make_tmp_path("keypair_file");
@@ -1891,7 +1889,7 @@ mod tests {
 
         // Test Confirm Subcommand
         let signature = Signature::new(&[1; 64]);
-        let signature_string = format!("{:?}", signature);
+        let signature_string = format!("{signature:?}");
         let test_confirm =
             test_commands
                 .clone()
@@ -1954,49 +1952,6 @@ mod tests {
             }
         );
 
-        // Test Deploy Subcommand
-        let test_command =
-            test_commands
-                .clone()
-                .get_matches_from(vec!["test", "deploy", "/Users/test/program.o"]);
-        assert_eq!(
-            parse_command(&test_command, &default_signer, &mut None).unwrap(),
-            CliCommandInfo {
-                command: CliCommand::Deploy {
-                    program_location: "/Users/test/program.o".to_string(),
-                    address: None,
-                    use_deprecated_loader: false,
-                    allow_excessive_balance: false,
-                },
-                signers: vec![read_keypair_file(&keypair_file).unwrap().into()],
-            }
-        );
-
-        let custom_address = Keypair::new();
-        let custom_address_file = make_tmp_path("custom_address_file");
-        write_keypair_file(&custom_address, &custom_address_file).unwrap();
-        let test_command = test_commands.clone().get_matches_from(vec![
-            "test",
-            "deploy",
-            "/Users/test/program.o",
-            &custom_address_file,
-        ]);
-        assert_eq!(
-            parse_command(&test_command, &default_signer, &mut None).unwrap(),
-            CliCommandInfo {
-                command: CliCommand::Deploy {
-                    program_location: "/Users/test/program.o".to_string(),
-                    address: Some(1),
-                    use_deprecated_loader: false,
-                    allow_excessive_balance: false,
-                },
-                signers: vec![
-                    read_keypair_file(&keypair_file).unwrap().into(),
-                    read_keypair_file(&custom_address_file).unwrap().into(),
-                ],
-            }
-        );
-
         // Test ResolveSigner Subcommand, SignerSource::Filepath
         let test_resolve_signer =
             test_commands
@@ -2019,6 +1974,43 @@ mod tests {
             CliCommandInfo {
                 command: CliCommand::ResolveSigner(Some(pubkey.to_string())),
                 signers: vec![],
+            }
+        );
+
+        // Test SignOffchainMessage
+        let test_sign_offchain = test_commands.clone().get_matches_from(vec![
+            "test",
+            "sign-offchain-message",
+            "Test Message",
+        ]);
+        let message = OffchainMessage::new(0, b"Test Message").unwrap();
+        assert_eq!(
+            parse_command(&test_sign_offchain, &default_signer, &mut None).unwrap(),
+            CliCommandInfo {
+                command: CliCommand::SignOffchainMessage {
+                    message: message.clone()
+                },
+                signers: vec![read_keypair_file(&keypair_file).unwrap().into()],
+            }
+        );
+
+        // Test VerifyOffchainSignature
+        let signature = keypair.sign_message(&message.serialize().unwrap());
+        let test_verify_offchain = test_commands.clone().get_matches_from(vec![
+            "test",
+            "verify-offchain-signature",
+            "Test Message",
+            &signature.to_string(),
+        ]);
+        assert_eq!(
+            parse_command(&test_verify_offchain, &default_signer, &mut None).unwrap(),
+            CliCommandInfo {
+                command: CliCommand::VerifyOffchainSignature {
+                    signer_pubkey: None,
+                    signature,
+                    message
+                },
+                signers: vec![read_keypair_file(&keypair_file).unwrap().into()],
             }
         );
     }
@@ -2075,13 +2067,17 @@ mod tests {
             nonce_authority: 0,
             memo: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair, &bob_keypair, &identity_keypair];
         let result = process_command(&config);
         assert!(result.is_ok());
 
         let vote_account_info_response = json!(Response {
-            context: RpcResponseContext { slot: 1 },
+            context: RpcResponseContext {
+                slot: 1,
+                api_version: None
+            },
             value: json!({
                 "data": ["KLUv/QBYNQIAtAIBAAAAbnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/EFAAEAAB8ACQD6gx92zAiAAecDP4B2XeEBSIx7MQeung==", "base64+zstd"],
                 "lamports": 42,
@@ -2114,6 +2110,7 @@ mod tests {
             fee_payer: 0,
             authorized: 0,
             new_authorized: None,
+            compute_unit_price: None,
         };
         let result = process_command(&vote_config);
         assert!(result.is_ok());
@@ -2131,6 +2128,7 @@ mod tests {
             nonce_authority: 0,
             memo: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         let result = process_command(&config);
         assert!(result.is_ok());
@@ -2158,6 +2156,7 @@ mod tests {
             memo: None,
             fee_payer: 0,
             from: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair, &bob_keypair];
         let result = process_command(&config);
@@ -2179,6 +2178,7 @@ mod tests {
             memo: None,
             seed: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair];
         let result = process_command(&config);
@@ -2190,12 +2190,14 @@ mod tests {
             stake_authority: 0,
             sign_only: false,
             dump_transaction_message: false,
+            deactivate_delinquent: false,
             blockhash_query: BlockhashQuery::default(),
             nonce_account: None,
             nonce_authority: 0,
             memo: None,
             seed: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         let result = process_command(&config);
         assert!(result.is_ok());
@@ -2215,6 +2217,7 @@ mod tests {
             seed: None,
             lamports: 30,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair, &split_stake_account];
         let result = process_command(&config);
@@ -2234,6 +2237,7 @@ mod tests {
             nonce_authority: 0,
             memo: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair, &merge_stake_account];
         let result = process_command(&config);
@@ -2313,6 +2317,7 @@ mod tests {
             nonce_authority: 0,
             memo: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         config.signers = vec![&keypair, &bob_keypair, &identity_keypair];
         assert!(process_command(&config).is_err());
@@ -2330,6 +2335,7 @@ mod tests {
             fee_payer: 0,
             authorized: 0,
             new_authorized: None,
+            compute_unit_price: None,
         };
         assert!(process_command(&config).is_err());
 
@@ -2344,6 +2350,7 @@ mod tests {
             nonce_authority: 0,
             memo: None,
             fee_payer: 0,
+            compute_unit_price: None,
         };
         assert!(process_command(&config).is_err());
 
@@ -2352,58 +2359,23 @@ mod tests {
 
         config.command = CliCommand::GetTransactionCount;
         assert!(process_command(&config).is_err());
-    }
 
-    #[test]
-    fn test_cli_deploy() {
-        solana_logger::setup();
-        let mut pathbuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pathbuf.push("tests");
-        pathbuf.push("fixtures");
-        pathbuf.push("noop");
-        pathbuf.set_extension("so");
-
-        // Success case
-        let mut config = CliConfig::default();
-        let account_info_response = json!(Response {
-            context: RpcResponseContext { slot: 1 },
-            value: Value::Null,
-        });
-        let mut mocks = HashMap::new();
-        mocks.insert(RpcRequest::GetAccountInfo, account_info_response);
-        let rpc_client = RpcClient::new_mock_with_mocks("".to_string(), mocks);
-
-        config.rpc_client = Some(Arc::new(rpc_client));
-        let default_keypair = Keypair::new();
-        config.signers = vec![&default_keypair];
-
-        config.command = CliCommand::Deploy {
-            program_location: pathbuf.to_str().unwrap().to_string(),
-            address: None,
-            use_deprecated_loader: false,
-            allow_excessive_balance: false,
+        let message = OffchainMessage::new(0, b"Test Message").unwrap();
+        config.command = CliCommand::SignOffchainMessage {
+            message: message.clone(),
         };
-        config.output_format = OutputFormat::JsonCompact;
+        config.signers = vec![&keypair];
         let result = process_command(&config);
-        let json: Value = serde_json::from_str(&result.unwrap()).unwrap();
-        let program_id = json
-            .as_object()
-            .unwrap()
-            .get("programId")
-            .unwrap()
-            .as_str()
-            .unwrap();
+        assert!(result.is_ok());
 
-        assert!(program_id.parse::<Pubkey>().is_ok());
-
-        // Failure case
-        config.command = CliCommand::Deploy {
-            program_location: "bad/file/location.so".to_string(),
-            address: None,
-            use_deprecated_loader: false,
-            allow_excessive_balance: false,
+        config.command = CliCommand::VerifyOffchainSignature {
+            signer_pubkey: None,
+            signature: result.unwrap().parse().unwrap(),
+            message,
         };
-        assert!(process_command(&config).is_err());
+        config.signers = vec![&keypair];
+        let result = process_command(&config);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -2443,6 +2415,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2470,6 +2443,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2502,6 +2476,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2537,6 +2512,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into()],
             }
@@ -2544,7 +2520,7 @@ mod tests {
 
         //Test Transfer Subcommand, submit offline `from`
         let from_sig = from_keypair.sign_message(&[0u8]);
-        let from_signer = format!("{}={}", from_pubkey, from_sig);
+        let from_signer = format!("{from_pubkey}={from_sig}");
         let test_transfer = test_commands.clone().get_matches_from(vec![
             "test",
             "transfer",
@@ -2580,6 +2556,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![Presigner::new(&from_pubkey, &from_sig).into()],
             }
@@ -2624,6 +2601,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: None,
                     derived_address_program_id: None,
+                    compute_unit_price: None,
                 },
                 signers: vec![
                     read_keypair_file(&default_keypair_file).unwrap().into(),
@@ -2663,6 +2641,7 @@ mod tests {
                     fee_payer: 0,
                     derived_address_seed: Some(derived_address_seed),
                     derived_address_program_id: Some(stake::program::id()),
+                    compute_unit_price: None,
                 },
                 signers: vec![read_keypair_file(&default_keypair_file).unwrap().into(),],
             }

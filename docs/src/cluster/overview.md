@@ -12,7 +12,7 @@ A validator receives all entries from the leader and submits votes confirming th
 
 ## Joining a Cluster
 
-Validators enter the cluster via registration messages sent to its _control plane_. The control plane is implemented using a _gossip_ protocol, meaning that a node may register with any existing node, and expect its registration to propagate to all nodes in the cluster. The time it takes for all nodes to synchronize is proportional to the square of the number of nodes participating in the cluster. Algorithmically, that's considered very slow, but in exchange for that time, a node is assured that it eventually has all the same information as every other node, and that that information cannot be censored by any one node.
+Validators enter the cluster via registration messages sent to its _control plane_. The control plane is implemented using a _gossip_ protocol, meaning that a node may register with any existing node, and expect its registration to propagate to all nodes in the cluster. The time it takes for all nodes to synchronize is proportional to the square of the number of nodes participating in the cluster. Algorithmically, that's considered very slow, but in exchange for that time, a node is assured that it eventually has all the same information as every other node, and that information cannot be censored by any one node.
 
 ## Sending Transactions to a Cluster
 
@@ -24,7 +24,7 @@ A Solana cluster is capable of subsecond _confirmation_ for thousands of nodes w
 
 Solana defines confirmation as the duration of time from when the leader timestamps a new entry to the moment when it recognizes a supermajority of ledger votes.
 
-Scalable confirmation can be achieved using the follow combination of techniques:
+Scalable confirmation can be achieved using the following combination of techniques:
 
 1. Timestamp transactions with a VDF sample and sign the timestamp.
 
@@ -36,4 +36,4 @@ Solana rotates leaders at fixed intervals, called _slots_. Each leader may only 
 
 Next, transactions are broken into batches so that a node can send transactions to multiple parties without making multiple copies. If, for example, the leader needed to send 60 transactions to 6 nodes, it would break that collection of 60 into batches of 10 transactions and send one to each node. This allows the leader to put 60 transactions on the wire, not 60 transactions for each node. Each node then shares its batch with its peers. Once the node has collected all 6 batches, it reconstructs the original set of 60 transactions.
 
-A batch of transactions can only be split so many times before it is so small that header information becomes the primary consumer of network bandwidth. At the time of this writing (December, 2021), the approach is scaling well up to about 1,250 validators. To scale up to hundreds of thousands of validators, each node can apply the same technique as the leader node to another set of nodes of equal size. We call the technique [_Turbine Block Propogation_](turbine-block-propagation.md).
+A batch of transactions can only be split so many times before it is so small that header information becomes the primary consumer of network bandwidth. At the time of this writing (December, 2021), the approach is scaling well up to about 1,250 validators. To scale up to hundreds of thousands of validators, each node can apply the same technique as the leader node to another set of nodes of equal size. We call the technique [_Turbine Block Propagation_](turbine-block-propagation.md).

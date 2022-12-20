@@ -1,21 +1,21 @@
 use {
+    futures_util::StreamExt,
     serde_json::{json, Value},
-    serial_test::serial,
-    solana_client::{
-        pubsub_client::PubsubClient,
-        rpc_client::RpcClient,
-        rpc_config::{
+    solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path},
+    solana_pubsub_client::{nonblocking, pubsub_client::PubsubClient},
+    solana_rpc::{
+        optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
+        rpc::{create_test_transaction_entries, populate_blockstore_for_tests},
+        rpc_pubsub_service::{PubSubConfig, PubSubService},
+        rpc_subscriptions::RpcSubscriptions,
+    },
+    solana_rpc_client::rpc_client::RpcClient,
+    solana_rpc_client_api::{
+        config::{
             RpcAccountInfoConfig, RpcBlockSubscribeConfig, RpcBlockSubscribeFilter,
             RpcProgramAccountsConfig,
         },
-        rpc_response::{RpcBlockUpdate, SlotInfo},
-    },
-    solana_ledger::{blockstore::Blockstore, get_tmp_ledger_path},
-    solana_rpc::{
-        optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
-        rpc::create_test_transactions_and_populate_blockstore,
-        rpc_pubsub_service::{PubSubConfig, PubSubService},
-        rpc_subscriptions::RpcSubscriptions,
+        response::SlotInfo,
     },
     solana_runtime::{
         bank::Bank,
@@ -34,19 +34,31 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     solana_test_validator::TestValidator,
-    solana_transaction_status::{TransactionDetails, UiTransactionEncoding},
+    solana_transaction_status::{
+        BlockEncodingOptions, ConfirmedBlock, TransactionDetails, UiTransactionEncoding,
+    },
     std::{
         collections::HashSet,
         net::{IpAddr, SocketAddr},
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
             Arc, RwLock,
         },
         thread::sleep,
         time::{Duration, Instant},
     },
     systemstat::Ipv4Addr,
+    tungstenite::connect,
 };
+
+static NEXT_RPC_PUBSUB_PORT: AtomicU16 = AtomicU16::new(rpc_port::DEFAULT_RPC_PUBSUB_PORT);
+
+fn pubsub_addr() -> SocketAddr {
+    SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        NEXT_RPC_PUBSUB_PORT.fetch_add(1, Ordering::Relaxed),
+    )
+}
 
 #[test]
 fn test_rpc_client() {
@@ -81,7 +93,7 @@ fn test_rpc_client() {
     let now = Instant::now();
     while now.elapsed().as_secs() <= 20 {
         let response = client
-            .confirm_transaction_with_commitment(&signature, CommitmentConfig::default())
+            .confirm_transaction_with_commitment(&signature, CommitmentConfig::processed())
             .unwrap();
 
         if response.value {
@@ -95,22 +107,24 @@ fn test_rpc_client() {
     assert!(confirmed_tx);
 
     assert_eq!(
-        client.get_balance(&bob_pubkey).unwrap(),
+        client
+            .get_balance_with_commitment(&bob_pubkey, CommitmentConfig::processed())
+            .unwrap()
+            .value,
         sol_to_lamports(20.0)
     );
     assert_eq!(
-        client.get_balance(&alice.pubkey()).unwrap(),
+        client
+            .get_balance_with_commitment(&alice.pubkey(), CommitmentConfig::processed())
+            .unwrap()
+            .value,
         original_alice_balance - sol_to_lamports(20.0)
     );
 }
 
 #[test]
-#[serial]
 fn test_account_subscription() {
-    let pubsub_addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        rpc_port::DEFAULT_RPC_PUBSUB_PORT,
-    );
+    let pubsub_addr = pubsub_addr();
     let exit = Arc::new(AtomicBool::new(false));
 
     let GenesisConfigInfo {
@@ -121,7 +135,7 @@ fn test_account_subscription() {
     let bank = Bank::new_for_tests(&genesis_config);
     let blockhash = bank.last_blockhash();
     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-    let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+    let bank0 = bank_forks.read().unwrap().get(0).unwrap();
     let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
     bank_forks.write().unwrap().insert(bank1);
     let bob = Keypair::new();
@@ -135,11 +149,14 @@ fn test_account_subscription() {
     ));
     let (trigger, pubsub_service) =
         PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
-    std::thread::sleep(Duration::from_millis(400));
+
+    check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(300));
+
     let config = Some(RpcAccountInfoConfig {
         commitment: Some(CommitmentConfig::finalized()),
         encoding: None,
         data_slice: None,
+        min_context_slot: None,
     });
     let (mut client, receiver) = PubsubClient::account_subscribe(
         &format!("ws://0.0.0.0:{}/", pubsub_addr.port()),
@@ -178,6 +195,7 @@ fn test_account_subscription() {
             "data": "",
             "executable": false,
             "rentEpoch": 0,
+            "space": 0,
         },
     });
 
@@ -202,7 +220,6 @@ fn test_account_subscription() {
 }
 
 #[test]
-#[serial]
 fn test_block_subscription() {
     // setup BankForks
     let exit = Arc::new(AtomicBool::new(false));
@@ -212,6 +229,7 @@ fn test_block_subscription() {
         ..
     } = create_genesis_config(10_000);
     let bank = Bank::new_for_tests(&genesis_config);
+    let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(0);
     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
     // setup Blockstore
@@ -225,9 +243,14 @@ fn test_block_subscription() {
     let keypair2 = Keypair::new();
     let keypair3 = Keypair::new();
     let max_complete_transaction_status_slot = Arc::new(AtomicU64::new(blockstore.max_root()));
-    let _confirmed_block_signatures = create_test_transactions_and_populate_blockstore(
-        vec![&alice, &keypair1, &keypair2, &keypair3],
-        0,
+    bank.transfer(rent_exempt_amount, &alice, &keypair2.pubkey())
+        .unwrap();
+    populate_blockstore_for_tests(
+        create_test_transaction_entries(
+            vec![&alice, &keypair1, &keypair2, &keypair3],
+            bank.clone(),
+        )
+        .0,
         bank,
         blockstore.clone(),
         max_complete_transaction_status_slot,
@@ -242,17 +265,14 @@ fn test_block_subscription() {
         Arc::new(RwLock::new(BlockCommitmentCache::default())),
         OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks),
     ));
-    let pubsub_addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        rpc_port::DEFAULT_RPC_PUBSUB_PORT,
-    );
+    let pubsub_addr = pubsub_addr();
     let pub_cfg = PubSubConfig {
         enable_block_subscription: true,
         ..PubSubConfig::default()
     };
     let (trigger, pubsub_service) = PubSubService::new(pub_cfg, &subscriptions, pubsub_addr);
 
-    std::thread::sleep(Duration::from_millis(400));
+    check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(300));
 
     // setup PubsubClient
     let (mut client, receiver) = PubsubClient::block_subscribe(
@@ -265,6 +285,7 @@ fn test_block_subscription() {
             encoding: Some(UiTransactionEncoding::Json),
             transaction_details: Some(TransactionDetails::Signatures),
             show_rewards: None,
+            max_supported_transaction_version: None,
         }),
     )
     .unwrap();
@@ -275,23 +296,19 @@ fn test_block_subscription() {
     let maybe_actual = receiver.recv_timeout(Duration::from_millis(400));
     match maybe_actual {
         Ok(actual) => {
-            let complete_block = blockstore.get_complete_block(slot, false).unwrap();
-            let block = complete_block.clone().configure(
-                UiTransactionEncoding::Json,
-                TransactionDetails::Signatures,
-                false,
-            );
-            let expected = RpcBlockUpdate {
-                slot,
-                block: Some(block),
-                err: None,
-            };
-            let block = complete_block.configure(
-                UiTransactionEncoding::Json,
-                TransactionDetails::Signatures,
-                false,
-            );
-            assert_eq!(actual.value.slot, expected.slot);
+            let versioned_block = blockstore.get_complete_block(slot, false).unwrap();
+            let confirmed_block = ConfirmedBlock::from(versioned_block);
+            let block = confirmed_block
+                .encode_with_options(
+                    UiTransactionEncoding::Json,
+                    BlockEncodingOptions {
+                        transaction_details: TransactionDetails::Signatures,
+                        show_rewards: false,
+                        max_supported_transaction_version: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!(actual.value.slot, slot);
             assert!(block.eq(&actual.value.block.unwrap()));
         }
         Err(e) => {
@@ -308,12 +325,8 @@ fn test_block_subscription() {
 }
 
 #[test]
-#[serial]
 fn test_program_subscription() {
-    let pubsub_addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        rpc_port::DEFAULT_RPC_PUBSUB_PORT,
-    );
+    let pubsub_addr = pubsub_addr();
     let exit = Arc::new(AtomicBool::new(false));
 
     let GenesisConfigInfo {
@@ -324,7 +337,7 @@ fn test_program_subscription() {
     let bank = Bank::new_for_tests(&genesis_config);
     let blockhash = bank.last_blockhash();
     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-    let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+    let bank0 = bank_forks.read().unwrap().get(0).unwrap();
     let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
     bank_forks.write().unwrap().insert(bank1);
     let bob = Keypair::new();
@@ -338,7 +351,9 @@ fn test_program_subscription() {
     ));
     let (trigger, pubsub_service) =
         PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
-    std::thread::sleep(Duration::from_millis(400));
+
+    check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(300));
+
     let config = Some(RpcProgramAccountsConfig {
         ..RpcProgramAccountsConfig::default()
     });
@@ -400,18 +415,14 @@ fn test_program_subscription() {
 }
 
 #[test]
-#[serial]
 fn test_root_subscription() {
-    let pubsub_addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        rpc_port::DEFAULT_RPC_PUBSUB_PORT,
-    );
+    let pubsub_addr = pubsub_addr();
     let exit = Arc::new(AtomicBool::new(false));
 
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
     let bank = Bank::new_for_tests(&genesis_config);
     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-    let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+    let bank0 = bank_forks.read().unwrap().get(0).unwrap();
     let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
     bank_forks.write().unwrap().insert(bank1);
     let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
@@ -424,7 +435,9 @@ fn test_root_subscription() {
     ));
     let (trigger, pubsub_service) =
         PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
-    std::thread::sleep(Duration::from_millis(400));
+
+    check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(300));
+
     let (mut client, receiver) =
         PubsubClient::root_subscribe(&format!("ws://0.0.0.0:{}/", pubsub_addr.port())).unwrap();
 
@@ -453,12 +466,8 @@ fn test_root_subscription() {
 }
 
 #[test]
-#[serial]
 fn test_slot_subscription() {
-    let pubsub_addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        rpc_port::DEFAULT_RPC_PUBSUB_PORT,
-    );
+    let pubsub_addr = pubsub_addr();
     let exit = Arc::new(AtomicBool::new(false));
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
     let bank = Bank::new_for_tests(&genesis_config);
@@ -475,7 +484,8 @@ fn test_slot_subscription() {
     ));
     let (trigger, pubsub_service) =
         PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
-    std::thread::sleep(Duration::from_millis(400));
+
+    check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(300));
 
     let (mut client, receiver) =
         PubsubClient::slot_subscribe(&format!("ws://0.0.0.0:{}/", pubsub_addr.port())).unwrap();
@@ -512,4 +522,102 @@ fn test_slot_subscription() {
     pubsub_service.close().unwrap();
 
     assert_eq!(errors, [].to_vec());
+}
+
+#[tokio::test]
+async fn test_slot_subscription_async() {
+    let sync_service = Arc::new(AtomicU64::new(0));
+    let sync_client = Arc::clone(&sync_service);
+    fn wait_until(atomic: &Arc<AtomicU64>, value: u64) {
+        while atomic.load(Ordering::Relaxed) != value {
+            sleep(Duration::from_millis(1))
+        }
+    }
+
+    let pubsub_addr = pubsub_addr();
+
+    tokio::task::spawn_blocking(move || {
+        let exit = Arc::new(AtomicBool::new(false));
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+        let optimistically_confirmed_bank =
+            OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
+        let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
+        let subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
+            &exit,
+            max_complete_transaction_status_slot,
+            bank_forks,
+            Arc::new(RwLock::new(BlockCommitmentCache::default())),
+            optimistically_confirmed_bank,
+        ));
+        let (trigger, pubsub_service) =
+            PubSubService::new(PubSubConfig::default(), &subscriptions, pubsub_addr);
+
+        check_server_is_ready_or_panic(&pubsub_addr, 10, Duration::from_millis(100));
+
+        sync_service.store(1, Ordering::Relaxed);
+
+        wait_until(&sync_service, 2);
+        subscriptions.notify_slot(1, 0, 0);
+        sync_service.store(3, Ordering::Relaxed);
+
+        wait_until(&sync_service, 4);
+        subscriptions.notify_slot(2, 1, 1);
+        sync_service.store(5, Ordering::Relaxed);
+
+        wait_until(&sync_service, 6);
+        exit.store(true, Ordering::Relaxed);
+        trigger.cancel();
+        pubsub_service.close().unwrap();
+    });
+
+    wait_until(&sync_client, 1);
+    let url = format!("ws://0.0.0.0:{}/", pubsub_addr.port());
+    let pubsub_client = nonblocking::pubsub_client::PubsubClient::new(&url)
+        .await
+        .unwrap();
+    let (mut notifications, unsubscribe) = pubsub_client.slot_subscribe().await.unwrap();
+    sync_client.store(2, Ordering::Relaxed);
+
+    wait_until(&sync_client, 3);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(25), notifications.next()).await,
+        Ok(Some(SlotInfo {
+            slot: 1,
+            parent: 0,
+            root: 0,
+        }))
+    );
+    sync_client.store(4, Ordering::Relaxed);
+
+    wait_until(&sync_client, 5);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(25), notifications.next()).await,
+        Ok(Some(SlotInfo {
+            slot: 2,
+            parent: 1,
+            root: 1,
+        }))
+    );
+    sync_client.store(6, Ordering::Relaxed);
+
+    unsubscribe().await;
+}
+
+fn check_server_is_ready_or_panic(socket_addr: &SocketAddr, retry: u8, sleep_duration: Duration) {
+    loop {
+        if retry == 0 {
+            break;
+        } else {
+            retry.checked_sub(1).unwrap();
+        }
+
+        if connect(format!("ws://{socket_addr}")).is_ok() {
+            return;
+        }
+        sleep(sleep_duration);
+    }
+
+    panic!("server hasn't been ready");
 }

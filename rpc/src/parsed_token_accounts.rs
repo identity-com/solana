@@ -2,16 +2,18 @@ use {
     jsonrpc_core::{Error, Result},
     solana_account_decoder::{
         parse_account_data::AccountAdditionalData,
-        parse_token::{get_token_account_mint, spl_token_id, spl_token_native_mint},
+        parse_token::{
+            get_token_account_mint, spl_token_native_mint, spl_token_native_mint_program_id,
+        },
         UiAccount, UiAccountData, UiAccountEncoding,
     },
-    solana_client::rpc_response::RpcKeyedAccount,
+    solana_rpc_client_api::response::RpcKeyedAccount,
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         pubkey::Pubkey,
     },
-    spl_token::{solana_program::program_pack::Pack, state::Mint},
+    spl_token_2022::{extension::StateWithExtensions, state::Mint},
     std::{collections::HashMap, sync::Arc},
 };
 
@@ -75,7 +77,10 @@ where
 /// program_id) and decimals
 pub fn get_mint_owner_and_decimals(bank: &Arc<Bank>, mint: &Pubkey) -> Result<(Pubkey, u8)> {
     if mint == &spl_token_native_mint() {
-        Ok((spl_token_id(), spl_token::native_mint::DECIMALS))
+        Ok((
+            spl_token_native_mint_program_id(),
+            spl_token::native_mint::DECIMALS,
+        ))
     } else {
         let mint_account = bank.get_account(mint).ok_or_else(|| {
             Error::invalid_params("Invalid param: could not find mint".to_string())
@@ -86,9 +91,9 @@ pub fn get_mint_owner_and_decimals(bank: &Arc<Bank>, mint: &Pubkey) -> Result<(P
 }
 
 fn get_mint_decimals(data: &[u8]) -> Result<u8> {
-    Mint::unpack(data)
+    StateWithExtensions::<Mint>::unpack(data)
         .map_err(|_| {
             Error::invalid_params("Invalid param: Token mint could not be unpacked".to_string())
         })
-        .map(|mint| mint.decimals)
+        .map(|mint| mint.base.decimals)
 }

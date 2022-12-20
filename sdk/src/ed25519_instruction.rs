@@ -4,7 +4,6 @@ use {
     crate::{feature_set::FeatureSet, instruction::Instruction, precompiles::PrecompileError},
     bytemuck::{bytes_of, Pod, Zeroable},
     ed25519_dalek::{ed25519::signature::Signature, Signer, Verifier},
-    std::sync::Arc,
 };
 
 pub const PUBKEY_SERIALIZED_SIZE: usize = 32;
@@ -14,7 +13,7 @@ pub const SIGNATURE_OFFSETS_SERIALIZED_SIZE: usize = 14;
 pub const SIGNATURE_OFFSETS_START: usize = 2;
 pub const DATA_START: usize = SIGNATURE_OFFSETS_SERIALIZED_SIZE + SIGNATURE_OFFSETS_START;
 
-#[derive(Default, Debug, Copy, Clone, Zeroable, Pod)]
+#[derive(Default, Debug, Copy, Clone, Zeroable, Pod, Eq, PartialEq)]
 #[repr(C)]
 pub struct Ed25519SignatureOffsets {
     signature_offset: u16,             // offset to ed25519 signature of 64 bytes
@@ -82,7 +81,7 @@ pub fn new_ed25519_instruction(keypair: &ed25519_dalek::Keypair, message: &[u8])
 pub fn verify(
     data: &[u8],
     instruction_datas: &[&[u8]],
-    _feature_set: &Arc<FeatureSet>,
+    _feature_set: &FeatureSet,
 ) -> Result<(), PrecompileError> {
     if data.len() < SIGNATURE_OFFSETS_START {
         return Err(PrecompileError::InvalidInstructionDataSize);
@@ -94,6 +93,7 @@ pub fn verify(
     let expected_data_size = num_signatures
         .saturating_mul(SIGNATURE_OFFSETS_SERIALIZED_SIZE)
         .saturating_add(SIGNATURE_OFFSETS_START);
+    // We do not check or use the byte at data[1]
     if data.len() < expected_data_size {
         return Err(PrecompileError::InvalidInstructionDataSize);
     }
@@ -116,8 +116,8 @@ pub fn verify(
             SIGNATURE_SERIALIZED_SIZE,
         )?;
 
-        let signature = ed25519_dalek::Signature::from_bytes(signature)
-            .map_err(|_| PrecompileError::InvalidSignature)?;
+        let signature =
+            Signature::from_bytes(signature).map_err(|_| PrecompileError::InvalidSignature)?;
 
         // Parse out pubkey
         let pubkey = get_data_slice(
@@ -161,7 +161,7 @@ fn get_data_slice<'a>(
         if signature_index >= instruction_datas.len() {
             return Err(PrecompileError::InvalidDataOffsets);
         }
-        &instruction_datas[signature_index]
+        instruction_datas[signature_index]
     };
 
     let start = offset_start as usize;
@@ -185,7 +185,6 @@ pub mod test {
             transaction::Transaction,
         },
         rand::{thread_rng, Rng},
-        std::sync::Arc,
     };
 
     fn test_case(
@@ -204,7 +203,7 @@ pub mod test {
         verify(
             &instruction_data,
             &[&[0u8; 100]],
-            &Arc::new(FeatureSet::all_enabled()),
+            &FeatureSet::all_enabled(),
         )
     }
 
@@ -222,7 +221,7 @@ pub mod test {
             verify(
                 &instruction_data,
                 &[&[0u8; 100]],
-                &Arc::new(FeatureSet::all_enabled()),
+                &FeatureSet::all_enabled(),
             ),
             Err(PrecompileError::InvalidInstructionDataSize)
         );
@@ -348,7 +347,7 @@ pub mod test {
         let message_arr = b"hello";
         let mut instruction = new_ed25519_instruction(&privkey, message_arr);
         let mint_keypair = Keypair::new();
-        let feature_set = Arc::new(FeatureSet::all_enabled());
+        let feature_set = FeatureSet::all_enabled();
 
         let tx = Transaction::new_signed_with_payer(
             &[instruction.clone()],
@@ -359,7 +358,14 @@ pub mod test {
 
         assert!(tx.verify_precompiles(&feature_set).is_ok());
 
-        let index = thread_rng().gen_range(0, instruction.data.len());
+        let index = loop {
+            let index = thread_rng().gen_range(0, instruction.data.len());
+            // byte 1 is not used, so this would not cause the verify to fail
+            if index != 1 {
+                break index;
+            }
+        };
+
         instruction.data[index] = instruction.data[index].wrapping_add(12);
         let tx = Transaction::new_signed_with_payer(
             &[instruction],

@@ -11,23 +11,15 @@ use {
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount, WritableAccount},
         genesis_config::GenesisConfig,
-        instruction::InstructionError,
-        keyed_account::KeyedAccount,
         stake::config::{self, Config},
+        transaction_context::BorrowedAccount,
     },
 };
 
-pub fn from<T: ReadableAccount>(account: &T) -> Option<Config> {
-    get_config_data(account.data())
+pub fn from(account: &BorrowedAccount) -> Option<Config> {
+    get_config_data(account.get_data())
         .ok()
         .and_then(|data| deserialize(data).ok())
-}
-
-pub fn from_keyed_account(account: &KeyedAccount) -> Result<Config, InstructionError> {
-    if !config::check_id(account.unsigned_key()) {
-        return Err(InstructionError::InvalidArgument);
-    }
-    from(&*account.try_account_ref()?).ok_or(InstructionError::InvalidArgument)
 }
 
 pub fn create_account(lamports: u64, config: &Config) -> AccountSharedData {
@@ -43,19 +35,4 @@ pub fn add_genesis_account(genesis_config: &mut GenesisConfig) -> u64 {
     genesis_config.add_account(config::id(), account);
 
     lamports
-}
-
-#[cfg(test)]
-mod tests {
-    use {super::*, solana_sdk::pubkey::Pubkey, std::cell::RefCell};
-
-    #[test]
-    fn test() {
-        let account = RefCell::new(create_account(0, &Config::default()));
-        assert_eq!(from(&account.borrow()), Some(Config::default()));
-        assert_eq!(
-            from_keyed_account(&KeyedAccount::new(&Pubkey::default(), false, &account)),
-            Err(InstructionError::InvalidArgument)
-        );
-    }
 }

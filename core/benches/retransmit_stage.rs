@@ -4,6 +4,7 @@ extern crate solana_core;
 extern crate test;
 
 use {
+    crossbeam_channel::unbounded,
     log::*,
     solana_core::retransmit_stage::retransmitter,
     solana_entry::entry::Entry,
@@ -14,7 +15,7 @@ use {
     solana_ledger::{
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
         leader_schedule_cache::LeaderScheduleCache,
-        shred::Shredder,
+        shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
     },
     solana_measure::measure::Measure,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -30,7 +31,6 @@ use {
         net::UdpSocket,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            mpsc::channel,
             Arc, RwLock,
         },
         thread::{sleep, Builder},
@@ -77,7 +77,7 @@ fn bench_retransmitter(bencher: &mut Bencher) {
     let bank_forks = BankForks::new(bank0);
     let bank = bank_forks.working_bank();
     let bank_forks = Arc::new(RwLock::new(bank_forks));
-    let (shreds_sender, shreds_receiver) = channel();
+    let (shreds_sender, shreds_receiver) = unbounded();
     const NUM_THREADS: usize = 2;
     let sockets = (0..NUM_THREADS)
         .map(|_| UdpSocket::bind("0.0.0.0:0").unwrap())
@@ -101,9 +101,14 @@ fn bench_retransmitter(bencher: &mut Bencher) {
     let parent = 0;
     let shredder = Shredder::new(slot, parent, 0, 0).unwrap();
     let (mut data_shreds, _) = shredder.entries_to_shreds(
-        &keypair, &entries, true, // is_last_in_slot
+        &keypair,
+        &entries,
+        true, // is_last_in_slot
         0,    // next_shred_index
         0,    // next_code_index
+        true, // merkle_variant
+        &ReedSolomonCache::default(),
+        &mut ProcessShredsStats::default(),
     );
 
     let num_packets = data_shreds.len();
@@ -152,7 +157,8 @@ fn bench_retransmitter(bencher: &mut Bencher) {
             shred.set_index(index);
             index += 1;
             index %= 200;
-            let _ = shreds_sender.send(vec![shred.clone()]);
+            let shred = shred.payload().clone();
+            let _ = shreds_sender.send(vec![shred]);
         }
         slot += 1;
 

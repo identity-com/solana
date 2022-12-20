@@ -31,17 +31,17 @@ $ rustup install VERSION
 ```
 Note that if this is not the latest rust version on your machine, cargo commands may require an [override](https://rust-lang.github.io/rustup/overrides.html) in order to use the correct version.
 
-On Linux systems you may need to install libssl-dev, pkg-config, zlib1g-dev, etc.  On Ubuntu:
+On Linux systems you may need to install libssl-dev, pkg-config, zlib1g-dev, protobuf etc.
 
+On Ubuntu:
 ```bash
 $ sudo apt-get update
-$ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang make
+$ sudo apt-get install libssl-dev libudev-dev pkg-config zlib1g-dev llvm clang cmake make libprotobuf-dev protobuf-compiler
 ```
 
-On Mac M1s, make sure you set up your terminal & homebrew [to use](https://5balloons.info/correct-way-to-install-and-use-homebrew-on-m1-macs/) Rosetta. You can install it with:
-
+On Fedora:
 ```bash
-$ softwareupdate --install-rosetta
+$ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang cmake make protobuf-devel protobuf-compiler perl-core
 ```
 
 ## **2. Download the source code.**
@@ -54,7 +54,7 @@ $ cd solana
 ## **3. Build.**
 
 ```bash
-$ cargo build
+$ ./cargo build
 ```
 
 # Testing
@@ -62,7 +62,7 @@ $ cargo build
 **Run the test suite:**
 
 ```bash
-$ cargo test
+$ ./cargo test
 ```
 
 ### Starting a local testnet

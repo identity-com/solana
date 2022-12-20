@@ -28,7 +28,7 @@ pub(crate) struct IpEchoServerMessage {
     udp_ports: [u16; MAX_PORT_COUNT_PER_MESSAGE], // Fixed size list of ports to avoid vec serde
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IpEchoServerResponse {
     // Public IP address of request echoed back to the node.
     pub(crate) address: IpAddr,
@@ -64,10 +64,12 @@ async fn process_connection(
     info!("connection from {:?}", peer_addr);
 
     let mut data = vec![0u8; ip_echo_server_request_length()];
-    let (mut reader, mut writer) = socket.split();
 
-    let _ = timeout(IO_TIMEOUT, reader.read_exact(&mut data)).await??;
-    drop(reader);
+    let mut writer = {
+        let (mut reader, writer) = socket.split();
+        let _ = timeout(IO_TIMEOUT, reader.read_exact(&mut data)).await??;
+        writer
+    };
 
     let request_header: String = data[0..HEADER_LENGTH].iter().map(|b| *b as char).collect();
     if request_header != "\0\0\0\0" {
@@ -85,7 +87,7 @@ async fn process_connection(
         }
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("Bad request header: {}", request_header),
+            format!("Bad request header: {request_header}"),
         ));
     }
 
@@ -93,7 +95,7 @@ async fn process_connection(
         bincode::deserialize::<IpEchoServerMessage>(&data[HEADER_LENGTH..]).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("Failed to deserialize IpEchoServerMessage: {:?}", err),
+                format!("Failed to deserialize IpEchoServerMessage: {err:?}"),
             )
         })?;
 
@@ -128,7 +130,7 @@ async fn process_connection(
             .await??;
 
             debug!("Connection established to tcp/{}", *tcp_port);
-            let _ = tcp_stream.shutdown();
+            tcp_stream.shutdown().await?;
         }
     }
     let response = IpEchoServerResponse {

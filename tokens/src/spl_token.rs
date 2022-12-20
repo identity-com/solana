@@ -1,16 +1,18 @@
 use {
     crate::{
         args::{DistributeTokensArgs, SplTokenArgs},
-        commands::{Allocation, Error, FundingSource},
+        commands::{get_fees_for_messages, Allocation, Error, FundingSource},
     },
     console::style,
     solana_account_decoder::parse_token::{
         pubkey_from_spl_token, real_number_string, real_number_string_trimmed, spl_token_pubkey,
     },
-    solana_client::rpc_client::RpcClient,
+    solana_rpc_client::rpc_client::RpcClient,
     solana_sdk::{instruction::Instruction, message::Message, native_token::lamports_to_sol},
     solana_transaction_status::parse_token::spl_token_instruction,
-    spl_associated_token_account::{create_associated_token_account, get_associated_token_address},
+    spl_associated_token_account::{
+        get_associated_token_address, instruction::create_associated_token_account,
+    },
     spl_token::{
         solana_program::program_pack::Pack,
         state::{Account as SplTokenAccount, Mint},
@@ -61,6 +63,7 @@ pub fn build_spl_token_instructions(
             &spl_token_pubkey(&args.fee_payer.pubkey()),
             &wallet_address,
             &spl_token_pubkey(&spl_token_args.mint),
+            &spl_token::id(),
         );
         instructions.push(spl_token_instruction(
             create_associated_token_account_instruction,
@@ -93,14 +96,7 @@ pub fn check_spl_token_balances(
         .as_ref()
         .expect("spl_token_args must be some");
     let allocation_amount: u64 = allocations.iter().map(|x| x.amount).sum();
-
-    let fees: u64 = messages
-        .iter()
-        .map(|message| client.get_fee_for_message(message))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .iter()
-        .sum();
+    let fees = get_fees_for_messages(messages, client)?;
 
     let token_account_rent_exempt_balance =
         client.get_minimum_balance_for_rent_exemption(SplTokenAccount::LEN)?;
@@ -146,8 +142,8 @@ pub fn print_token_balances(
         let delta_string =
             real_number_string(recipient_token.amount - expected, spl_token_args.decimals);
         (
-            style(format!("{:>24}", actual_ui_amount)),
-            format!("{:>24}", delta_string),
+            style(format!("{actual_ui_amount:>24}")),
+            format!("{delta_string:>24}"),
         )
     } else {
         (

@@ -8,7 +8,7 @@ use {
     uriparse::{URIReference, URIReferenceBuilder, URIReferenceError},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Manufacturer {
     Unknown,
     Ledger,
@@ -23,7 +23,7 @@ impl Default for Manufacturer {
 const MANUFACTURER_UNKNOWN: &str = "unknown";
 const MANUFACTURER_LEDGER: &str = "ledger";
 
-#[derive(Clone, Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("not a manufacturer")]
 pub struct ManufacturerError;
 
@@ -63,11 +63,11 @@ impl AsRef<str> for Manufacturer {
 impl std::fmt::Display for Manufacturer {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let s: &str = self.as_ref();
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
-#[derive(Clone, Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LocatorError {
     #[error(transparent)]
     ManufacturerError(#[from] ManufacturerError),
@@ -87,7 +87,7 @@ impl From<Infallible> for LocatorError {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Locator {
     pub manufacturer: Manufacturer,
     pub pubkey: Option<Pubkey>,
@@ -108,7 +108,7 @@ impl std::fmt::Display for Locator {
             .unwrap();
 
         let uri = builder.build().unwrap();
-        write!(f, "{}", uri)
+        write!(f, "{uri}")
     }
 }
 
@@ -344,11 +344,11 @@ mod tests {
     fn test_locator_new_from_path() {
         let manufacturer = Manufacturer::Ledger;
         let pubkey = Pubkey::new_unique();
-        let path = format!("usb://ledger/{}?key=0/0", pubkey);
+        let path = format!("usb://ledger/{pubkey}?key=0/0");
         Locator::new_from_path(path).unwrap();
 
         // usb://ledger/{PUBKEY}?key=0'/0'
-        let path = format!("usb://ledger/{}?key=0'/0'", pubkey);
+        let path = format!("usb://ledger/{pubkey}?key=0'/0'");
         let expect = Locator {
             manufacturer,
             pubkey: Some(pubkey),
@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(Locator::new_from_path(path), Ok(expect));
 
         // usb://ledger/{PUBKEY}
-        let path = format!("usb://ledger/{}", pubkey);
+        let path = format!("usb://ledger/{pubkey}");
         let expect = Locator {
             manufacturer,
             pubkey: Some(pubkey),

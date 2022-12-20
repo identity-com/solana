@@ -6,8 +6,7 @@ use solana_sdk::{
     genesis_config::GenesisConfig,
     incinerator,
     pubkey::Pubkey,
-    rent::Rent,
-    sysvar,
+    rent::{Rent, RentDue},
 };
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, AbiExample)]
@@ -30,22 +29,36 @@ impl Default for RentCollector {
     }
 }
 
+/// when rent is collected for this account, this is the action to apply to the account
+#[derive(Debug)]
+enum RentResult {
+    /// this account will never have rent collected from it
+    Exempt,
+    /// maybe we collect rent later, but not now
+    NoRentCollectionNow,
+    /// collect rent
+    CollectRent {
+        new_rent_epoch: Epoch,
+        rent_due: u64, // lamports, could be 0
+    },
+}
+
 impl RentCollector {
-    pub fn new(
+    pub(crate) fn new(
         epoch: Epoch,
-        epoch_schedule: &EpochSchedule,
+        epoch_schedule: EpochSchedule,
         slots_per_year: f64,
-        rent: &Rent,
+        rent: Rent,
     ) -> Self {
         Self {
             epoch,
-            epoch_schedule: *epoch_schedule,
+            epoch_schedule,
             slots_per_year,
-            rent: *rent,
+            rent,
         }
     }
 
-    pub fn clone_with_epoch(&self, epoch: Epoch) -> Self {
+    pub(crate) fn clone_with_epoch(&self, epoch: Epoch) -> Self {
         Self {
             epoch,
             ..self.clone()
@@ -53,106 +66,329 @@ impl RentCollector {
     }
 
     /// true if it is easy to determine this account should consider having rent collected from it
-    pub fn should_collect_rent(
+    pub(crate) fn should_collect_rent(
         &self,
         address: &Pubkey,
         account: &impl ReadableAccount,
-        rent_for_sysvars: bool,
     ) -> bool {
         !(account.executable() // executable accounts must be rent-exempt balance
-            || (!rent_for_sysvars && sysvar::check_id(account.owner()))
             || *address == incinerator::id())
     }
 
     /// given an account that 'should_collect_rent'
     /// returns (amount rent due, is_exempt_from_rent)
-    pub fn get_rent_due(&self, account: &impl ReadableAccount) -> (u64, bool) {
-        let slots_elapsed: u64 = (account.rent_epoch()..=self.epoch)
-            .map(|epoch| self.epoch_schedule.get_slots_in_epoch(epoch + 1))
-            .sum();
-
-        // avoid infinite rent in rust 1.45
-        let years_elapsed = if self.slots_per_year != 0.0 {
-            slots_elapsed as f64 / self.slots_per_year
+    pub(crate) fn get_rent_due(&self, account: &impl ReadableAccount) -> RentDue {
+        if self
+            .rent
+            .is_exempt(account.lamports(), account.data().len())
+        {
+            RentDue::Exempt
         } else {
-            0.0
-        };
+            let account_rent_epoch = account.rent_epoch();
+            let slots_elapsed: u64 = (account_rent_epoch..=self.epoch)
+                .map(|epoch| self.epoch_schedule.get_slots_in_epoch(epoch + 1))
+                .sum();
 
-        self.rent
-            .due(account.lamports(), account.data().len(), years_elapsed)
+            // avoid infinite rent in rust 1.45
+            let years_elapsed = if self.slots_per_year != 0.0 {
+                slots_elapsed as f64 / self.slots_per_year
+            } else {
+                0.0
+            };
+
+            // we know this account is not exempt
+            let due = self.rent.due_amount(account.data().len(), years_elapsed);
+            RentDue::Paying(due)
+        }
     }
 
-    // updates this account's lamports and status and returns
-    //  the account rent collected, if any
-    // This is NOT thread safe at some level. If we try to collect from the same account in parallel, we may collect twice.
+    // Updates the account's lamports and status, and returns the amount of rent collected, if any.
+    // This is NOT thread safe at some level. If we try to collect from the same account in
+    // parallel, we may collect twice.
     #[must_use = "add to Bank::collected_rent"]
-    pub fn collect_from_existing_account(
+    pub(crate) fn collect_from_existing_account(
         &self,
         address: &Pubkey,
         account: &mut AccountSharedData,
-        rent_for_sysvars: bool,
         filler_account_suffix: Option<&Pubkey>,
-    ) -> u64 {
-        if !self.should_collect_rent(address, account, rent_for_sysvars)
-            || account.rent_epoch() > self.epoch
+    ) -> CollectedInfo {
+        match self.calculate_rent_result(address, account, filler_account_suffix) {
+            RentResult::Exempt | RentResult::NoRentCollectionNow => CollectedInfo::default(),
+            RentResult::CollectRent {
+                new_rent_epoch,
+                rent_due,
+            } => match account.lamports().checked_sub(rent_due) {
+                None | Some(0) => {
+                    let account = std::mem::take(account);
+                    CollectedInfo {
+                        rent_amount: account.lamports(),
+                        account_data_len_reclaimed: account.data().len() as u64,
+                    }
+                }
+                Some(lamports) => {
+                    account.set_lamports(lamports);
+                    account.set_rent_epoch(new_rent_epoch);
+                    CollectedInfo {
+                        rent_amount: rent_due,
+                        account_data_len_reclaimed: 0u64,
+                    }
+                }
+            },
+        }
+    }
+
+    /// determine what should happen to collect rent from this account
+    #[must_use]
+    fn calculate_rent_result(
+        &self,
+        address: &Pubkey,
+        account: &impl ReadableAccount,
+        filler_account_suffix: Option<&Pubkey>,
+    ) -> RentResult {
+        if account.rent_epoch() > self.epoch {
+            // potentially rent paying account
+            // Maybe collect rent later, leave account alone for now.
+            return RentResult::NoRentCollectionNow;
+        }
+        if !self.should_collect_rent(address, account)
             || crate::accounts_db::AccountsDb::is_filler_account_helper(
                 address,
                 filler_account_suffix,
             )
         {
-            0
-        } else {
-            let (rent_due, exempt) = self.get_rent_due(account);
-
-            if exempt || rent_due != 0 {
-                if account.lamports() > rent_due {
-                    account.set_rent_epoch(
-                        self.epoch
-                            + if exempt {
-                                // Rent isn't collected for the next epoch
-                                // Make sure to check exempt status later in current epoch again
-                                0
-                            } else {
-                                // Rent is collected for next epoch
-                                1
-                            },
-                    );
-                    let _ = account.checked_sub_lamports(rent_due); // will not fail. We check above.
-                    rent_due
-                } else {
-                    let rent_charged = account.lamports();
-                    *account = AccountSharedData::default();
-                    rent_charged
-                }
-            } else {
-                // maybe collect rent later, leave account alone
-                0
-            }
+            // easy to determine this account should not consider having rent collected from it
+            return RentResult::Exempt;
+        }
+        match self.get_rent_due(account) {
+            // account will not have rent collected ever
+            RentDue::Exempt => RentResult::Exempt,
+            // potentially rent paying account
+            // Maybe collect rent later, leave account alone for now.
+            RentDue::Paying(0) => RentResult::NoRentCollectionNow,
+            // Rent is collected for next epoch.
+            RentDue::Paying(rent_due) => RentResult::CollectRent {
+                new_rent_epoch: self.epoch + 1,
+                rent_due,
+            },
         }
     }
+}
 
-    #[must_use = "add to Bank::collected_rent"]
-    pub fn collect_from_created_account(
-        &self,
-        address: &Pubkey,
-        account: &mut AccountSharedData,
-        rent_for_sysvars: bool,
-    ) -> u64 {
-        // initialize rent_epoch as created at this epoch
-        account.set_rent_epoch(self.epoch);
-        self.collect_from_existing_account(address, account, rent_for_sysvars, None)
+/// Information computed during rent collection
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+pub(crate) struct CollectedInfo {
+    /// Amount of rent collected from account
+    pub(crate) rent_amount: u64,
+    /// Size of data reclaimed from account (happens when account's lamports go to zero)
+    pub(crate) account_data_len_reclaimed: u64,
+}
+
+impl std::ops::Add for CollectedInfo {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self {
+            rent_amount: self.rent_amount + other.rent_amount,
+            account_data_len_reclaimed: self.account_data_len_reclaimed
+                + other.account_data_len_reclaimed,
+        }
+    }
+}
+
+impl std::ops::AddAssign for CollectedInfo {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_sdk::account::Account};
+    use {
+        super::*,
+        solana_sdk::{account::Account, sysvar},
+    };
+
+    fn default_rent_collector_clone_with_epoch(epoch: Epoch) -> RentCollector {
+        RentCollector::default().clone_with_epoch(epoch)
+    }
+
+    impl RentCollector {
+        #[must_use = "add to Bank::collected_rent"]
+        fn collect_from_created_account(
+            &self,
+            address: &Pubkey,
+            account: &mut AccountSharedData,
+        ) -> CollectedInfo {
+            // initialize rent_epoch as created at this epoch
+            account.set_rent_epoch(self.epoch);
+            self.collect_from_existing_account(
+                address, account, /*filler_account_suffix:*/ None,
+            )
+        }
+    }
+
+    #[test]
+    fn test_calculate_rent_result() {
+        let mut rent_collector = RentCollector::default();
+
+        let mut account = AccountSharedData::default();
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&Pubkey::default(), &account, None),
+            RentResult::NoRentCollectionNow,
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &Pubkey::default(),
+                    &mut account_clone,
+                    None
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+
+        account.set_executable(true);
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&Pubkey::default(), &account, None),
+            RentResult::Exempt
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &Pubkey::default(),
+                    &mut account_clone,
+                    None
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+
+        account.set_executable(false);
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&incinerator::id(), &account, None),
+            RentResult::Exempt
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &incinerator::id(),
+                    &mut account_clone,
+                    None
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+
+        // try a few combinations of rent collector rent epoch and collecting rent with and without filler accounts specified (but we aren't a filler)
+        let filler_account = solana_sdk::pubkey::new_rand();
+
+        for filler_accounts in [None, Some(&filler_account)] {
+            for (rent_epoch, rent_due_expected) in [(2, 2), (3, 5)] {
+                rent_collector.epoch = rent_epoch;
+                account.set_lamports(10);
+                account.set_rent_epoch(1);
+                let new_rent_epoch_expected = rent_collector.epoch + 1;
+                assert!(
+                    matches!(
+                        rent_collector.calculate_rent_result(&Pubkey::default(), &account, filler_accounts),
+                        RentResult::CollectRent{ new_rent_epoch, rent_due} if new_rent_epoch == new_rent_epoch_expected && rent_due == rent_due_expected,
+                    ),
+                    "{:?}",
+                    rent_collector.calculate_rent_result(&Pubkey::default(), &account, None)
+                );
+
+                {
+                    let mut account_clone = account.clone();
+                    assert_eq!(
+                        rent_collector.collect_from_existing_account(
+                            &Pubkey::default(),
+                            &mut account_clone,
+                            filler_accounts
+                        ),
+                        CollectedInfo {
+                            rent_amount: rent_due_expected,
+                            account_data_len_reclaimed: 0
+                        }
+                    );
+                    let mut account_expected = account.clone();
+                    account_expected.set_lamports(account.lamports() - rent_due_expected);
+                    account_expected.set_rent_epoch(new_rent_epoch_expected);
+                    assert_eq!(account_clone, account_expected);
+                }
+            }
+        }
+
+        // enough lamports to make us exempt
+        account.set_lamports(1_000_000);
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&Pubkey::default(), &account, None),
+            RentResult::Exempt,
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &Pubkey::default(),
+                    &mut account_clone,
+                    None
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+
+        // enough lamports to make us exempt
+        // but, our rent_epoch is set in the future, so we can't know if we are exempt yet or not.
+        // We don't calculate rent amount vs data if the rent_epoch is already in the future.
+        account.set_rent_epoch(1_000_000);
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&Pubkey::default(), &account, None),
+            RentResult::NoRentCollectionNow,
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &Pubkey::default(),
+                    &mut account_clone,
+                    None
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+
+        // filler accounts are exempt
+        account.set_rent_epoch(1);
+        account.set_lamports(10);
+        assert!(matches!(
+            rent_collector.calculate_rent_result(&filler_account, &account, Some(&filler_account)),
+            RentResult::Exempt,
+        ));
+        {
+            let mut account_clone = account.clone();
+            assert_eq!(
+                rent_collector.collect_from_existing_account(
+                    &filler_account,
+                    &mut account_clone,
+                    Some(&filler_account)
+                ),
+                CollectedInfo::default()
+            );
+            assert_eq!(account_clone, account);
+        }
+    }
 
     #[test]
     fn test_collect_from_account_created_and_existing() {
         let old_lamports = 1000;
         let old_epoch = 1;
-        let new_epoch = 3;
+        let new_epoch = 2;
 
         let (mut created_account, mut existing_account) = {
             let account = AccountSharedData::from(Account {
@@ -164,28 +400,32 @@ mod tests {
             (account.clone(), account)
         };
 
-        let rent_collector = RentCollector::default().clone_with_epoch(new_epoch);
+        let rent_collector = default_rent_collector_clone_with_epoch(new_epoch);
 
         // collect rent on a newly-created account
-        let collected = rent_collector.collect_from_created_account(
-            &solana_sdk::pubkey::new_rand(),
-            &mut created_account,
-            true,
-        );
+        let collected = rent_collector
+            .collect_from_created_account(&solana_sdk::pubkey::new_rand(), &mut created_account);
         assert!(created_account.lamports() < old_lamports);
-        assert_eq!(created_account.lamports() + collected, old_lamports);
+        assert_eq!(
+            created_account.lamports() + collected.rent_amount,
+            old_lamports
+        );
         assert_ne!(created_account.rent_epoch(), old_epoch);
+        assert_eq!(collected.account_data_len_reclaimed, 0);
 
         // collect rent on a already-existing account
         let collected = rent_collector.collect_from_existing_account(
             &solana_sdk::pubkey::new_rand(),
             &mut existing_account,
-            true,
-            None,
+            None, // filler_account_suffix
         );
         assert!(existing_account.lamports() < old_lamports);
-        assert_eq!(existing_account.lamports() + collected, old_lamports);
+        assert_eq!(
+            existing_account.lamports() + collected.rent_amount,
+            old_lamports
+        );
         assert_ne!(existing_account.rent_epoch(), old_epoch);
+        assert_eq!(collected.account_data_len_reclaimed, 0);
 
         // newly created account should be collected for less rent; thus more remaining balance
         assert!(created_account.lamports() > existing_account.lamports());
@@ -198,27 +438,34 @@ mod tests {
         let epoch = 3;
         let huge_lamports = 123_456_789_012;
         let tiny_lamports = 789_012;
-        let mut collected;
         let pubkey = solana_sdk::pubkey::new_rand();
 
         account.set_lamports(huge_lamports);
         assert_eq!(account.rent_epoch(), 0);
 
         // create a tested rent collector
-        let rent_collector = RentCollector::default().clone_with_epoch(epoch);
+        let rent_collector = default_rent_collector_clone_with_epoch(epoch);
 
         // first mark account as being collected while being rent-exempt
-        collected = rent_collector.collect_from_existing_account(&pubkey, &mut account, true, None);
+        let collected = rent_collector.collect_from_existing_account(
+            &pubkey,
+            &mut account,
+            None, // filler_account_suffix
+        );
         assert_eq!(account.lamports(), huge_lamports);
-        assert_eq!(collected, 0);
+        assert_eq!(collected, CollectedInfo::default());
 
         // decrease the balance not to be rent-exempt
         account.set_lamports(tiny_lamports);
 
         // ... and trigger another rent collection on the same epoch and check that rent is working
-        collected = rent_collector.collect_from_existing_account(&pubkey, &mut account, true, None);
-        assert_eq!(account.lamports(), tiny_lamports - collected);
-        assert_ne!(collected, 0);
+        let collected = rent_collector.collect_from_existing_account(
+            &pubkey,
+            &mut account,
+            None, // filler_account_suffix
+        );
+        assert_eq!(account.lamports(), tiny_lamports - collected.rent_amount);
+        assert_ne!(collected, CollectedInfo::default());
     }
 
     #[test]
@@ -233,18 +480,43 @@ mod tests {
         assert_eq!(account.rent_epoch(), 0);
 
         let epoch = 3;
-        let rent_collector = RentCollector::default().clone_with_epoch(epoch);
+        let rent_collector = default_rent_collector_clone_with_epoch(epoch);
 
-        // old behavior: sysvars are special-cased
-        let collected =
-            rent_collector.collect_from_existing_account(&pubkey, &mut account, false, None);
-        assert_eq!(account.lamports(), tiny_lamports);
-        assert_eq!(collected, 0);
-
-        // new behavior: sysvars are NOT special-cased
-        let collected =
-            rent_collector.collect_from_existing_account(&pubkey, &mut account, true, None);
+        let collected = rent_collector.collect_from_existing_account(
+            &pubkey,
+            &mut account,
+            None, // filler_account_suffix
+        );
         assert_eq!(account.lamports(), 0);
-        assert_eq!(collected, 1);
+        assert_eq!(collected.rent_amount, 1);
+    }
+
+    /// Ensure that when an account is "rent collected" away, its data len is returned.
+    #[test]
+    fn test_collect_cleans_up_account() {
+        solana_logger::setup();
+        let account_lamports = 1; // must be *below* rent amount
+        let account_data_len = 567;
+        let account_rent_epoch = 11;
+        let mut account = AccountSharedData::from(Account {
+            lamports: account_lamports, // <-- must be below rent-exempt amount
+            data: vec![u8::default(); account_data_len],
+            rent_epoch: account_rent_epoch,
+            ..Account::default()
+        });
+        let rent_collector = default_rent_collector_clone_with_epoch(account_rent_epoch + 1);
+
+        let collected = rent_collector.collect_from_existing_account(
+            &Pubkey::new_unique(),
+            &mut account,
+            None, // filler_account_suffix
+        );
+
+        assert_eq!(collected.rent_amount, account_lamports);
+        assert_eq!(
+            collected.account_data_len_reclaimed,
+            account_data_len as u64
+        );
+        assert_eq!(account, AccountSharedData::default());
     }
 }

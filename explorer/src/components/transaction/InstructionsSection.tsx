@@ -1,11 +1,11 @@
 import React from "react";
 import { ErrorCard } from "components/common/ErrorCard";
 import {
+  ComputeBudgetProgram,
   ParsedInnerInstruction,
   ParsedInstruction,
   ParsedTransaction,
   PartiallyDecodedInstruction,
-  PublicKey,
   SignatureResult,
   TransactionSignature,
 } from "@solana/web3.js";
@@ -20,16 +20,15 @@ import { TokenLendingDetailsCard } from "components/instruction/TokenLendingDeta
 import { TokenSwapDetailsCard } from "components/instruction/TokenSwapDetailsCard";
 import { WormholeDetailsCard } from "components/instruction/WormholeDetailsCard";
 import { UnknownDetailsCard } from "components/instruction/UnknownDetailsCard";
-import { BonfidaBotDetailsCard } from "components/instruction/BonfidaBotDetails";
 import {
-  SignatureProps,
   INNER_INSTRUCTIONS_START_SLOT,
+  SignatureProps,
 } from "pages/TransactionDetailsPage";
 import { intoTransactionInstruction } from "utils/tx";
+import { isAddressLookupTableInstruction } from "components/instruction/address-lookup-table/types";
 import { isSerumInstruction } from "components/instruction/serum/types";
 import { isTokenLendingInstruction } from "components/instruction/token-lending/types";
 import { isTokenSwapInstruction } from "components/instruction/token-swap/types";
-import { isBonfidaBotInstruction } from "components/instruction/bonfida-bot/types";
 import { useFetchTransactionDetails } from "providers/transactions/parsed";
 import {
   useTransactionDetails,
@@ -40,9 +39,18 @@ import { BpfUpgradeableLoaderDetailsCard } from "components/instruction/bpf-upgr
 import { VoteDetailsCard } from "components/instruction/vote/VoteDetailsCard";
 import { isWormholeInstruction } from "components/instruction/wormhole/types";
 import { AssociatedTokenDetailsCard } from "components/instruction/AssociatedTokenDetailsCard";
-import { isGatewayInstruction } from "../instruction/gateway/types";
-import { isMangoInstruction } from "components/instruction/mango/types";
 import { MangoDetailsCard } from "components/instruction/MangoDetails";
+import { isPythInstruction } from "components/instruction/pyth/types";
+import { PythDetailsCard } from "components/instruction/pyth/PythDetailsCard";
+import AnchorDetailsCard from "../instruction/AnchorDetailsCard";
+import { isMangoInstruction } from "../instruction/mango/types";
+import { useAnchorProgram } from "providers/anchor";
+import { LoadingCard } from "components/common/LoadingCard";
+import { ErrorBoundary } from "@sentry/react";
+import { ComputeBudgetDetailsCard } from "components/instruction/ComputeBudgetDetailsCard";
+import { AddressLookupTableDetailsCard } from "components/instruction/AddressLookupTableDetailsCard";
+
+import { isGatewayInstruction } from "../instruction/gateway/types";
 import { isDidSolInstruction } from "../instruction/did-sol/types";
 import { DidSolDetailsCard } from "../instruction/did-sol/DidSolDetailsCard";
 
@@ -58,14 +66,16 @@ export type InstructionDetailsProps = {
 export function InstructionsSection({ signature }: SignatureProps) {
   const status = useTransactionStatus(signature);
   const details = useTransactionDetails(signature);
-  const { cluster } = useCluster();
+  const { cluster, url } = useCluster();
   const fetchDetails = useFetchTransactionDetails();
   const refreshDetails = () => fetchDetails(signature);
 
-  if (!status?.data?.info || !details?.data?.transaction) return null;
-
-  const { transaction } = details.data.transaction;
-  const { meta } = details.data.transaction;
+  const result = status?.data?.info?.result;
+  const transactionWithMeta = details?.data?.transactionWithMeta;
+  if (!result || !transactionWithMeta) {
+    return <ErrorCard retry={refreshDetails} text="No instructions found" />;
+  }
+  const { meta, transaction } = transactionWithMeta;
 
   if (transaction.message.instructions.length === 0) {
     return <ErrorCard retry={refreshDetails} text="No instructions found" />;
@@ -78,7 +88,7 @@ export function InstructionsSection({ signature }: SignatureProps) {
   if (
     meta?.innerInstructions &&
     (cluster !== Cluster.MainnetBeta ||
-      details.data.transaction.slot >= INNER_INSTRUCTIONS_START_SLOT)
+      transactionWithMeta.slot >= INNER_INSTRUCTIONS_START_SLOT)
   ) {
     meta.innerInstructions.forEach((parsed: ParsedInnerInstruction) => {
       if (!innerInstructions[parsed.index]) {
@@ -91,57 +101,60 @@ export function InstructionsSection({ signature }: SignatureProps) {
     });
   }
 
-  const result = status.data.info.result;
-  const instructionDetails = transaction.message.instructions.map(
-    (instruction, index) => {
-      let innerCards: JSX.Element[] = [];
-
-      if (index in innerInstructions) {
-        innerInstructions[index].forEach((ix, childIndex) => {
-          console.log(ix);
-          if (typeof ix.programId === "string") {
-            ix.programId = new PublicKey(ix.programId);
-          }
-
-          let res = renderInstructionCard({
-            index,
-            ix,
-            result,
-            signature,
-            tx: transaction,
-            childIndex,
-          });
-
-          innerCards.push(res);
-        });
-      }
-
-      return renderInstructionCard({
-        index,
-        ix: instruction,
-        result,
-        signature,
-        tx: transaction,
-        innerCards,
-      });
-    }
-  );
-
   return (
     <>
       <div className="container">
         <div className="header">
           <div className="header-body">
-            <h3 className="mb-0">Instruction(s)</h3>
+            <h3 className="mb-0">
+              {transaction.message.instructions.length > 1
+                ? "Instructions"
+                : "Instruction"}
+            </h3>
           </div>
         </div>
       </div>
-      {instructionDetails}
+      <React.Suspense fallback={<LoadingCard message="Loading Instructions" />}>
+        {transaction.message.instructions.map((instruction, index) => {
+          let innerCards: JSX.Element[] = [];
+
+          if (index in innerInstructions) {
+            innerInstructions[index].forEach((ix, childIndex) => {
+              let res = (
+                <InstructionCard
+                  key={`${index}-${childIndex}`}
+                  index={index}
+                  ix={ix}
+                  result={result}
+                  signature={signature}
+                  tx={transaction}
+                  childIndex={childIndex}
+                  url={url}
+                />
+              );
+              innerCards.push(res);
+            });
+          }
+
+          return (
+            <InstructionCard
+              key={`${index}`}
+              index={index}
+              ix={instruction}
+              result={result}
+              signature={signature}
+              tx={transaction}
+              innerCards={innerCards}
+              url={url}
+            />
+          );
+        })}
+      </React.Suspense>
     </>
   );
 }
 
-function renderInstructionCard({
+function InstructionCard({
   ix,
   tx,
   result,
@@ -149,6 +162,7 @@ function renderInstructionCard({
   signature,
   innerCards,
   childIndex,
+  url,
 }: {
   ix: ParsedInstruction | PartiallyDecodedInstruction;
   tx: ParsedTransaction;
@@ -157,11 +171,10 @@ function renderInstructionCard({
   signature: TransactionSignature;
   innerCards?: JSX.Element[];
   childIndex?: number;
+  url: string;
 }) {
   const key = `${index}-${childIndex}`;
-
-  console.log("ix");
-  console.log(ix);
+  const anchorProgram = useAnchorProgram(ix.programId.toString(), url);
 
   if ("parsed" in ix) {
     const props = {
@@ -216,8 +229,8 @@ function renderInstructionCard({
     childIndex,
   };
 
-  if (isBonfidaBotInstruction(transactionIx)) {
-    return <BonfidaBotDetailsCard key={key} {...props} />;
+  if (isAddressLookupTableInstruction(transactionIx)) {
+    return <AddressLookupTableDetailsCard key={key} {...props} />;
   } else if (isMangoInstruction(transactionIx)) {
     return <MangoDetailsCard key={key} {...props} />;
   } else if (isSerumInstruction(transactionIx)) {
@@ -228,6 +241,16 @@ function renderInstructionCard({
     return <TokenLendingDetailsCard key={key} {...props} />;
   } else if (isWormholeInstruction(transactionIx)) {
     return <WormholeDetailsCard key={key} {...props} />;
+  } else if (isPythInstruction(transactionIx)) {
+    return <PythDetailsCard key={key} {...props} />;
+  } else if (ComputeBudgetProgram.programId.equals(transactionIx.programId)) {
+    return <ComputeBudgetDetailsCard key={key} {...props} />;
+  } else if (anchorProgram) {
+    return (
+      <ErrorBoundary fallback={<UnknownDetailsCard {...props} />}>
+        <AnchorDetailsCard key={key} anchorProgram={anchorProgram} {...props} />
+      </ErrorBoundary>
+    );
   } else if (isGatewayInstruction(transactionIx)) {
     return <GatewayTokenDetailsCard key={key} {...props} />;
   } else if (isDidSolInstruction(transactionIx)) {

@@ -1,15 +1,53 @@
 use {
-    crate::{
-        erasure::ErasureConfig,
-        shred::{Shred, ShredType},
-    },
+    crate::shred::{Shred, ShredType},
+    bitflags::bitflags,
     serde::{Deserialize, Deserializer, Serialize, Serializer},
-    solana_sdk::{clock::Slot, hash::Hash},
+    solana_sdk::{
+        clock::{Slot, UnixTimestamp},
+        hash::Hash,
+    },
     std::{
         collections::BTreeSet,
         ops::{Range, RangeBounds},
     },
 };
+
+bitflags! {
+    #[derive(Deserialize, Serialize)]
+    /// Flags to indicate whether a slot is a descendant of a slot on the main fork
+    pub struct ConnectedFlags:u8 {
+        // A slot S should be considered to be connected if:
+        // 1) S is a rooted slot itself OR
+        // 2) S's parent is connected AND S is full (S's complete block present)
+        //
+        // 1) is a straightfoward case, roots are finalized blocks on the main fork
+        // so by definition, they are connected. All roots are connected, but not
+        // all connected slots are (or will become) roots.
+        //
+        // Based on the criteria stated in 2), S is connected iff it has a series
+        // of ancestors (that are each connected) that form a chain back to
+        // some root slot.
+        //
+        // A ledger that is updating with a cluster will have either begun at
+        // genesis or at at some snapshot slot.
+        // - Genesis is obviously a special case, and slot 0's parent is deemed
+        //   to be connected in order to kick off the induction
+        // - Snapshots are taken at rooted slots, and as such, the snapshot slot
+        //   should be marked as connected so that a connected chain can start
+        //
+        // CONNECTED is explicitly the first bit to ensure backwards compatibility
+        // with the boolean field that ConnectedFlags replaced in SlotMeta.
+        const CONNECTED        = 0b0000_0001;
+        // PARENT_CONNECTED IS INTENTIIONALLY UNUSED FOR NOW
+        const PARENT_CONNECTED = 0b1000_0000;
+    }
+}
+
+impl Default for ConnectedFlags {
+    fn default() -> Self {
+        ConnectedFlags::empty()
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 // The Meta column family
@@ -37,9 +75,8 @@ pub struct SlotMeta {
     // The list of slots, each of which contains a block that derives
     // from this one.
     pub next_slots: Vec<Slot>,
-    // True if this slot is full (consumed == last_index + 1) and if every
-    // slot that is a parent of this slot is also connected.
-    pub is_connected: bool,
+    // Connected status flags of this slot
+    pub connected_flags: ConnectedFlags,
     // Shreds indices which are marked data complete.
     pub completed_data_indexes: BTreeSet<u32>,
 }
@@ -61,11 +98,11 @@ mod serde_compat {
         D: Deserializer<'de>,
     {
         let val = u64::deserialize(deserializer)?;
-        Ok((val != u64::MAX).then(|| val))
+        Ok((val != u64::MAX).then_some(val))
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 /// Index recording presence/absence of shreds
 pub struct Index {
     pub slot: Slot,
@@ -73,7 +110,7 @@ pub struct Index {
     coding: ShredIndex,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShredIndex {
     /// Map representing presence/absence of shreds
     index: BTreeSet<u64>,
@@ -93,6 +130,12 @@ pub struct ErasureMeta {
     config: ErasureConfig,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ErasureConfig {
+    num_data: usize,
+    num_coding: usize,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct DuplicateSlotProof {
     #[serde(with = "serde_bytes")]
@@ -101,14 +144,14 @@ pub struct DuplicateSlotProof {
     pub shred2: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ErasureMetaStatus {
     CanRecover,
     DataFull,
     StillNeed(usize),
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub enum FrozenHashVersioned {
     Current(FrozenHashStatus),
 }
@@ -129,7 +172,7 @@ impl FrozenHashVersioned {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct FrozenHashStatus {
     pub frozen_hash: Hash,
     pub is_duplicate_confirmed: bool,
@@ -208,17 +251,36 @@ impl SlotMeta {
         Some(self.consumed) == self.last_index.map(|ix| ix + 1)
     }
 
+    pub fn is_connected(&self) -> bool {
+        self.connected_flags.contains(ConnectedFlags::CONNECTED)
+    }
+
+    pub fn set_connected(&mut self) {
+        self.connected_flags.set(ConnectedFlags::CONNECTED, true);
+    }
+
+    /// Dangerous. Currently only needed for a local-cluster test
+    pub fn unset_parent(&mut self) {
+        self.parent_slot = None;
+    }
+
     pub fn clear_unconfirmed_slot(&mut self) {
-        let mut new_self = SlotMeta::new_orphan(self.slot);
-        std::mem::swap(&mut new_self.next_slots, &mut self.next_slots);
-        std::mem::swap(self, &mut new_self);
+        let old = std::mem::replace(self, SlotMeta::new_orphan(self.slot));
+        self.next_slots = old.next_slots;
     }
 
     pub(crate) fn new(slot: Slot, parent_slot: Option<Slot>) -> Self {
+        let connected_flags = if slot == 0 {
+            // Slot 0 is the start, mark it as having its' parent connected
+            // such that slot 0 becoming full will be updated as connected
+            ConnectedFlags::CONNECTED
+        } else {
+            ConnectedFlags::default()
+        };
         SlotMeta {
             slot,
             parent_slot,
-            is_connected: slot == 0,
+            connected_flags,
             ..SlotMeta::default()
         }
     }
@@ -233,10 +295,10 @@ impl ErasureMeta {
         match shred.shred_type() {
             ShredType::Data => None,
             ShredType::Code => {
-                let config = ErasureConfig::new(
-                    usize::from(shred.coding_header.num_data_shreds),
-                    usize::from(shred.coding_header.num_coding_shreds),
-                );
+                let config = ErasureConfig {
+                    num_data: usize::from(shred.num_data_shreds().ok()?),
+                    num_coding: usize::from(shred.num_coding_shreds().ok()?),
+                };
                 let first_coding_index = u64::from(shred.first_coding_index()?);
                 let erasure_meta = ErasureMeta {
                     set_index: u64::from(shred.fec_set_index()),
@@ -257,10 +319,6 @@ impl ErasureMeta {
             None => return false,
         };
         other.__unused_size = self.__unused_size;
-        // Ignore first_coding_index field for now to be backward compatible.
-        // TODO remove this once cluster is upgraded to always populate
-        // first_coding_index field.
-        other.first_coding_index = self.first_coding_index;
         self == &other
     }
 
@@ -269,22 +327,13 @@ impl ErasureMeta {
     }
 
     pub(crate) fn data_shreds_indices(&self) -> Range<u64> {
-        let num_data = self.config.num_data() as u64;
+        let num_data = self.config.num_data as u64;
         self.set_index..self.set_index + num_data
     }
 
     pub(crate) fn coding_shreds_indices(&self) -> Range<u64> {
-        let num_coding = self.config.num_coding() as u64;
-        // first_coding_index == 0 may imply that the field is not populated.
-        // self.set_index to be backward compatible.
-        // TODO remove this once cluster is upgraded to always populate
-        // first_coding_index field.
-        let first_coding_index = if self.first_coding_index == 0 {
-            self.set_index
-        } else {
-            self.first_coding_index
-        };
-        first_coding_index..first_coding_index + num_coding
+        let num_coding = self.config.num_coding as u64;
+        self.first_coding_index..self.first_coding_index + num_coding
     }
 
     pub(crate) fn status(&self, index: &Index) -> ErasureMetaStatus {
@@ -294,8 +343,8 @@ impl ErasureMeta {
         let num_data = index.data().range(self.data_shreds_indices()).count();
 
         let (data_missing, num_needed) = (
-            self.config.num_data().saturating_sub(num_data),
-            self.config.num_data().saturating_sub(num_data + num_coding),
+            self.config.num_data.saturating_sub(num_data),
+            self.config.num_data.saturating_sub(num_data + num_coding),
         );
 
         if data_missing == 0 {
@@ -314,29 +363,57 @@ impl DuplicateSlotProof {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TransactionStatusIndexMeta {
     pub max_slot: Slot,
     pub frozen: bool,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AddressSignatureMeta {
     pub writeable: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PerfSample {
     pub num_transactions: u64,
     pub num_slots: u64,
     pub sample_period_secs: u16,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ProgramCost {
     pub cost: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OptimisticSlotMetaV0 {
+    pub hash: Hash,
+    pub timestamp: UnixTimestamp,
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
+pub enum OptimisticSlotMetaVersioned {
+    V0(OptimisticSlotMetaV0),
+}
+
+impl OptimisticSlotMetaVersioned {
+    pub fn new(hash: Hash, timestamp: UnixTimestamp) -> Self {
+        OptimisticSlotMetaVersioned::V0(OptimisticSlotMetaV0 { hash, timestamp })
+    }
+
+    pub fn hash(&self) -> Hash {
+        match self {
+            OptimisticSlotMetaVersioned::V0(meta) => meta.hash,
+        }
+    }
+
+    pub fn timestamp(&self) -> UnixTimestamp {
+        match self {
+            OptimisticSlotMetaVersioned::V0(meta) => meta.timestamp,
+        }
+    }
+}
 #[cfg(test)]
 mod test {
     use {
@@ -345,12 +422,20 @@ mod test {
     };
 
     #[test]
+    fn test_slot_meta_slot_zero_connected() {
+        let meta = SlotMeta::new(0 /* slot */, None /* parent */);
+        assert!(meta.is_connected());
+    }
+
+    #[test]
     fn test_erasure_meta_status() {
         use ErasureMetaStatus::*;
 
         let set_index = 0;
-        let erasure_config = ErasureConfig::new(8, 16);
-
+        let erasure_config = ErasureConfig {
+            num_data: 8,
+            num_coding: 16,
+        };
         let e_meta = ErasureMeta {
             set_index,
             first_coding_index: set_index,
@@ -360,10 +445,10 @@ mod test {
         let mut rng = thread_rng();
         let mut index = Index::new(0);
 
-        let data_indexes = 0..erasure_config.num_data() as u64;
-        let coding_indexes = 0..erasure_config.num_coding() as u64;
+        let data_indexes = 0..erasure_config.num_data as u64;
+        let coding_indexes = 0..erasure_config.num_coding as u64;
 
-        assert_eq!(e_meta.status(&index), StillNeed(erasure_config.num_data()));
+        assert_eq!(e_meta.status(&index), StillNeed(erasure_config.num_data));
 
         for ix in data_indexes.clone() {
             index.data_mut().insert(ix);
@@ -378,7 +463,7 @@ mod test {
         for &idx in data_indexes
             .clone()
             .collect::<Vec<_>>()
-            .choose_multiple(&mut rng, erasure_config.num_data())
+            .choose_multiple(&mut rng, erasure_config.num_data)
         {
             index.data_mut().index.remove(&idx);
 
@@ -391,12 +476,85 @@ mod test {
 
         for &idx in coding_indexes
             .collect::<Vec<_>>()
-            .choose_multiple(&mut rng, erasure_config.num_coding())
+            .choose_multiple(&mut rng, erasure_config.num_coding)
         {
             index.coding_mut().index.remove(&idx);
 
             assert_eq!(e_meta.status(&index), DataFull);
         }
+    }
+
+    #[test]
+    fn test_connected_flags_compatibility() {
+        // Define a couple structs with bool and ConnectedFlags to illustrate
+        // that that ConnectedFlags can be deserialized into a bool if the
+        // PARENT_CONNECTED bit is NOT set
+        #[derive(Debug, Deserialize, PartialEq, Serialize)]
+        struct WithBool {
+            slot: Slot,
+            connected: bool,
+        }
+        #[derive(Debug, Deserialize, PartialEq, Serialize)]
+        struct WithFlags {
+            slot: Slot,
+            connected: ConnectedFlags,
+        }
+
+        let slot = 3;
+        let mut with_bool = WithBool {
+            slot,
+            connected: false,
+        };
+        let mut with_flags = WithFlags {
+            slot,
+            connected: ConnectedFlags::default(),
+        };
+
+        // Confirm that serialized byte arrays are same length
+        assert_eq!(
+            bincode::serialized_size(&with_bool).unwrap(),
+            bincode::serialized_size(&with_flags).unwrap()
+        );
+
+        // Confirm that connected=false equivalent to ConnectedFlags::default()
+        assert_eq!(
+            bincode::serialize(&with_bool).unwrap(),
+            bincode::serialize(&with_flags).unwrap()
+        );
+
+        // Set connected in WithBool and confirm inequality
+        with_bool.connected = true;
+        assert_ne!(
+            bincode::serialize(&with_bool).unwrap(),
+            bincode::serialize(&with_flags).unwrap()
+        );
+
+        // Set connected in WithFlags and confirm equality regained
+        with_flags.connected.set(ConnectedFlags::CONNECTED, true);
+        assert_eq!(
+            bincode::serialize(&with_bool).unwrap(),
+            bincode::serialize(&with_flags).unwrap()
+        );
+
+        // Dserializing WithBool into WithFlags succeeds
+        assert_eq!(
+            with_flags,
+            bincode::deserialize::<WithFlags>(&bincode::serialize(&with_bool).unwrap()).unwrap()
+        );
+
+        // Deserializing WithFlags into WithBool succeeds
+        assert_eq!(
+            with_bool,
+            bincode::deserialize::<WithBool>(&bincode::serialize(&with_flags).unwrap()).unwrap()
+        );
+
+        // Deserializing WithFlags with extra bit set into WithBool fails
+        with_flags
+            .connected
+            .set(ConnectedFlags::PARENT_CONNECTED, true);
+        assert!(
+            bincode::deserialize::<WithBool>(&bincode::serialize(&with_flags).unwrap()).is_err()
+        );
     }
 
     #[test]

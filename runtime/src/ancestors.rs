@@ -1,5 +1,5 @@
 use {
-    crate::accounts_index::RollingBitField,
+    crate::rolling_bit_field::RollingBitField,
     core::fmt::{Debug, Formatter},
     solana_sdk::clock::Slot,
     std::collections::HashMap,
@@ -65,10 +65,6 @@ impl Ancestors {
         self.ancestors.get_all()
     }
 
-    pub fn get(&self, slot: &Slot) -> bool {
-        self.ancestors.contains(slot)
-    }
-
     pub fn remove(&mut self, slot: &Slot) {
         self.ancestors.remove(slot);
     }
@@ -85,8 +81,12 @@ impl Ancestors {
         self.len() == 0
     }
 
+    pub fn min_slot(&self) -> Slot {
+        self.ancestors.min().unwrap_or_default()
+    }
+
     pub fn max_slot(&self) -> Slot {
-        self.ancestors.max() - 1
+        self.ancestors.max_exclusive().saturating_sub(1)
     }
 }
 #[cfg(test)]
@@ -178,10 +178,10 @@ pub mod tests {
             let key = item.0;
             min = std::cmp::min(min, *key);
             max = std::cmp::max(max, *key);
-            assert!(ancestors.get(key));
+            assert!(ancestors.contains_key(key));
         }
         for slot in min - 1..max + 2 {
-            assert_eq!(ancestors.get(&slot), hashset.contains(&slot));
+            assert_eq!(ancestors.contains_key(&slot), hashset.contains(&slot));
         }
     }
 

@@ -8,7 +8,7 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
 } from '../src';
-import invariant from '../src/util/assert';
+import invariant from '../src/utils/assert';
 import {MOCK_PORT, url} from './url';
 import {helpers, mockRpcResponse, mockServer} from './mocks/rpc-http';
 import {stubRpcWebSocket, restoreRpcWebSocket} from './mocks/rpc-websockets';
@@ -128,5 +128,5 @@ describe('Transaction Payer', () => {
     expect(
       await connection.getBalance(accountFrom.publicKey, 'confirmed'),
     ).to.eq(minimumAmount + 2);
-  });
+  }).timeout(30 * 1000);
 });

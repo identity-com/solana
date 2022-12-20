@@ -28,6 +28,9 @@ maybeFullRpc="${19}"
 waitForNodeInit="${20}"
 extraPrimordialStakes="${21:=0}"
 tmpfsAccounts="${22:false}"
+disableQuic="${23}"
+enableUdp="${24}"
+
 set +x
 
 missing() {
@@ -280,7 +283,16 @@ EOF
 
     if $maybeFullRpc; then
       args+=(--enable-rpc-transaction-history)
-      args+=(--enable-cpi-and-log-storage)
+      args+=(--enable-extended-tx-metadata-storage)
+    fi
+
+
+    if $disableQuic; then
+      args+=(--tpu-disable-quic)
+    fi
+
+    if $enableUdp; then
+      args+=(--tpu-enable-udp)
     fi
 
     if [[ $airdropsEnabled = true ]]; then
@@ -408,7 +420,15 @@ EOF
 
     if $maybeFullRpc; then
       args+=(--enable-rpc-transaction-history)
-      args+=(--enable-cpi-and-log-storage)
+      args+=(--enable-extended-tx-metadata-storage)
+    fi
+
+    if $disableQuic; then
+      args+=(--tpu-disable-quic)
+    fi
+
+    if $enableUdp; then
+      args+=(--tpu-enable-udp)
     fi
 
 cat >> ~/solana/on-reboot <<EOF
@@ -443,6 +463,7 @@ EOF
         echo "0 Primordial stakes, staking with $internalNodesStakeLamports"
         multinode-demo/delegate-stake.sh --vote-account "$SOLANA_CONFIG_DIR"/vote-account.json \
                                          --stake-account "$SOLANA_CONFIG_DIR"/stake-account.json \
+                                         --force \
                                          "${args[@]}" "$internalNodesStakeLamports"
       else
         echo "Skipping staking with extra stakes: ${extraPrimordialStakes}"

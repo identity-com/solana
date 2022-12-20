@@ -8,29 +8,18 @@ use {
     },
     solana_cli::{
         clap_app::get_clap_app,
-        cli::{parse_command, process_command, CliCommandInfo, CliConfig, SettingType},
+        cli::{parse_command, process_command, CliCommandInfo, CliConfig},
     },
-    solana_cli_config::Config,
-    solana_cli_output::{display::println_name_value, OutputFormat},
-    solana_client::rpc_config::RpcSendTransactionConfig,
+    solana_cli_config::{Config, ConfigInput},
+    solana_cli_output::{
+        display::{println_name_value, println_name_value_or},
+        OutputFormat,
+    },
     solana_remote_wallet::remote_wallet::RemoteWalletManager,
+    solana_rpc_client_api::config::RpcSendTransactionConfig,
+    solana_tpu_client::tpu_connection_cache::DEFAULT_TPU_ENABLE_UDP,
     std::{collections::HashMap, error, path::PathBuf, sync::Arc, time::Duration},
 };
-
-pub fn println_name_value_or(name: &str, value: &str, setting_type: SettingType) {
-    let description = match setting_type {
-        SettingType::Explicit => "",
-        SettingType::Computed => "(computed)",
-        SettingType::SystemDefault => "(default)",
-    };
-
-    println!(
-        "{} {} {}",
-        style(name).bold(),
-        style(value),
-        style(description).italic(),
-    );
-}
 
 fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error>> {
     let parse_args = match matches.subcommand() {
@@ -50,17 +39,18 @@ fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error
             match matches.subcommand() {
                 ("get", Some(subcommand_matches)) => {
                     let (url_setting_type, json_rpc_url) =
-                        CliConfig::compute_json_rpc_url_setting("", &config.json_rpc_url);
-                    let (ws_setting_type, websocket_url) = CliConfig::compute_websocket_url_setting(
-                        "",
-                        &config.websocket_url,
-                        "",
-                        &config.json_rpc_url,
-                    );
+                        ConfigInput::compute_json_rpc_url_setting("", &config.json_rpc_url);
+                    let (ws_setting_type, websocket_url) =
+                        ConfigInput::compute_websocket_url_setting(
+                            "",
+                            &config.websocket_url,
+                            "",
+                            &config.json_rpc_url,
+                        );
                     let (keypair_setting_type, keypair_path) =
-                        CliConfig::compute_keypair_path_setting("", &config.keypair_path);
+                        ConfigInput::compute_keypair_path_setting("", &config.keypair_path);
                     let (commitment_setting_type, commitment) =
-                        CliConfig::compute_commitment_config("", &config.commitment);
+                        ConfigInput::compute_commitment_config("", &config.commitment);
 
                     if let Some(field) = subcommand_matches.value_of("specific_setting") {
                         let (field_name, value, setting_type) = match field {
@@ -74,7 +64,7 @@ fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error
                             ),
                             _ => unreachable!(),
                         };
-                        println_name_value_or(&format!("{}:", field_name), &value, setting_type);
+                        println_name_value_or(&format!("{field_name}:"), &value, setting_type);
                     } else {
                         println_name_value("Config File:", config_file);
                         println_name_value_or("RPC URL:", &json_rpc_url, url_setting_type);
@@ -107,17 +97,18 @@ fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error
                     config.save(config_file)?;
 
                     let (url_setting_type, json_rpc_url) =
-                        CliConfig::compute_json_rpc_url_setting("", &config.json_rpc_url);
-                    let (ws_setting_type, websocket_url) = CliConfig::compute_websocket_url_setting(
-                        "",
-                        &config.websocket_url,
-                        "",
-                        &config.json_rpc_url,
-                    );
+                        ConfigInput::compute_json_rpc_url_setting("", &config.json_rpc_url);
+                    let (ws_setting_type, websocket_url) =
+                        ConfigInput::compute_websocket_url_setting(
+                            "",
+                            &config.websocket_url,
+                            "",
+                            &config.json_rpc_url,
+                        );
                     let (keypair_setting_type, keypair_path) =
-                        CliConfig::compute_keypair_path_setting("", &config.keypair_path);
+                        ConfigInput::compute_keypair_path_setting("", &config.keypair_path);
                     let (commitment_setting_type, commitment) =
-                        CliConfig::compute_commitment_config("", &config.commitment);
+                        ConfigInput::compute_commitment_config("", &config.commitment);
 
                     println_name_value("Config File:", config_file);
                     println_name_value_or("RPC URL:", &json_rpc_url, url_setting_type);
@@ -133,12 +124,12 @@ fn parse_settings(matches: &ArgMatches<'_>) -> Result<bool, Box<dyn error::Error
                     let filename = value_t_or_exit!(subcommand_matches, "filename", PathBuf);
                     config.import_address_labels(&filename)?;
                     config.save(config_file)?;
-                    println!("Address labels imported from {:?}", filename);
+                    println!("Address labels imported from {filename:?}");
                 }
                 ("export-address-labels", Some(subcommand_matches)) => {
                     let filename = value_t_or_exit!(subcommand_matches, "filename", PathBuf);
                     config.export_address_labels(&filename)?;
-                    println!("Address labels exported to {:?}", filename);
+                    println!("Address labels exported to {filename:?}");
                 }
                 _ => unreachable!(),
             }
@@ -158,7 +149,7 @@ pub fn parse_args<'a>(
     } else {
         Config::default()
     };
-    let (_, json_rpc_url) = CliConfig::compute_json_rpc_url_setting(
+    let (_, json_rpc_url) = ConfigInput::compute_json_rpc_url_setting(
         matches.value_of("json_rpc_url").unwrap_or(""),
         &config.json_rpc_url,
     );
@@ -171,14 +162,14 @@ pub fn parse_args<'a>(
     let confirm_transaction_initial_timeout =
         Duration::from_secs(confirm_transaction_initial_timeout);
 
-    let (_, websocket_url) = CliConfig::compute_websocket_url_setting(
+    let (_, websocket_url) = ConfigInput::compute_websocket_url_setting(
         matches.value_of("websocket_url").unwrap_or(""),
         &config.websocket_url,
         matches.value_of("json_rpc_url").unwrap_or(""),
         &config.json_rpc_url,
     );
     let default_signer_arg_name = "keypair".to_string();
-    let (_, default_signer_path) = CliConfig::compute_keypair_path_setting(
+    let (_, default_signer_path) = ConfigInput::compute_keypair_path_setting(
         matches.value_of(&default_signer_arg_name).unwrap_or(""),
         &config.keypair_path,
     );
@@ -201,7 +192,7 @@ pub fn parse_args<'a>(
     let verbose = matches.is_present("verbose");
     let output_format = OutputFormat::from_matches(matches, "output_format", verbose);
 
-    let (_, commitment) = CliConfig::compute_commitment_config(
+    let (_, commitment) = ConfigInput::compute_commitment_config(
         matches.value_of("commitment").unwrap_or(""),
         &config.commitment,
     );
@@ -210,6 +201,14 @@ pub fn parse_args<'a>(
         HashMap::new()
     } else {
         config.address_labels
+    };
+
+    let use_quic = if matches.is_present("use_quic") {
+        true
+    } else if matches.is_present("use_udp") {
+        false
+    } else {
+        !DEFAULT_TPU_ENABLE_UDP
     };
 
     Ok((
@@ -230,6 +229,7 @@ pub fn parse_args<'a>(
             },
             confirm_transaction_initial_timeout,
             address_labels,
+            use_quic,
         },
         signers,
     ))
@@ -254,7 +254,7 @@ fn do_main(matches: &ArgMatches<'_>) -> Result<(), Box<dyn error::Error>> {
         let (mut config, signers) = parse_args(matches, &mut wallet_manager)?;
         config.signers = signers.iter().map(|s| s.as_ref()).collect();
         let result = process_command(&config)?;
-        println!("{}", result);
+        println!("{result}");
     };
     Ok(())
 }

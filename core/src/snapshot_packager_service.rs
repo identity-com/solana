@@ -10,7 +10,7 @@ use {
             FullSnapshotHash, FullSnapshotHashes, IncrementalSnapshotHash,
             IncrementalSnapshotHashes, StartingSnapshotHashes,
         },
-        snapshot_package::{PendingSnapshotPackage, SnapshotType},
+        snapshot_package::{retain_max_n_elements, PendingSnapshotPackage, SnapshotType},
         snapshot_utils,
     },
     solana_sdk::{clock::Slot, hash::Hash},
@@ -49,7 +49,7 @@ impl SnapshotPackagerService {
         );
 
         let t_snapshot_packager = Builder::new()
-            .name("snapshot-packager".to_string())
+            .name("solSnapshotPkgr".to_string())
             .spawn(move || {
                 renice_this_thread(snapshot_config.packager_thread_niceness_adj).unwrap();
                 let mut snapshot_gossip_manager = if enable_gossip_push {
@@ -84,6 +84,8 @@ impl SnapshotPackagerService {
                     // last_full_snapshot_slot that requires this archive call to succeed.
                     snapshot_utils::archive_snapshot_package(
                         &snapshot_package,
+                        &snapshot_config.full_snapshot_archives_dir,
+                        &snapshot_config.incremental_snapshot_archives_dir,
                         snapshot_config.maximum_full_snapshot_archives_to_retain,
                         snapshot_config.maximum_incremental_snapshot_archives_to_retain,
                     )
@@ -92,7 +94,7 @@ impl SnapshotPackagerService {
                     if let Some(snapshot_gossip_manager) = snapshot_gossip_manager.as_mut() {
                         snapshot_gossip_manager.push_snapshot_hash(
                             snapshot_package.snapshot_type,
-                            (snapshot_package.slot(), *snapshot_package.hash()),
+                            (snapshot_package.slot(), snapshot_package.hash().0),
                         );
                     }
                 }
@@ -164,9 +166,12 @@ impl SnapshotGossipManager {
         self.full_snapshot_hashes
             .hashes
             .push(full_snapshot_hash.hash);
-        while self.full_snapshot_hashes.hashes.len() > self.max_full_snapshot_hashes {
-            self.full_snapshot_hashes.hashes.remove(0);
-        }
+
+        retain_max_n_elements(
+            &mut self.full_snapshot_hashes.hashes,
+            self.max_full_snapshot_hashes,
+        );
+
         self.cluster_info
             .push_snapshot_hashes(self.full_snapshot_hashes.hashes.clone());
     }
@@ -188,9 +193,12 @@ impl SnapshotGossipManager {
         self.incremental_snapshot_hashes
             .hashes
             .push(incremental_snapshot_hash.hash);
-        while self.incremental_snapshot_hashes.hashes.len() > self.max_incremental_snapshot_hashes {
-            self.incremental_snapshot_hashes.hashes.remove(0);
-        }
+
+        retain_max_n_elements(
+            &mut self.incremental_snapshot_hashes.hashes,
+            self.max_incremental_snapshot_hashes,
+        );
+
         // Pushing incremental snapshot hashes to the cluster should never fail.  The only error
         // case is when the length of the hashes is too big, but we account for that with
         // `max_incremental_snapshot_hashes`.  If this call ever does error, it's a programmer bug!
@@ -217,9 +225,10 @@ mod tests {
             accounts_db::AccountStorageEntry,
             bank::BankSlotDelta,
             snapshot_archive_info::SnapshotArchiveInfo,
+            snapshot_hash::SnapshotHash,
             snapshot_package::{SnapshotPackage, SnapshotType},
             snapshot_utils::{
-                self, ArchiveFormat, SnapshotVersion, SNAPSHOT_STATUS_CACHE_FILE_NAME,
+                self, ArchiveFormat, SnapshotVersion, SNAPSHOT_STATUS_CACHE_FILENAME,
             },
         },
         solana_sdk::hash::Hash,
@@ -234,7 +243,7 @@ mod tests {
     // Create temporary placeholder directory for all test files
     fn make_tmp_dir_path() -> PathBuf {
         let out_dir = std::env::var("FARF_DIR").unwrap_or_else(|_| "farf".to_string());
-        let path = PathBuf::from(format!("{}/tmp/test_package_snapshots", out_dir));
+        let path = PathBuf::from(format!("{out_dir}/tmp/test_package_snapshots"));
 
         // whack any possible collision
         let _ignored = std::fs::remove_dir_all(&path);
@@ -259,8 +268,10 @@ mod tests {
     fn create_and_verify_snapshot(temp_dir: &Path) {
         let accounts_dir = temp_dir.join("accounts");
         let snapshots_dir = temp_dir.join("snapshots");
-        let snapshot_archives_dir = temp_dir.join("snapshots_output");
-        fs::create_dir_all(&snapshot_archives_dir).unwrap();
+        let full_snapshot_archives_dir = temp_dir.join("full_snapshot_archives");
+        let incremental_snapshot_archives_dir = temp_dir.join("incremental_snapshot_archives");
+        fs::create_dir_all(&full_snapshot_archives_dir).unwrap();
+        fs::create_dir_all(&incremental_snapshot_archives_dir).unwrap();
 
         fs::create_dir_all(&accounts_dir).unwrap();
         // Create some storage entries
@@ -271,7 +282,7 @@ mod tests {
         // Create some fake snapshot
         let snapshots_paths: Vec<_> = (0..5)
             .map(|i| {
-                let snapshot_file_name = format!("{}", i);
+                let snapshot_file_name = format!("{i}");
                 let snapshots_dir = snapshots_dir.join(&snapshot_file_name);
                 fs::create_dir_all(&snapshots_dir).unwrap();
                 let fake_snapshot_path = snapshots_dir.join(&snapshot_file_name);
@@ -288,21 +299,21 @@ mod tests {
             .collect();
 
         // Create directory of hard links for snapshots
-        let link_snapshots_dir = tempfile::tempdir_in(&temp_dir).unwrap();
+        let link_snapshots_dir = tempfile::tempdir_in(temp_dir).unwrap();
         for snapshots_path in snapshots_paths {
             let snapshot_file_name = snapshots_path.file_name().unwrap();
             let link_snapshots_dir = link_snapshots_dir.path().join(snapshot_file_name);
             fs::create_dir_all(&link_snapshots_dir).unwrap();
             let link_path = link_snapshots_dir.join(snapshot_file_name);
-            fs::hard_link(&snapshots_path, &link_path).unwrap();
+            fs::hard_link(&snapshots_path, link_path).unwrap();
         }
 
         // Create a packageable snapshot
         let slot = 42;
-        let hash = Hash::default();
+        let hash = SnapshotHash(Hash::default());
         let archive_format = ArchiveFormat::TarBzip2;
         let output_tar_path = snapshot_utils::build_full_snapshot_archive_path(
-            snapshot_archives_dir,
+            &full_snapshot_archives_dir,
             slot,
             &hash,
             archive_format,
@@ -325,6 +336,8 @@ mod tests {
         // Make tarball from packageable snapshot
         snapshot_utils::archive_snapshot_package(
             &snapshot_package,
+            full_snapshot_archives_dir,
+            incremental_snapshot_archives_dir,
             snapshot_utils::DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN,
             snapshot_utils::DEFAULT_MAX_INCREMENTAL_SNAPSHOT_ARCHIVES_TO_RETAIN,
         )
@@ -335,7 +348,7 @@ mod tests {
         // the source dir for snapshots
         let dummy_slot_deltas: Vec<BankSlotDelta> = vec![];
         snapshot_utils::serialize_snapshot_data_file(
-            &snapshots_dir.join(SNAPSHOT_STATUS_CACHE_FILE_NAME),
+            &snapshots_dir.join(SNAPSHOT_STATUS_CACHE_FILENAME),
             |stream| {
                 serialize_into(stream, &dummy_slot_deltas)?;
                 Ok(())
@@ -349,6 +362,7 @@ mod tests {
             snapshots_dir,
             accounts_dir,
             archive_format,
+            snapshot_utils::VerifyBank::Deterministic,
         );
     }
 }
