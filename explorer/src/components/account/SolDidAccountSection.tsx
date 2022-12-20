@@ -6,11 +6,6 @@ import { Address } from "components/common/Address";
 import { UnknownAccountCard } from "./UnknownAccountCard";
 import { Cluster, useCluster } from "providers/cluster";
 import { reportError } from "utils/sentry";
-import {
-  SolPublicKey,
-  VerificationMethod,
-  ServiceEndpoint,
-} from "@identity.com/sol-did-client";
 import { PublicKey } from "@solana/web3.js";
 import {
   DidSolTokenAccount,
@@ -115,7 +110,7 @@ function SolDidAccountCard({
   info: DidSolTokenAccountInfo;
 }) {
   const fetchInfo = useFetchAccountInfo();
-  const refresh = () => fetchInfo(account.pubkey);
+  const refresh = () => fetchInfo(account.pubkey, "parsed");
   return (
     <>
       <div className="card">

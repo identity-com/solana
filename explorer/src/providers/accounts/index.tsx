@@ -7,7 +7,7 @@ import {
   AddressLookupTableAccount,
   AddressLookupTableProgram,
   SystemProgram,
-  ParsedAccountData,
+  ParsedAccountData, AccountInfo,
 } from "@solana/web3.js";
 import { useCluster, Cluster } from "../cluster";
 import { HistoryProvider } from "./history";
@@ -43,8 +43,7 @@ import {
   GatewayTokenData,
   GatewayTokenState,
 } from "@identity.com/solana-gateway-ts";
-import { SolData, SolDataConstructor } from "@identity.com/sol-did-client";
-import { ClusterType } from "@identity.com/sol-did-client";
+import { SolData } from "@identity.com/sol-did-client";
 import { DidSolTokenAccount } from "validators/accounts/didsol";
 export { useAccountHistory } from "./history";
 
@@ -110,7 +109,7 @@ export type DidSolProgramData = {
   //todo
 };
 
-export type ProgramData =
+export type ParsedData =
   | UpgradeableLoaderAccountData
   | StakeProgramData
   | TokenProgramData
@@ -273,7 +272,10 @@ function parseDidSolToken(
   };
   return {
     program: "didsol",
-    parsed: { info: parsed },
+    parsed: {
+      type: "did-sol",
+      info: parsed
+    },
   };
 }
 
@@ -293,7 +295,10 @@ function parseGatewayToken(
   );
   return {
     program: "gateway",
-    parsed: { info: parsed },
+    parsed: {
+      type: "gatewayToken",
+      info: parsed
+    },
   };
 }
 

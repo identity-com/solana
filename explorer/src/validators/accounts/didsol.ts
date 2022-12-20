@@ -2,14 +2,13 @@
 
 import {
   Infer,
-  enums,
   type,
   number,
-  optional,
   string,
   array,
 } from "superstruct";
 import { PublicKeyFromString } from "validators/pubkey";
+import { literal } from "superstruct/lib/index.es";
 
 export type DidSolTokenAccountInfo = Infer<typeof DidSolTokenAccountInfo>;
 export const DidSolTokenAccountInfo = type ({
@@ -38,5 +37,6 @@ export const DidSolTokenAccountInfo = type ({
 
 export type DidSolTokenAccount = Infer<typeof DidSolTokenAccount>;
 export const DidSolTokenAccount = type({
+  type: literal("did-sol"),
   info: DidSolTokenAccountInfo,
 });

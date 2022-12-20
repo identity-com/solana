@@ -48,7 +48,7 @@ function GatewayTokenAccountCard({
   info: GatewayTokenAccountInfo;
 }) {
   const fetchInfo = useFetchAccountInfo();
-  const refresh = () => fetchInfo(account.pubkey);
+  const refresh = () => fetchInfo(account.pubkey, "parsed");
 
   return (
     <>

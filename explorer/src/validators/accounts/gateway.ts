@@ -2,6 +2,7 @@
 
 import { Infer, enums, type, number, optional } from "superstruct";
 import { PublicKeyFromString } from "validators/pubkey";
+import { literal } from "superstruct/lib/index.es";
 
 export type GatewayTokenAccountState = Infer<typeof AccountState>;
 const AccountState = enums(["ACTIVE", "FROZEN", "REVOKED"]);
@@ -17,5 +18,6 @@ export const GatewayTokenAccountInfo = type({
 
 export type GatewayTokenAccount = Infer<typeof GatewayTokenAccount>;
 export const GatewayTokenAccount = type({
+  type: literal("gatewayToken"),
   info: GatewayTokenAccountInfo,
 });
