@@ -374,14 +374,19 @@ async function fetchMultipleAccounts({
               reportError(error, { url, address: pubkey.toBase58() });
             }
           } else {
-            if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
-              parsedData = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
-            } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
-              parsedData = parseDidSolToken(
-                result as AccountInfo<Buffer>,
-                pubkey,
-                cluster
-              );
+            try {
+              if (result.owner.equals(GATEWAY_PROGRAM_ID)) {
+                parsedData = parseGatewayToken(result as AccountInfo<Buffer>, pubkey);
+              } else if (result.owner.equals(SOL_DID_PROGRAM_ID)) {
+                parsedData = parseDidSolToken(
+                  result as AccountInfo<Buffer>,
+                  pubkey,
+                  cluster
+                );
+              }
+            } catch (error) {
+              // TODO: Some owned accounts might no be parsable by above parsers
+              reportError(error, { url, address: pubkey.toBase58() });
             }
           }
 
