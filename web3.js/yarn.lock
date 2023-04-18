@@ -1356,16 +1356,17 @@
     "@rollup/plugin-virtual" "^2.0.3"
     matched "^5.0.0"
 
-"@rollup/plugin-node-resolve@^13.0.0":
-  version "13.2.1"
-  resolved "https://registry.npmjs.org/@rollup/plugin-node-resolve/-/plugin-node-resolve-13.2.1.tgz"
+"@rollup/plugin-node-resolve@^15.0.2":
+  version "15.0.2"
+  resolved "https://registry.yarnpkg.com/@rollup/plugin-node-resolve/-/plugin-node-resolve-15.0.2.tgz#8183a80c2cbf7b471f5ac86b16747997f3b5d185"
+  integrity sha512-Y35fRGUjC3FaurG722uhUuG8YHOJRJQbI6/CkbRkdPotSpDj9NtIN85z1zrcyDcCQIW4qp5mgG72U+gJ0TAFEg==
   dependencies:
-    "@rollup/pluginutils" "^3.1.0"
-    "@types/resolve" "1.17.1"
-    builtin-modules "^3.1.0"
+    "@rollup/pluginutils" "^5.0.1"
+    "@types/resolve" "1.20.2"
     deepmerge "^4.2.2"
+    is-builtin-module "^3.2.1"
     is-module "^1.0.0"
-    resolve "^1.19.0"
+    resolve "^1.22.1"
 
 "@rollup/plugin-replace@^4.0.0":
   version "4.0.0"
@@ -1385,6 +1386,15 @@
     "@types/estree" "0.0.39"
     estree-walker "^1.0.1"
     picomatch "^2.2.2"
+
+"@rollup/pluginutils@^5.0.1":
+  version "5.0.2"
+  resolved "https://registry.yarnpkg.com/@rollup/pluginutils/-/pluginutils-5.0.2.tgz#012b8f53c71e4f6f9cb317e311df1404f56e7a33"
+  integrity sha512-pTd9rIsP92h+B6wWwFbW8RkZv4hiR/xKsqre4SIuAOaOEQRxi0lqLke9k2/7WegC85GgUs9pjmOjCUi3In4vwA==
+  dependencies:
+    "@types/estree" "^1.0.0"
+    estree-walker "^2.0.2"
+    picomatch "^2.3.1"
 
 "@semantic-release/commit-analyzer@^9.0.2":
   version "9.0.2"
@@ -1613,6 +1623,11 @@
   version "0.0.39"
   resolved "https://registry.npmjs.org/@types/estree/-/estree-0.0.39.tgz"
 
+"@types/estree@^1.0.0":
+  version "1.0.0"
+  resolved "https://registry.yarnpkg.com/@types/estree/-/estree-1.0.0.tgz#5fb2e536c1ae9bf35366eed879e827fa59ca41c2"
+  integrity sha512-WulqXMDUTYAXCjZnk6JtIHPigp55cVtDgDrO2gHRwhyJto21+1zbVCtOYB2L1F9w4qCQ0rOGWBnBe0FNTiEJIQ==
+
 "@types/express-serve-static-core@^4.17.21", "@types/express-serve-static-core@^4.17.9":
   version "4.17.28"
   resolved "https://registry.npmjs.org/@types/express-serve-static-core/-/express-serve-static-core-4.17.28.tgz"
@@ -1687,11 +1702,10 @@
   version "1.2.4"
   resolved "https://registry.npmjs.org/@types/range-parser/-/range-parser-1.2.4.tgz"
 
-"@types/resolve@1.17.1":
-  version "1.17.1"
-  resolved "https://registry.npmjs.org/@types/resolve/-/resolve-1.17.1.tgz"
-  dependencies:
-    "@types/node" "*"
+"@types/resolve@1.20.2":
+  version "1.20.2"
+  resolved "https://registry.yarnpkg.com/@types/resolve/-/resolve-1.20.2.tgz#97d26e00cd4a0423b4af620abecf3e6f442b7975"
+  integrity sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==
 
 "@types/retry@^0.12.0":
   version "0.12.1"
@@ -1834,15 +1848,7 @@ agent-base@6, agent-base@^6.0.0, agent-base@^6.0.2:
   dependencies:
     debug "4"
 
-agentkeepalive@^4.1.3:
-  version "4.2.1"
-  resolved "https://registry.npmjs.org/agentkeepalive/-/agentkeepalive-4.2.1.tgz"
-  dependencies:
-    debug "^4.1.0"
-    depd "^1.1.2"
-    humanize-ms "^1.2.1"
-
-agentkeepalive@^4.2.1:
+agentkeepalive@^4.1.3, agentkeepalive@^4.2.1:
   version "4.2.1"
   resolved "https://registry.yarnpkg.com/agentkeepalive/-/agentkeepalive-4.2.1.tgz#a7975cbb9f83b367f06c90cc51ff28fe7d499717"
   integrity sha512-Zn4cw2NEqd+9fiSVWMscnjyQ1a8Yfoc5oBajLeo5w+YBHgDUcEBY2hS4YpTz6iN5f/2zQiktcuM6tS8x1p9dpA==
@@ -2224,9 +2230,10 @@ bufferutil@^4.0.1:
   dependencies:
     node-gyp-build "^4.3.0"
 
-builtin-modules@^3.1.0:
-  version "3.2.0"
-  resolved "https://registry.npmjs.org/builtin-modules/-/builtin-modules-3.2.0.tgz"
+builtin-modules@^3.3.0:
+  version "3.3.0"
+  resolved "https://registry.yarnpkg.com/builtin-modules/-/builtin-modules-3.3.0.tgz#cae62812b89801e9656336e46223e030386be7b6"
+  integrity sha512-zhaCDicdLuWN5UbN5IMnFqNMhNfo919sH85y2/ea+5Yg9TsTkeZxpL+JLbp6cgYFS4sRLp3YV4S6yDuqVWHYOw==
 
 builtins@^5.0.0:
   version "5.0.1"
@@ -3179,7 +3186,7 @@ estree-walker@^1.0.1:
   version "1.0.1"
   resolved "https://registry.npmjs.org/estree-walker/-/estree-walker-1.0.1.tgz"
 
-estree-walker@^2.0.1:
+estree-walker@^2.0.1, estree-walker@^2.0.2:
   version "2.0.2"
   resolved "https://registry.npmjs.org/estree-walker/-/estree-walker-2.0.2.tgz"
 
@@ -3957,6 +3964,13 @@ is-boolean-object@^1.1.0:
     call-bind "^1.0.2"
     has-tostringtag "^1.0.0"
 
+is-builtin-module@^3.2.1:
+  version "3.2.1"
+  resolved "https://registry.yarnpkg.com/is-builtin-module/-/is-builtin-module-3.2.1.tgz#f03271717d8654cfcaf07ab0463faa3571581169"
+  integrity sha512-BSLE3HnV2syZ0FK0iMA/yUGplUeMmNz4AW5fnTunbCIqZi4vG3WjJT9FHMy5D69xmAYBHXQhJdALdpwVxV501A==
+  dependencies:
+    builtin-modules "^3.3.0"
+
 is-callable@^1.1.4, is-callable@^1.2.4:
   version "1.2.4"
   resolved "https://registry.npmjs.org/is-callable/-/is-callable-1.2.4.tgz"
@@ -3966,6 +3980,13 @@ is-cidr@^4.0.2:
   resolved "https://registry.npmjs.org/is-cidr/-/is-cidr-4.0.2.tgz"
   dependencies:
     cidr-regex "^3.1.1"
+
+is-core-module@^2.11.0:
+  version "2.12.0"
+  resolved "https://registry.yarnpkg.com/is-core-module/-/is-core-module-2.12.0.tgz#36ad62f6f73c8253fd6472517a12483cf03e7ec4"
+  integrity sha512-RECHCBCd/viahWmwj6enj19sKbHfJrddi/6cBDsNTKbNq0f7VeaUkBo60BqzvPqo/W54ChS62Z5qyun7cfOMqQ==
+  dependencies:
+    has "^1.0.3"
 
 is-core-module@^2.5.0, is-core-module@^2.8.1:
   version "2.8.1"
@@ -5998,11 +6019,12 @@ resolve-from@^5.0.0:
   version "5.0.0"
   resolved "https://registry.npmjs.org/resolve-from/-/resolve-from-5.0.0.tgz"
 
-resolve@^1.10.0, resolve@^1.14.2, resolve@^1.17.0, resolve@^1.19.0, resolve@^1.20.0, resolve@^1.22.0:
-  version "1.22.0"
-  resolved "https://registry.npmjs.org/resolve/-/resolve-1.22.0.tgz"
+resolve@^1.10.0, resolve@^1.14.2, resolve@^1.17.0, resolve@^1.20.0, resolve@^1.22.0, resolve@^1.22.1:
+  version "1.22.2"
+  resolved "https://registry.yarnpkg.com/resolve/-/resolve-1.22.2.tgz#0ed0943d4e301867955766c9f3e1ae6d01c6845f"
+  integrity sha512-Sb+mjNHOULsBv818T40qSPeRiuWLyaGMa5ewydRLFimneixmVy2zdivRl+AF6jaYPC8ERxGDmFSiqui6SfPd+g==
   dependencies:
-    is-core-module "^2.8.1"
+    is-core-module "^2.11.0"
     path-parse "^1.0.7"
     supports-preserve-symlinks-flag "^1.0.0"
 
