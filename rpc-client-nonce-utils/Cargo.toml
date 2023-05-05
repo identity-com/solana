@@ -17,7 +17,7 @@ solana-sdk = { path = "../sdk", version = "=1.15.0" }
 thiserror = "1.0"
 
 [dev-dependencies]
-anyhow = "1.0.58"
+anyhow = "1.0.71"
 futures = "0.3"
 serde_json = "1.0.83"
 solana-account-decoder = { path = "../account-decoder", version = "=1.15.0" }
