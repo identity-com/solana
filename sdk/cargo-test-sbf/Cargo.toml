@@ -10,7 +10,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-cargo_metadata = "0.15.0"
+cargo_metadata = "0.18.1"
 clap = { version = "3.1.5", features = ["cargo"] }
 log = { version = "0.4.14", features = ["std"] }
 solana-logger = { path = "../../logger", version = "=1.15.0" }
