@@ -81,7 +81,7 @@ systemstat = "0.2.0"
 test-case = "2.2.2"
 
 [target."cfg(unix)".dependencies]
-sysctl = "0.4.4"
+sysctl = "0.6.0"
 
 [build-dependencies]
 rustc_version = "0.4"
