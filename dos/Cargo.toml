@@ -15,7 +15,7 @@ clap = { version = "3.1.5", features = ["derive", "cargo"] }
 crossbeam-channel = "0.5.6"
 itertools = "0.10.5"
 log = "0.4.17"
-rand = "0.7.0"
+rand = "0.8.5"
 serde = "1.0.144"
 solana-bench-tps = { path = "../bench-tps", version = "=1.15.0" }
 solana-client = { path = "../client", version = "=1.15.0" }
