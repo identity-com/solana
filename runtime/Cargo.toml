@@ -23,7 +23,7 @@ dir-diff = "0.3.2"
 flate2 = "1.0.24"
 fnv = "1.0.7"
 im = { version = "15.1.0", features = ["rayon", "serde"] }
-index_list = "0.2.7"
+index_list = "0.2.16"
 itertools = "0.10.5"
 lazy_static = "1.4.0"
 log = "0.4.17"
