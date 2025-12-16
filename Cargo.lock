@@ -2540,9 +2540,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.131"
+version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04c3b4822ccebfa39c02fc03d1534441b22ead323fa0f48bb7ddd8e6ba076a40"
+checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
 name = "libloading"
@@ -2724,9 +2724,18 @@ checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
 
 [[package]]
 name = "memmap2"
-version = "0.5.3"
+version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "057a3db23999c867821a7a59feb06a578fcb03685e983dff90daf9e7d24ac08f"
+checksum = "83faa42c0a078c393f6b29d5db232d8be22776a891f8f56e5284faee4a20b327"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "memmap2"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
 dependencies = [
  "libc",
 ]
@@ -4899,7 +4908,7 @@ version = "1.15.0"
 dependencies = [
  "fs_extra",
  "log",
- "memmap2",
+ "memmap2 0.9.9",
  "modular-bitfield",
  "rand 0.7.3",
  "rayon",
@@ -5353,7 +5362,7 @@ dependencies = [
  "im",
  "lazy_static",
  "log",
- "memmap2",
+ "memmap2 0.5.10",
  "once_cell",
  "rand_core 0.6.3",
  "rustc_version 0.4.0",
@@ -5385,7 +5394,7 @@ dependencies = [
  "im",
  "lazy_static",
  "log",
- "memmap2",
+ "memmap2 0.9.9",
  "once_cell",
  "rand_core 0.6.3",
  "rustc_version 0.4.0",
@@ -6314,7 +6323,7 @@ dependencies = [
  "log",
  "lru",
  "lz4",
- "memmap2",
+ "memmap2 0.9.9",
  "num-derive",
  "num-traits",
  "num_cpus",
@@ -6382,7 +6391,7 @@ dependencies = [
  "lazy_static",
  "libsecp256k1",
  "log",
- "memmap2",
+ "memmap2 0.5.10",
  "num-derive",
  "num-traits",
  "pbkdf2 0.11.0",
@@ -6434,7 +6443,7 @@ dependencies = [
  "lazy_static",
  "libsecp256k1",
  "log",
- "memmap2",
+ "memmap2 0.9.9",
  "num-derive",
  "num-traits",
  "num_enum",
