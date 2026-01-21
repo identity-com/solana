@@ -33,7 +33,7 @@ reqwest = { version = "0.11.12", default-features = false, features = [
 semver = "1.0.14"
 serde = "1.0.144"
 serde_derive = "1.0.103"
-serde_json = "1.0.83"
+serde_json = "1.0.99"
 solana-account-decoder = { path = "../account-decoder", version = "=1.15.0" }
 solana-address-lookup-table-program = { path = "../programs/address-lookup-table", version = "=1.15.0" }
 solana-bpf-loader-program = { path = "../programs/bpf_loader", version = "=1.15.0" }

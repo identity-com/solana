@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 futures-util = "0.3.21"
-serde_json = "1.0.83"
+serde_json = "1.0.99"
 solana-ledger = { path = "../ledger", version = "=1.15.0" }
 solana-measure = { path = "../measure", version = "=1.15.0" }
 solana-merkle-tree = { path = "../merkle-tree", version = "=1.15.0" }
