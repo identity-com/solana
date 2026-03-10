@@ -112,7 +112,7 @@
     "eslint-plugin-mocha": "^10.1.0",
     "eslint-plugin-prettier": "^4.2.1",
     "esm": "^3.2.25",
-    "mocha": "^10.1.0",
+    "mocha": "^11.7.5",
     "mockttp": "^2.0.1",
     "mz": "^2.7.0",
     "node-abort-controller": "^3.0.1",
