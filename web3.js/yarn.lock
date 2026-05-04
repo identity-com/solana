@@ -1349,12 +1349,13 @@
   dependencies:
     "@rollup/pluginutils" "^3.0.8"
 
-"@rollup/plugin-multi-entry@^4.0.0":
-  version "4.1.0"
-  resolved "https://registry.npmjs.org/@rollup/plugin-multi-entry/-/plugin-multi-entry-4.1.0.tgz"
+"@rollup/plugin-multi-entry@^7.1.0":
+  version "7.1.0"
+  resolved "https://registry.yarnpkg.com/@rollup/plugin-multi-entry/-/plugin-multi-entry-7.1.0.tgz#2de3625cea5b81eb235024f7e3a65a304162f7f1"
+  integrity sha512-dLp8gf+Kb/JvGQOreC6pg2gCFWPNmKaZFUzBRN1KgiOjHMN7ZfVM11dJS0BjmcIpeA6KPbWq2tFB9OwTb2N5Cw==
   dependencies:
-    "@rollup/plugin-virtual" "^2.0.3"
-    matched "^5.0.0"
+    "@rollup/plugin-virtual" "^3.0.0"
+    tinyglobby "^0.2.14"
 
 "@rollup/plugin-node-resolve@^13.0.0":
   version "13.2.1"
@@ -1374,9 +1375,10 @@
     "@rollup/pluginutils" "^3.1.0"
     magic-string "^0.25.7"
 
-"@rollup/plugin-virtual@^2.0.3":
-  version "2.1.0"
-  resolved "https://registry.npmjs.org/@rollup/plugin-virtual/-/plugin-virtual-2.1.0.tgz"
+"@rollup/plugin-virtual@^3.0.0":
+  version "3.0.2"
+  resolved "https://registry.yarnpkg.com/@rollup/plugin-virtual/-/plugin-virtual-3.0.2.tgz#17e17eeecb4c9fa1c0a6e72c9e5f66382fddbb82"
+  integrity sha512-10monEYsBp3scM4/ND4LNH5Rxvh3e/cVeL3jWTgZ2SrQ+BmUoQcopVQvnaMcOnykb1VkxUFuDAN+0FnpTFRy2A==
 
 "@rollup/pluginutils@^3.0.8", "@rollup/pluginutils@^3.1.0":
   version "3.1.0"
@@ -1834,15 +1836,7 @@ agent-base@6, agent-base@^6.0.0, agent-base@^6.0.2:
   dependencies:
     debug "4"
 
-agentkeepalive@^4.1.3:
-  version "4.2.1"
-  resolved "https://registry.npmjs.org/agentkeepalive/-/agentkeepalive-4.2.1.tgz"
-  dependencies:
-    debug "^4.1.0"
-    depd "^1.1.2"
-    humanize-ms "^1.2.1"
-
-agentkeepalive@^4.2.1:
+agentkeepalive@^4.1.3, agentkeepalive@^4.2.1:
   version "4.2.1"
   resolved "https://registry.yarnpkg.com/agentkeepalive/-/agentkeepalive-4.2.1.tgz#a7975cbb9f83b367f06c90cc51ff28fe7d499717"
   integrity sha512-Zn4cw2NEqd+9fiSVWMscnjyQ1a8Yfoc5oBajLeo5w+YBHgDUcEBY2hS4YpTz6iN5f/2zQiktcuM6tS8x1p9dpA==
@@ -3319,6 +3313,11 @@ fastq@^1.6.0:
   dependencies:
     reusify "^1.0.4"
 
+fdir@^6.5.0:
+  version "6.5.0"
+  resolved "https://registry.yarnpkg.com/fdir/-/fdir-6.5.0.tgz#ed2ab967a331ade62f18d077dae192684d50d350"
+  integrity sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==
+
 fetch-ponyfill@^7.1.0:
   version "7.1.0"
   resolved "https://registry.npmjs.org/fetch-ponyfill/-/fetch-ponyfill-7.1.0.tgz"
@@ -4656,13 +4655,6 @@ marked@^4.0.19:
   resolved "https://registry.yarnpkg.com/marked/-/marked-4.2.3.tgz#bd76a5eb510ff1d8421bc6c3b2f0b93488c15bea"
   integrity sha512-slWRdJkbTZ+PjkyJnE30Uid64eHwbwa1Q25INCAYfZlK4o6ylagBy/Le9eWntqJFoFT93ikUKMv47GZ4gTwHkw==
 
-matched@^5.0.0:
-  version "5.0.1"
-  resolved "https://registry.npmjs.org/matched/-/matched-5.0.1.tgz"
-  dependencies:
-    glob "^7.1.6"
-    picomatch "^2.2.1"
-
 media-typer@0.3.0:
   version "0.3.0"
   resolved "https://registry.npmjs.org/media-typer/-/media-typer-0.3.0.tgz"
@@ -5645,6 +5637,11 @@ picocolors@^1.0.0:
 picomatch@^2.0.4, picomatch@^2.2.1, picomatch@^2.2.2, picomatch@^2.3.1:
   version "2.3.1"
   resolved "https://registry.npmjs.org/picomatch/-/picomatch-2.3.1.tgz"
+
+picomatch@^4.0.4:
+  version "4.0.4"
+  resolved "https://registry.yarnpkg.com/picomatch/-/picomatch-4.0.4.tgz#fd6f5e00a143086e074dffe4c924b8fb293b0589"
+  integrity sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==
 
 pidtree@^0.3.0:
   version "0.3.1"
@@ -6678,6 +6675,14 @@ through@2, "through@>=2.2.7 <3", through@~2.3, through@~2.3.1:
 tiny-relative-date@^1.3.0:
   version "1.3.0"
   resolved "https://registry.npmjs.org/tiny-relative-date/-/tiny-relative-date-1.3.0.tgz"
+
+tinyglobby@^0.2.14:
+  version "0.2.16"
+  resolved "https://registry.yarnpkg.com/tinyglobby/-/tinyglobby-0.2.16.tgz#1c3b7eb953fce42b226bc5a1ee06428281aff3d6"
+  integrity sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==
+  dependencies:
+    fdir "^6.5.0"
+    picomatch "^4.0.4"
 
 to-fast-properties@^2.0.0:
   version "2.0.0"
